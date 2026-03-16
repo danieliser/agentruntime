@@ -388,7 +388,7 @@ func TestLocalRuntime_ResourceBoundaries_KillReapsProcessGroup(t *testing.T) {
 	requireCommands(t, "sh", "sleep", "ps")
 
 	rt := runtime.NewLocalRuntime()
-	handle, err := rt.Spawn(context.Background(), SpawnConfig{
+	handle, err := rt.Spawn(context.Background(), runtime.SpawnConfig{
 		Cmd: []string{"sh", "-c", "sleep 60 & sleep 60"},
 	})
 	if err != nil {
