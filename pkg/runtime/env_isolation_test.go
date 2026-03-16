@@ -166,7 +166,9 @@ func TestLocalRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
 	t.Setenv("SECRET_KEY", "daemon-secret")
 
 	rt := NewLocalRuntime()
-	handle, err := rt.Spawn(testContext(t), localHelperConfig("print-env", nil))
+	handle, err := rt.Spawn(testContext(t), localHelperConfig("print-env", map[string]string{
+		"VISIBLE_VAR": "kept-local",
+	}))
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
 	}
@@ -183,6 +185,9 @@ func TestLocalRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
 	}
 	if strings.Contains(stdout, "SECRET_KEY=") {
 		t.Fatalf("expected SECRET_KEY to be absent, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "VISIBLE_VAR=kept-local") {
+		t.Fatalf("expected explicit env to remain visible, got %q", stdout)
 	}
 }
 
@@ -366,6 +371,7 @@ func TestDockerRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
 	handle, err := rt.Spawn(testContext(t), SpawnConfig{
 		Cmd:    []string{"env"},
+		Env:    map[string]string{"VISIBLE_VAR": "kept-docker"},
 		TaskID: "docker-env-full",
 	})
 	if err != nil {
@@ -385,6 +391,9 @@ func TestDockerRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
 	}
 	if strings.Contains(stdout, "SECRET_KEY=") {
 		t.Fatalf("expected SECRET_KEY to be absent, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "VISIBLE_VAR=kept-docker") {
+		t.Fatalf("expected explicit env to remain visible, got %q", stdout)
 	}
 }
 
