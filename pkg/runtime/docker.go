@@ -272,14 +272,31 @@ func formatDockerMount(mount apischema.Mount) string {
 	return fmt.Sprintf("%s:%s:%s", mount.Host, mount.Container, mode)
 }
 
+// writeDockerEnvFile writes ONLY the explicit env vars to a temp file.
+// Docker containers get a clean-room environment — no parent env inheritance.
+// This is the Docker isolation contract: only what the caller provides.
 func writeDockerEnvFile(envMap map[string]string) (string, error) {
 	if err := validateDockerEnvValues(envMap); err != nil {
 		return "", err
 	}
 
-	env, err := buildSpawnEnv(envMap)
-	if err != nil {
-		return "", err
+	// Build KEY=VALUE lines from only the explicit env map.
+	// Do NOT call buildSpawnEnv here — that merges parent env, which is
+	// correct for local runtime but wrong for Docker's clean-room model.
+	keys := make([]string, 0, len(envMap))
+	for k := range envMap {
+		if err := validateEnvKey(k); err != nil {
+			return "", fmt.Errorf("invalid env key %q: %w", k, err)
+		}
+		if _, reserved := reservedEnvKeys[k]; reserved {
+			return "", fmt.Errorf("env key %q is reserved", k)
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, k := range keys {
+		env = append(env, k+"="+envMap[k])
 	}
 
 	file, err := os.CreateTemp("", "agentruntime-env-")

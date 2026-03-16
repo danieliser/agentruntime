@@ -3,7 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"os"
 	"strings"
 )
 
@@ -16,26 +16,30 @@ var reservedEnvKeys = map[string]struct{}{
 	"PATH":                  {},
 }
 
+// buildSpawnEnv builds the environment for a spawned process.
+// When extra is empty, returns nil — Go's exec.Cmd inherits the parent env.
+// When extra has entries, they are merged ON TOP of the parent env (os.Environ).
+// Reserved keys (PATH, LD_PRELOAD, etc.) cannot be overridden via extra.
 func buildSpawnEnv(extra map[string]string) ([]string, error) {
 	if len(extra) == 0 {
-		return []string{}, nil
+		// nil tells exec.Cmd to inherit parent environment.
+		return nil, nil
 	}
 
-	keys := make([]string, 0, len(extra))
+	// Validate extra keys first.
 	for key := range extra {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	env := make([]string, 0, len(keys))
-	for _, key := range keys {
 		if err := validateEnvKey(key); err != nil {
 			return nil, fmt.Errorf("invalid env key %q: %w", key, err)
 		}
 		if _, reserved := reservedEnvKeys[key]; reserved {
 			return nil, fmt.Errorf("env key %q is reserved", key)
 		}
-		env = append(env, key+"="+extra[key])
+	}
+
+	// Start with parent env, then overlay extra vars.
+	env := os.Environ()
+	for key, val := range extra {
+		env = append(env, key+"="+val)
 	}
 
 	return env, nil

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -97,10 +99,25 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	}
 
 	sess.SetRunning(handle)
+	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), cmd)
+
+	// TODO(v0.3.0): The current architecture has a fundamental tension:
+	// - Prompt-mode agents (claude -p) need stdin closed to start processing
+	// - Interactive agents need stdin open for steering via WS
+	// - Output needs to be captured to replay buffer from spawn time
+	//   (not just when a WS client connects) for the logs endpoint
+	// - But the WS bridge also reads from the process pipes, causing
+	//   a dual-reader conflict with background drain goroutines
+	//
+	// Resolution: the bridge should read from the replay buffer (via tee),
+	// not directly from process pipes. That decouples the capture layer
+	// from the streaming layer. For now, output only flows when a WS
+	// client is connected (the bridge reads the pipes and writes to replay).
 
 	// Watch for exit in the background.
 	go func() {
 		result := <-handle.Wait()
+		log.Printf("[session %s] exited: code=%d err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, sess.Replay.TotalBytes())
 		sess.SetCompleted(result.Code)
 	}()
 
@@ -243,4 +260,30 @@ func websocketScheme(c *gin.Context) string {
 		return "wss"
 	}
 	return "ws"
+}
+
+// drainToReplay reads from r and writes all data to the replay buffer.
+// Runs as a background goroutine from spawn time so the process never
+// blocks on stdout/stderr pipe writes, even if no WS client is connected.
+func drainToReplay(sessionID, stream string, r io.ReadCloser, replay *session.ReplayBuffer) {
+	if r == nil || replay == nil {
+		return
+	}
+	buf := make([]byte, 32*1024)
+	total := 0
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			replay.Write(buf[:n])
+			total += n
+			if total == n {
+				// First data received — log it.
+				log.Printf("[session %s] first %s data: %d bytes", sessionID, stream, n)
+			}
+		}
+		if err != nil {
+			log.Printf("[session %s] %s closed: total=%d err=%v", sessionID, stream, total, err)
+			return
+		}
+	}
 }

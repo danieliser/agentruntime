@@ -31,7 +31,10 @@ func TestRuntimeEnvHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestLocalRuntime_DoesNotInheritDaemonSecrets(t *testing.T) {
+// TestLocalRuntime_InheritsParentEnv verifies that the local runtime inherits
+// the parent process environment. This is correct for local — isolation is
+// the Docker runtime's job. Local subprocesses need PATH, HOME, etc. to work.
+func TestLocalRuntime_InheritsParentEnv(t *testing.T) {
 	t.Setenv("SECRET_KEY", "daemon-secret")
 
 	rt := NewLocalRuntime()
@@ -49,8 +52,8 @@ func TestLocalRuntime_DoesNotInheritDaemonSecrets(t *testing.T) {
 	if result.Code != 0 {
 		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
 	}
-	if stdout != "" {
-		t.Fatalf("expected SECRET_KEY to be absent, got %q", stdout)
+	if stdout != "daemon-secret" {
+		t.Fatalf("expected SECRET_KEY to be inherited as 'daemon-secret', got %q", stdout)
 	}
 }
 
@@ -162,9 +165,10 @@ func TestLocalRuntime_EmptyEnvMapDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestLocalRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
+// TestLocalRuntime_ExtraEnvMergedOntoParent verifies that extra env vars
+// are added on top of the inherited parent environment, not replacing it.
+func TestLocalRuntime_ExtraEnvMergedOntoParent(t *testing.T) {
 	t.Setenv("PERSIST_AUTH_TOKEN", "daemon-token")
-	t.Setenv("SECRET_KEY", "daemon-secret")
 
 	rt := NewLocalRuntime()
 	handle, err := rt.Spawn(testContext(t), localHelperConfig("print-env", map[string]string{
@@ -181,14 +185,13 @@ func TestLocalRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
 	if result.Code != 0 {
 		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
 	}
-	if strings.Contains(stdout, "PERSIST_AUTH_TOKEN=") {
-		t.Fatalf("expected PERSIST_AUTH_TOKEN to be absent, got %q", stdout)
-	}
-	if strings.Contains(stdout, "SECRET_KEY=") {
-		t.Fatalf("expected SECRET_KEY to be absent, got %q", stdout)
-	}
+	// Local runtime inherits parent env AND adds extra vars.
 	if !strings.Contains(stdout, "VISIBLE_VAR=kept-local") {
 		t.Fatalf("expected explicit env to remain visible, got %q", stdout)
+	}
+	// Parent env should also be present (inherited).
+	if !strings.Contains(stdout, "HOME=") {
+		t.Fatalf("expected HOME to be inherited from parent, got %q", stdout)
 	}
 }
 

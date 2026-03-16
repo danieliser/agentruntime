@@ -17,7 +17,7 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	cmd := []string{"claude", "-p", prompt, "--output-format", "stream-json"}
+	cmd := []string{"claude", "-p", prompt, "--output-format", "stream-json", "--verbose"}
 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
