@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -528,12 +529,16 @@ func TestSessionLifecycle_ReplayOnReconnect(t *testing.T) {
 		if err := conn2.ReadJSON(&f); err != nil {
 			break
 		}
-		if f.Type == "replay" && strings.Contains(f.Data, "replay-this-output") {
-			gotReplay = true
+		if f.Type == "replay" {
+			// Replay data is base64-encoded; decode before checking content.
+			decoded, err := base64.StdEncoding.DecodeString(f.Data)
+			if err == nil && strings.Contains(string(decoded), "replay-this-output") {
+				gotReplay = true
+			}
 			break
 		}
 		if f.Type == "connected" {
-			// connected comes after replay — if we hit this without replay, check stopped
+			// connected comes after replay — no replay frame was sent
 			break
 		}
 	}

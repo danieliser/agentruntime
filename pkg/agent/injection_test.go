@@ -132,6 +132,32 @@ func TestBuildCmd_AllowedToolsShellEscapes_AllAgents(t *testing.T) {
 	}
 }
 
+func TestBuildCmd_EnvDoesNotLeakIntoCmd_AllAgents(t *testing.T) {
+	cfg := AgentConfig{
+		Env: map[string]string{
+			"DOCKER_ESCAPE": "\"; --privileged --entrypoint sh; $(uname); `id` #",
+			"JSON_PAYLOAD":  "{\"cmd\":\"$(touch /tmp/pwned)\"}",
+		},
+	}
+
+	for _, tc := range injectionAgentCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := tc.agent.BuildCmd("env should stay out of argv", cfg)
+			if err != nil {
+				t.Fatalf("BuildCmd returned error: %v", err)
+			}
+
+			for key, value := range cfg.Env {
+				assertArgAbsent(t, cmd, key)
+				assertArgAbsent(t, cmd, value)
+				assertArgAbsent(t, cmd, key+"="+value)
+			}
+
+			assertNoShC(t, cmd)
+		})
+	}
+}
+
 func TestBuildCmd_NeverUsesShC_AllAgents(t *testing.T) {
 	cfg := AgentConfig{
 		Model:        "--dangerous-flag",
@@ -237,6 +263,7 @@ func TestLocalRuntime_SpawnPreservesMaliciousEnv_AllAgents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildCmd returned error: %v", err)
 			}
+			assertArgAbsent(t, cmd, envValue)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -307,6 +334,16 @@ func assertArgPresentOnce(t *testing.T, cmd []string, want string) {
 
 	if count != 1 {
 		t.Fatalf("expected %q exactly once in cmd, got %d occurrences in %v", want, count, cmd)
+	}
+}
+
+func assertArgAbsent(t *testing.T, cmd []string, want string) {
+	t.Helper()
+
+	for _, arg := range cmd {
+		if arg == want {
+			t.Fatalf("did not expect %q in cmd %v", want, cmd)
+		}
 	}
 }
 
@@ -399,7 +436,7 @@ func waitForPSCommand(t *testing.T, pid int, want string) string {
 }
 
 func psCommandLine(pid int) (string, error) {
-	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return "", err
 	}
