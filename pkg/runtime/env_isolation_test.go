@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -340,7 +341,7 @@ func TestDockerRuntime_EmptyEnvMapDoesNotPanic(t *testing.T) {
 
 func TestDockerRuntime_BuildRunArgsKeepEnvFlagsAtomic(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
-	args, err := rt.buildRunArgs(SpawnConfig{
+	spec, err := rt.prepareRun(SpawnConfig{
 		Cmd: []string{"echo", "ok"},
 		Env: map[string]string{
 			"ALSO_SAFE": "value with spaces --privileged",
@@ -349,14 +350,26 @@ func TestDockerRuntime_BuildRunArgsKeepEnvFlagsAtomic(t *testing.T) {
 		TaskID: "docker-env-args",
 	})
 	if err != nil {
-		t.Fatalf("buildRunArgs failed: %v", err)
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	args := spec.args
+	envFile := flagValue(args, "--env-file")
+	if envFile == "" {
+		t.Fatalf("expected --env-file arg, got %v", args)
 	}
 
-	if !hasFlagValue(args, "-e", "ALSO_SAFE=value with spaces --privileged") {
-		t.Fatalf("expected atomic -e arg for ALSO_SAFE, got %v", args)
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
 	}
-	if !hasFlagValue(args, "-e", "SAFE=$(touch /tmp/pwned)") {
-		t.Fatalf("expected atomic -e arg for SAFE, got %v", args)
+
+	if !strings.Contains(string(data), "ALSO_SAFE=value with spaces --privileged\n") {
+		t.Fatalf("expected ALSO_SAFE in env file, got %q", string(data))
+	}
+	if !strings.Contains(string(data), "SAFE=$(touch /tmp/pwned)\n") {
+		t.Fatalf("expected SAFE in env file, got %q", string(data))
 	}
 	if containsArg(args, "--privileged") {
 		t.Fatalf("unexpected injected docker flag in args: %v", args)
@@ -462,6 +475,11 @@ func requireDocker(t *testing.T) {
 	if !dockerAvailable() {
 		t.Skip("Docker not available")
 	}
+}
+
+func dockerAvailable() bool {
+	cmd := exec.Command("docker", "info")
+	return cmd.Run() == nil
 }
 
 func dockerRuntimeForEnvTests() *DockerRuntime {

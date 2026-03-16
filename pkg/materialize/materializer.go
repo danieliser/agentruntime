@@ -12,19 +12,19 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/danieliser/agentruntime/pkg/api"
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 )
 
 // Result is the output of materializing agent config into a temp directory.
 type Result struct {
-	Mounts    []api.Mount
+	Mounts    []apischema.Mount
 	CleanupFn func()
 }
 
 // Materialize writes agent config files into a temp directory and returns mounts.
-func Materialize(req *api.SessionRequest, sessionID string) (*Result, error) {
+func Materialize(req *apischema.SessionRequest, sessionID string) (*Result, error) {
 	if req == nil {
-		req = &api.SessionRequest{}
+		req = &apischema.SessionRequest{}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "agentruntime-"+sessionIDPrefix(sessionID))
@@ -58,7 +58,7 @@ func Materialize(req *api.SessionRequest, sessionID string) (*Result, error) {
 	return result, nil
 }
 
-func materializeClaude(tmpDir string, req *api.SessionRequest, mounts *[]api.Mount) error {
+func materializeClaude(tmpDir string, req *apischema.SessionRequest, mounts *[]apischema.Mount) error {
 	claudeDir := filepath.Join(tmpDir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		return err
@@ -84,7 +84,7 @@ func materializeClaude(tmpDir string, req *api.SessionRequest, mounts *[]api.Mou
 		return err
 	}
 
-	*mounts = append(*mounts, api.Mount{
+	*mounts = append(*mounts, apischema.Mount{
 		Host:      claudeDir,
 		Container: "/root/.claude",
 		Mode:      "rw",
@@ -95,7 +95,7 @@ func materializeClaude(tmpDir string, req *api.SessionRequest, mounts *[]api.Mou
 		if err != nil {
 			return err
 		}
-		*mounts = append(*mounts, api.Mount{
+		*mounts = append(*mounts, apischema.Mount{
 			Host:      hostPath,
 			Container: "/root/.claude/credentials.json",
 			Mode:      "ro",
@@ -108,7 +108,7 @@ func materializeClaude(tmpDir string, req *api.SessionRequest, mounts *[]api.Mou
 			return err
 		}
 		hash := sha256.Sum256([]byte(hostPath))
-		*mounts = append(*mounts, api.Mount{
+		*mounts = append(*mounts, apischema.Mount{
 			Host:      hostPath,
 			Container: "/root/.claude/projects/" + hex.EncodeToString(hash[:])[:16],
 			Mode:      "ro",
@@ -118,7 +118,7 @@ func materializeClaude(tmpDir string, req *api.SessionRequest, mounts *[]api.Mou
 	return nil
 }
 
-func materializeCodex(tmpDir string, req *api.SessionRequest, mounts *[]api.Mount) error {
+func materializeCodex(tmpDir string, req *apischema.SessionRequest, mounts *[]apischema.Mount) error {
 	codexDir := filepath.Join(tmpDir, ".codex")
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
 		return err
@@ -140,7 +140,7 @@ func materializeCodex(tmpDir string, req *api.SessionRequest, mounts *[]api.Moun
 		return err
 	}
 
-	*mounts = append(*mounts, api.Mount{
+	*mounts = append(*mounts, apischema.Mount{
 		Host:      codexDir,
 		Container: "/root/.codex",
 		Mode:      "rw",
@@ -149,7 +149,7 @@ func materializeCodex(tmpDir string, req *api.SessionRequest, mounts *[]api.Moun
 	return nil
 }
 
-func buildClaudeMCPJSON(base map[string]any, servers []api.MCPServer) (map[string]any, error) {
+func buildClaudeMCPJSON(base map[string]any, servers []apischema.MCPServer) (map[string]any, error) {
 	merged, ok := cloneValue(base).(map[string]any)
 	if !ok || merged == nil {
 		merged = map[string]any{}
@@ -173,7 +173,7 @@ func buildClaudeMCPJSON(base map[string]any, servers []api.MCPServer) (map[strin
 	return resolved, nil
 }
 
-func mcpServerToMap(server api.MCPServer) map[string]any {
+func mcpServerToMap(server apischema.MCPServer) map[string]any {
 	out := map[string]any{
 		"type": server.Type,
 	}

@@ -5,6 +5,8 @@ package runtime
 import (
 	"context"
 	"io"
+
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 )
 
 // Runtime is the core abstraction for agent process execution. Each runtime
@@ -27,6 +29,9 @@ type Runtime interface {
 
 // SpawnConfig holds the parameters for spawning an agent process.
 type SpawnConfig struct {
+	// SessionID identifies the owning session and is used for container naming/labels.
+	SessionID string
+
 	// AgentName identifies the agent type ("claude", "codex", "opencode").
 	AgentName string
 
@@ -41,6 +46,10 @@ type SpawnConfig struct {
 
 	// TaskID is the unique identifier for this task, used for session naming.
 	TaskID string
+
+	// Request carries the full session request for runtimes that need mounts,
+	// container resources, or agent-config materialization.
+	Request *apischema.SessionRequest
 
 	// PTY requests a pseudo-terminal allocation. Not all runtimes support this.
 	PTY bool

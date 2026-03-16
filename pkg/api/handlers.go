@@ -77,11 +77,14 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	// Spawn the process.
 	ctx := context.Background()
 	handle, err := s.runtime.Spawn(ctx, runtime.SpawnConfig{
+		SessionID: sess.ID,
 		AgentName: req.Agent,
 		Cmd:       cmd,
 		Env:       req.Env,
 		WorkDir:   workDir,
 		TaskID:    req.TaskID,
+		Request:   &req,
+		PTY:       req.PTY,
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)

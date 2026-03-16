@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/danieliser/agentruntime/pkg/api"
+	api "github.com/danieliser/agentruntime/pkg/api/schema"
 )
 
 func TestMaterialize_ClaudeWritesSettingsJSON(t *testing.T) {

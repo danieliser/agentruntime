@@ -4,8 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/materialize"
 )
 
 // DockerConfig holds configuration for the Docker runtime.
@@ -23,16 +28,37 @@ type DockerConfig struct {
 // DockerRuntime spawns agent processes inside Docker containers using the
 // docker CLI. Containers are labeled with agentruntime.task_id for recovery.
 type DockerRuntime struct {
-	cfg DockerConfig
+	cfg          DockerConfig
+	materializer dockerMaterializer
 }
 
 // NewDockerRuntime creates a new Docker runtime with the given configuration.
 func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
-	return &DockerRuntime{cfg: cfg}
+	return &DockerRuntime{
+		cfg:          cfg,
+		materializer: dockerMaterializerFunc(materialize.Materialize),
+	}
 }
 
-// labelKey is the Docker label used to identify agentruntime containers.
-const labelKey = "agentruntime.task_id"
+const (
+	dockerTaskLabelKey    = "agentruntime.task_id"
+	dockerSessionLabelKey = "agentruntime.session_id"
+)
+
+type dockerMaterializer interface {
+	Materialize(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error)
+}
+
+type dockerMaterializerFunc func(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error)
+
+func (f dockerMaterializerFunc) Materialize(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error) {
+	return f(req, sessionID)
+}
+
+type dockerRunSpec struct {
+	args    []string
+	cleanup func()
+}
 
 func (r *DockerRuntime) Name() string { return "docker" }
 
@@ -42,32 +68,43 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	if len(cfg.Cmd) == 0 {
 		return nil, &SpawnError{Reason: "cmd is empty"}
 	}
-	if r.cfg.Image == "" {
-		return nil, &SpawnError{Reason: "no container image configured"}
-	}
-
-	args, err := r.buildRunArgs(cfg)
+	spec, err := r.prepareRun(cfg)
 	if err != nil {
-		return nil, &SpawnError{Reason: "env", Err: err}
+		return nil, &SpawnError{Reason: "docker run args", Err: err}
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", spec.args...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
 		return nil, &SpawnError{Reason: "stdin pipe", Err: err}
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
 		return nil, &SpawnError{Reason: "stdout pipe", Err: err}
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
 		return nil, &SpawnError{Reason: "stderr pipe", Err: err}
 	}
 
 	if err := cmd.Start(); err != nil {
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
 		return nil, &SpawnError{Reason: "docker run start", Err: err}
+	}
+	if spec.cleanup != nil {
+		defer spec.cleanup()
 	}
 
 	done := make(chan ExitResult, 1)
@@ -93,42 +130,197 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 }
 
 func (r *DockerRuntime) buildRunArgs(cfg SpawnConfig) ([]string, error) {
-	// Build docker run command.
-	args := []string{"run", "--rm", "-i"}
-
-	// Label for recovery.
-	taskID := cfg.TaskID
-	if taskID == "" {
-		taskID = "unknown"
-	}
-	args = append(args, "--label", fmt.Sprintf("%s=%s", labelKey, taskID))
-
-	// Working directory.
-	if cfg.WorkDir != "" {
-		args = append(args, "-w", cfg.WorkDir)
-	}
-
-	// Environment variables.
-	env, err := buildSpawnEnv(cfg.Env)
+	spec, err := r.prepareRun(cfg)
 	if err != nil {
 		return nil, err
 	}
-	for _, kv := range env {
-		args = append(args, "-e", kv)
+	if spec.cleanup != nil {
+		defer spec.cleanup()
+	}
+	return spec.args, nil
+}
+
+func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
+	req := cfg.Request
+	image := r.cfg.Image
+	if req != nil && req.Container != nil && req.Container.Image != "" {
+		image = req.Container.Image
+	}
+	if image == "" {
+		return nil, fmt.Errorf("no container image configured")
 	}
 
-	// Network.
-	if r.cfg.Network != "" {
-		args = append(args, "--network", r.cfg.Network)
+	cleanups := make([]func(), 0, 2)
+	cleanup := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			if cleanups[i] != nil {
+				cleanups[i]()
+			}
+		}
 	}
 
-	// Extra args.
+	mounts := requestMounts(cfg)
+	if req != nil && (req.Claude != nil || req.Codex != nil) {
+		result, err := r.materializer.Materialize(req, cfg.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		cleanups = append(cleanups, result.CleanupFn)
+		mounts = append(mounts, result.Mounts...)
+	}
+
+	envFile, err := writeDockerEnvFile(requestEnv(cfg))
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	cleanups = append(cleanups, func() {
+		_ = os.Remove(envFile)
+	})
+
+	args := []string{
+		"run",
+		"--rm",
+		"-i",
+		"--init",
+		"--cap-drop", "ALL",
+		"--cap-add", "DAC_OVERRIDE",
+		"--security-opt", "no-new-privileges:true",
+		"--label", fmt.Sprintf("%s=%s", dockerTaskLabelKey, dockerLabelValue(requestTaskID(cfg))),
+		"--label", fmt.Sprintf("%s=%s", dockerSessionLabelKey, dockerLabelValue(cfg.SessionID)),
+		"--name", dockerContainerName(cfg.SessionID),
+		"--workdir", "/workspace",
+		"--env-file", envFile,
+	}
+	if cfg.PTY || (req != nil && req.PTY) {
+		args = append(args, "-t")
+	}
+	for _, mount := range mounts {
+		args = append(args, "-v", formatDockerMount(mount))
+	}
+
+	network := r.cfg.Network
+	if req != nil && req.Container != nil {
+		if req.Container.Memory != "" {
+			args = append(args, "--memory", req.Container.Memory)
+		}
+		if req.Container.CPUs > 0 {
+			args = append(args, "--cpus", strconv.FormatFloat(req.Container.CPUs, 'f', -1, 64))
+		}
+		if req.Container.Network != "" {
+			network = req.Container.Network
+		}
+		for _, opt := range req.Container.SecurityOpt {
+			args = append(args, "--security-opt", opt)
+		}
+	}
+	if network != "" {
+		args = append(args, "--network", network)
+	}
+
 	args = append(args, r.cfg.ExtraArgs...)
-
-	// Image + command.
-	args = append(args, r.cfg.Image)
+	args = append(args, image)
 	args = append(args, cfg.Cmd...)
-	return args, nil
+
+	return &dockerRunSpec{
+		args:    args,
+		cleanup: cleanup,
+	}, nil
+}
+
+func requestEnv(cfg SpawnConfig) map[string]string {
+	if cfg.Request != nil {
+		return cfg.Request.Env
+	}
+	return cfg.Env
+}
+
+func requestTaskID(cfg SpawnConfig) string {
+	if cfg.TaskID != "" {
+		return cfg.TaskID
+	}
+	if cfg.Request != nil {
+		return cfg.Request.TaskID
+	}
+	return ""
+}
+
+func requestMounts(cfg SpawnConfig) []apischema.Mount {
+	if cfg.Request != nil {
+		return append([]apischema.Mount(nil), cfg.Request.EffectiveMounts()...)
+	}
+	if cfg.WorkDir == "" {
+		return nil
+	}
+	return []apischema.Mount{{
+		Host:      cfg.WorkDir,
+		Container: "/workspace",
+		Mode:      "rw",
+	}}
+}
+
+func formatDockerMount(mount apischema.Mount) string {
+	mode := mount.Mode
+	if mode == "" {
+		mode = "rw"
+	}
+	return fmt.Sprintf("%s:%s:%s", mount.Host, mount.Container, mode)
+}
+
+func writeDockerEnvFile(envMap map[string]string) (string, error) {
+	env, err := buildSpawnEnv(envMap)
+	if err != nil {
+		return "", err
+	}
+
+	file, err := os.CreateTemp("", "agentruntime-env-")
+	if err != nil {
+		return "", err
+	}
+
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+
+	contents := strings.Join(env, "\n")
+	if contents != "" {
+		contents += "\n"
+	}
+	if _, err := file.WriteString(contents); err != nil {
+		file.Close()
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+
+	return file.Name(), nil
+}
+
+func dockerContainerName(sessionID string) string {
+	prefix := sessionIDPrefix(sessionID)
+	if prefix == "" {
+		prefix = "unknown"
+	}
+	return "agentruntime-" + prefix
+}
+
+func dockerLabelValue(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func sessionIDPrefix(sessionID string) string {
+	if len(sessionID) <= 8 {
+		return sessionID
+	}
+	return sessionID[:8]
 }
 
 // Recover finds running containers with the agentruntime label and returns
@@ -136,7 +328,7 @@ func (r *DockerRuntime) buildRunArgs(cfg SpawnConfig) ([]string, error) {
 func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 	// List running containers with our label.
 	out, err := exec.CommandContext(ctx, "docker", "ps", "-q",
-		"--filter", fmt.Sprintf("label=%s", labelKey),
+		"--filter", fmt.Sprintf("label=%s", dockerTaskLabelKey),
 	).Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps: %w", err)
