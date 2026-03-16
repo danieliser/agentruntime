@@ -103,13 +103,17 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		}
 		return nil, &SpawnError{Reason: "docker run start", Err: err}
 	}
-	if spec.cleanup != nil {
-		defer spec.cleanup()
-	}
+	// NOTE: spec.cleanup (which removes the env-file and materialized config)
+	// must NOT run until after the container has started and read its files.
+	// We defer it to after cmd.Wait() completes in the goroutine below.
 
 	done := make(chan ExitResult, 1)
 	go func() {
 		waitErr := cmd.Wait()
+		// Now safe to clean up temp files — container has exited.
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
 		code := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
