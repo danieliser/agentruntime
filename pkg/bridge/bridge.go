@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"io"
@@ -16,11 +15,11 @@ import (
 )
 
 const (
-	pingInterval = 30 * time.Second
-	pongTimeout  = 10 * time.Second
-	writeTimeout = 5 * time.Second
-	readTimeout  = 60 * time.Second
-	maxOffset    = int64(^uint64(0) >> 1)
+	pingInterval  = 30 * time.Second
+	pongTimeout   = 10 * time.Second
+	writeTimeout  = 5 * time.Second
+	readTimeout   = 60 * time.Second
+	readChunkSize = 32 * 1024
 )
 
 // Bridge connects a ProcessHandle's stdio to a WebSocket connection,
@@ -124,7 +123,7 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 	b.stdinPump(ctx)
 
 	// On WS disconnect (stdinPump returned due to client close), cancel ctx and
-	// close pipes to unblock any blocked scanner.Scan() calls in the IO pumps.
+	// close pipes to unblock any blocked reads in the IO pumps.
 	cancel()
 	if stdout != nil {
 		stdout.Close()
@@ -135,34 +134,38 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 	allWg.Wait()
 }
 
-// readPump reads lines from a process stream and sends them as WS frames.
+// readPump reads bounded chunks from a process stream and sends them as WS frames.
 func (b *Bridge) readPump(ctx context.Context, reader io.Reader, frameType string) {
-	scanner := bufio.NewScanner(reader)
-	// Increase buffer size for agents that emit long lines (NDJSON).
-	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
-	for scanner.Scan() {
+	buf := make([]byte, readChunkSize)
+	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		line := scanner.Bytes()
-		lineWithNewline := append(append([]byte(nil), line...), '\n')
-		data := string(lineWithNewline)
-		if !utf8.Valid(lineWithNewline) {
-			data = base64.StdEncoding.EncodeToString(lineWithNewline)
+
+		n, err := reader.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			data := string(chunk)
+			if !utf8.Valid(chunk) {
+				data = base64.StdEncoding.EncodeToString(chunk)
+			}
+
+			// Write to replay buffer and get offset atomically.
+			_, offset := b.replay.WriteOffset(chunk)
+
+			// Send to WebSocket.
+			if err := b.writeJSON(ServerFrame{
+				Type:   frameType,
+				Data:   data,
+				Offset: offset,
+			}); err != nil {
+				return
+			}
 		}
 
-		// Write to replay buffer.
-		b.replay.Write(lineWithNewline)
-		_, offset := b.replay.ReadFrom(maxOffset)
-
-		// Send to WebSocket.
-		if err := b.writeJSON(ServerFrame{
-			Type:   frameType,
-			Data:   data,
-			Offset: offset,
-		}); err != nil {
+		if err != nil {
 			return
 		}
 	}
@@ -207,15 +210,15 @@ func (b *Bridge) stdinPump(ctx context.Context) {
 }
 
 // exitWatch waits for the process to exit, drains IO pumps, then sends the exit frame.
-// Closing stdout/stderr pipes unblocks any blocked scanner.Scan() in the read pumps.
+// Closing stdout/stderr pipes unblocks any blocked reads in the pumps.
 func (b *Bridge) exitWatch(ctx context.Context, ioPumpsWg *sync.WaitGroup, stdout, stderr io.ReadCloser) {
 	select {
 	case <-ctx.Done():
 		return
 	case result := <-b.handle.Wait():
 		// Process exited: its write-end of stdout/stderr pipes is closed by the OS.
-		// However, bufio.Scanner may still be blocked on an empty pipe. Close the
-		// read ends to unblock scanners immediately, then wait for pumps to drain.
+		// Close the read ends as well so any blocked reads unblock immediately
+		// before waiting for the pumps to drain.
 		if stdout != nil {
 			stdout.Close()
 		}
