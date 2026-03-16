@@ -46,37 +46,10 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		return nil, &SpawnError{Reason: "no container image configured"}
 	}
 
-	// Build docker run command.
-	args := []string{"run", "--rm", "-i"}
-
-	// Label for recovery.
-	taskID := cfg.TaskID
-	if taskID == "" {
-		taskID = "unknown"
+	args, err := r.buildRunArgs(cfg)
+	if err != nil {
+		return nil, &SpawnError{Reason: "env", Err: err}
 	}
-	args = append(args, "--label", fmt.Sprintf("%s=%s", labelKey, taskID))
-
-	// Working directory.
-	if cfg.WorkDir != "" {
-		args = append(args, "-w", cfg.WorkDir)
-	}
-
-	// Environment variables.
-	for k, v := range cfg.Env {
-		args = append(args, "-e", k+"="+v)
-	}
-
-	// Network.
-	if r.cfg.Network != "" {
-		args = append(args, "--network", r.cfg.Network)
-	}
-
-	// Extra args.
-	args = append(args, r.cfg.ExtraArgs...)
-
-	// Image + command.
-	args = append(args, r.cfg.Image)
-	args = append(args, cfg.Cmd...)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 
@@ -119,6 +92,45 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	}, nil
 }
 
+func (r *DockerRuntime) buildRunArgs(cfg SpawnConfig) ([]string, error) {
+	// Build docker run command.
+	args := []string{"run", "--rm", "-i"}
+
+	// Label for recovery.
+	taskID := cfg.TaskID
+	if taskID == "" {
+		taskID = "unknown"
+	}
+	args = append(args, "--label", fmt.Sprintf("%s=%s", labelKey, taskID))
+
+	// Working directory.
+	if cfg.WorkDir != "" {
+		args = append(args, "-w", cfg.WorkDir)
+	}
+
+	// Environment variables.
+	env, err := buildSpawnEnv(cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	for _, kv := range env {
+		args = append(args, "-e", kv)
+	}
+
+	// Network.
+	if r.cfg.Network != "" {
+		args = append(args, "--network", r.cfg.Network)
+	}
+
+	// Extra args.
+	args = append(args, r.cfg.ExtraArgs...)
+
+	// Image + command.
+	args = append(args, r.cfg.Image)
+	args = append(args, cfg.Cmd...)
+	return args, nil
+}
+
 // Recover finds running containers with the agentruntime label and returns
 // handles to them. This enables session recovery after daemon restarts.
 func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
@@ -153,9 +165,9 @@ type dockerHandle struct {
 	done   chan ExitResult
 }
 
-func (h *dockerHandle) Stdin() io.WriteCloser  { return h.stdin }
-func (h *dockerHandle) Stdout() io.ReadCloser  { return h.stdout }
-func (h *dockerHandle) Stderr() io.ReadCloser  { return h.stderr }
+func (h *dockerHandle) Stdin() io.WriteCloser   { return h.stdin }
+func (h *dockerHandle) Stdout() io.ReadCloser   { return h.stdout }
+func (h *dockerHandle) Stderr() io.ReadCloser   { return h.stderr }
 func (h *dockerHandle) Wait() <-chan ExitResult { return h.done }
 
 func (h *dockerHandle) Kill() error {
@@ -178,10 +190,10 @@ type recoveredDockerHandle struct {
 	containerID string
 }
 
-func (h *recoveredDockerHandle) Stdin() io.WriteCloser  { return nil }
-func (h *recoveredDockerHandle) Stdout() io.ReadCloser  { return nil }
-func (h *recoveredDockerHandle) Stderr() io.ReadCloser  { return nil }
-func (h *recoveredDockerHandle) PID() int               { return 0 }
+func (h *recoveredDockerHandle) Stdin() io.WriteCloser { return nil }
+func (h *recoveredDockerHandle) Stdout() io.ReadCloser { return nil }
+func (h *recoveredDockerHandle) Stderr() io.ReadCloser { return nil }
+func (h *recoveredDockerHandle) PID() int              { return 0 }
 
 func (h *recoveredDockerHandle) Wait() <-chan ExitResult {
 	// Recovered containers need explicit management.

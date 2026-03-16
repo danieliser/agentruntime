@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"io"
-	"os"
 	"os/exec"
 )
 
@@ -26,11 +25,11 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 	cmd := exec.CommandContext(ctx, cfg.Cmd[0], cfg.Cmd[1:]...)
 	cmd.Dir = cfg.WorkDir
 
-	// Merge environment: inherit current env + overrides.
-	cmd.Env = os.Environ()
-	for k, v := range cfg.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	env, err := buildSpawnEnv(cfg.Env)
+	if err != nil {
+		return nil, &SpawnError{Reason: "env", Err: err}
 	}
+	cmd.Env = env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -85,9 +84,9 @@ type localHandle struct {
 	done   chan ExitResult
 }
 
-func (h *localHandle) Stdin() io.WriteCloser  { return h.stdin }
-func (h *localHandle) Stdout() io.ReadCloser  { return h.stdout }
-func (h *localHandle) Stderr() io.ReadCloser  { return h.stderr }
+func (h *localHandle) Stdin() io.WriteCloser   { return h.stdin }
+func (h *localHandle) Stdout() io.ReadCloser   { return h.stdout }
+func (h *localHandle) Stderr() io.ReadCloser   { return h.stderr }
 func (h *localHandle) Wait() <-chan ExitResult { return h.done }
 
 func (h *localHandle) Kill() error {
