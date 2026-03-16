@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -272,6 +273,10 @@ func formatDockerMount(mount apischema.Mount) string {
 }
 
 func writeDockerEnvFile(envMap map[string]string) (string, error) {
+	if err := validateDockerEnvValues(envMap); err != nil {
+		return "", err
+	}
+
 	env, err := buildSpawnEnv(envMap)
 	if err != nil {
 		return "", err
@@ -303,6 +308,30 @@ func writeDockerEnvFile(envMap map[string]string) (string, error) {
 	}
 
 	return file.Name(), nil
+}
+
+func validateDockerEnvValues(envMap map[string]string) error {
+	if len(envMap) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(envMap))
+	for key := range envMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		value := envMap[key]
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("invalid env value for %q: must not contain newlines", key)
+		}
+		if strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("invalid env value for %q: must not contain NUL", key)
+		}
+	}
+
+	return nil
 }
 
 func dockerContainerName(sessionID string) string {
