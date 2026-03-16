@@ -18,6 +18,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "dispatch" {
+		os.Exit(runDispatchCommand(os.Args[2:]))
+	}
+
 	port := flag.Int("port", 8090, "HTTP server port")
 	rtName := flag.String("runtime", "local", "Execution runtime (local, docker, opensandbox)")
 	flag.Parse()

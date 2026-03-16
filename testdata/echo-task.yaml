@@ -1,0 +1,3 @@
+agent: echo-test
+prompt: "hello from yaml"
+work_dir: /tmp
