@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,19 @@ func decodeJSON(t *testing.T, r io.Reader, v any) {
 	}
 }
 
+func mustCreateSession(t *testing.T, ts *httptest.Server, req SessionRequest) SessionResponse {
+	t.Helper()
+	resp := post(t, ts, "/sessions", req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create session: expected 201, got %d body=%s", resp.StatusCode, string(body))
+	}
+	var created SessionResponse
+	decodeJSON(t, resp.Body, &created)
+	return created
+}
+
 // --- health ---
 
 func TestHealth(t *testing.T) {
@@ -151,31 +165,31 @@ func TestHealth(t *testing.T) {
 
 func TestCreateSession_Success(t *testing.T) {
 	ts, _ := newTestServer(t)
-	resp := post(t, ts, "/sessions", CreateSessionRequest{
+	body := mustCreateSession(t, ts, SessionRequest{
 		Agent:  "echo-test",
 		Prompt: "hello",
 	})
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
-	var body map[string]any
-	decodeJSON(t, resp.Body, &body)
-	if body["id"] == "" {
+	if body.SessionID == "" {
 		t.Fatal("expected non-empty session id")
 	}
-	if body["state"] != string(session.StateRunning) {
-		t.Fatalf("expected state 'running', got %v", body["state"])
+	if body.Status != string(session.StateRunning) {
+		t.Fatalf("expected status 'running', got %v", body.Status)
 	}
-	if body["agent"] != "echo-test" {
-		t.Fatalf("expected agent 'echo-test', got %v", body["agent"])
+	if body.Agent != "echo-test" {
+		t.Fatalf("expected agent 'echo-test', got %v", body.Agent)
+	}
+	if !strings.Contains(body.WSURL, "/ws/sessions/"+body.SessionID) {
+		t.Fatalf("expected ws_url to include session path, got %q", body.WSURL)
+	}
+	if !strings.Contains(body.LogURL, "/sessions/"+body.SessionID+"/logs") {
+		t.Fatalf("expected log_url to include logs path, got %q", body.LogURL)
 	}
 }
 
 func TestCreateSession_UnknownAgent(t *testing.T) {
 	ts, _ := newTestServer(t)
-	resp := post(t, ts, "/sessions", CreateSessionRequest{
+	resp := post(t, ts, "/sessions", SessionRequest{
 		Agent:  "does-not-exist",
 		Prompt: "hello",
 	})
@@ -247,11 +261,8 @@ func TestGetSession_Found(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	// Create a session first.
-	resp := post(t, ts, "/sessions", CreateSessionRequest{Agent: "echo-test", Prompt: "hi"})
-	defer resp.Body.Close()
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "echo-test", Prompt: "hi"})
+	id := created.SessionID
 
 	// Get it back.
 	resp2 := get(t, ts, "/sessions/"+id)
@@ -263,6 +274,143 @@ func TestGetSession_Found(t *testing.T) {
 	decodeJSON(t, resp2.Body, &body)
 	if body["id"] != id {
 		t.Fatalf("expected id %q, got %v", id, body["id"])
+	}
+}
+
+func TestListSessions_Empty(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp := get(t, ts, "/sessions")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var summaries []SessionSummary
+	decodeJSON(t, resp.Body, &summaries)
+	if len(summaries) != 0 {
+		t.Fatalf("expected empty list, got %d entries", len(summaries))
+	}
+}
+
+func TestListSessions_WithSessions(t *testing.T) {
+	ts, srv := newTestServer(t)
+
+	sess1 := session.NewSession("task-1", "echo-test", "test", map[string]string{"suite": "api"})
+	sess2 := session.NewSession("task-2", "cat-test", "test", map[string]string{"suite": "api", "kind": "interactive"})
+	if err := srv.sessions.Add(sess1); err != nil {
+		t.Fatalf("add session 1: %v", err)
+	}
+	if err := srv.sessions.Add(sess2); err != nil {
+		t.Fatalf("add session 2: %v", err)
+	}
+
+	resp := get(t, ts, "/sessions")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var summaries []SessionSummary
+	decodeJSON(t, resp.Body, &summaries)
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(summaries))
+	}
+
+	byID := make(map[string]SessionSummary, len(summaries))
+	for _, summary := range summaries {
+		byID[summary.SessionID] = summary
+	}
+
+	if got := byID[sess1.ID]; got.TaskID != "task-1" || got.Agent != "echo-test" || got.Runtime != "test" {
+		t.Fatalf("unexpected session 1 summary: %+v", got)
+	}
+	if got := byID[sess2.ID]; got.TaskID != "task-2" || got.Tags["kind"] != "interactive" {
+		t.Fatalf("unexpected session 2 summary: %+v", got)
+	}
+}
+
+func TestGetLogs_ReturnsBufferedOutput(t *testing.T) {
+	ts, srv := newTestServer(t)
+
+	sess := session.NewSession("task-logs", "echo-test", "test")
+	if err := srv.sessions.Add(sess); err != nil {
+		t.Fatalf("add session: %v", err)
+	}
+	payload := []byte("hello\nworld\n")
+	_, nextOffset := sess.Replay.WriteOffset(payload)
+
+	resp := get(t, ts, "/sessions/"+sess.ID+"/logs")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != string(payload) {
+		t.Fatalf("expected %q, got %q", string(payload), string(body))
+	}
+	if got := resp.Header.Get("Agentruntime-Log-Cursor"); got != strconv.FormatInt(nextOffset, 10) {
+		t.Fatalf("expected cursor %d, got %q", nextOffset, got)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/plain" {
+		t.Fatalf("expected text/plain content type, got %q", ct)
+	}
+}
+
+func TestGetLogs_CursorAdvances(t *testing.T) {
+	ts, srv := newTestServer(t)
+
+	sess := session.NewSession("task-logs", "echo-test", "test")
+	if err := srv.sessions.Add(sess); err != nil {
+		t.Fatalf("add session: %v", err)
+	}
+	payload := []byte("buffered output")
+	_, nextOffset := sess.Replay.WriteOffset(payload)
+
+	resp1 := get(t, ts, "/sessions/"+sess.ID+"/logs?cursor=0")
+	defer resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first request expected 200, got %d", resp1.StatusCode)
+	}
+	body1, err := io.ReadAll(resp1.Body)
+	if err != nil {
+		t.Fatalf("read first body: %v", err)
+	}
+	if string(body1) != string(payload) {
+		t.Fatalf("expected first body %q, got %q", string(payload), string(body1))
+	}
+	cursor := resp1.Header.Get("Agentruntime-Log-Cursor")
+	if cursor != strconv.FormatInt(nextOffset, 10) {
+		t.Fatalf("expected cursor %d, got %q", nextOffset, cursor)
+	}
+
+	resp2 := get(t, ts, "/sessions/"+sess.ID+"/logs?cursor="+cursor)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second request expected 200, got %d", resp2.StatusCode)
+	}
+	body2, err := io.ReadAll(resp2.Body)
+	if err != nil {
+		t.Fatalf("read second body: %v", err)
+	}
+	if len(body2) != 0 {
+		t.Fatalf("expected empty second body, got %q", string(body2))
+	}
+	if got := resp2.Header.Get("Agentruntime-Log-Cursor"); got != cursor {
+		t.Fatalf("expected cursor to remain %q, got %q", cursor, got)
+	}
+}
+
+func TestGetLogs_NotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp := get(t, ts, "/sessions/does-not-exist/logs")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
 
@@ -285,14 +433,8 @@ func TestDeleteSession_KillsProcess(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	// Create a session that would run forever.
-	resp := post(t, ts, "/sessions", CreateSessionRequest{Agent: "sleep-test", Prompt: "ignored"})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create session: expected 201, got %d", resp.StatusCode)
-	}
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "sleep-test", Prompt: "ignored"})
+	id := created.SessionID
 
 	// Kill it.
 	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/sessions/"+id, nil)
@@ -334,17 +476,11 @@ func TestSessionLifecycle_EchoViaWS(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	// 1. Create session.
-	resp := post(t, ts, "/sessions", CreateSessionRequest{
+	created := mustCreateSession(t, ts, SessionRequest{
 		Agent:  "echo-test",
 		Prompt: "hello from agent",
 	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create session: expected 201, got %d", resp.StatusCode)
-	}
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	id := created.SessionID
 
 	// 2. Connect WebSocket.
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
@@ -414,17 +550,11 @@ func TestSessionLifecycle_StdinSteering(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	// Create cat session (reads stdin, echoes to stdout).
-	resp := post(t, ts, "/sessions", CreateSessionRequest{
+	created := mustCreateSession(t, ts, SessionRequest{
 		Agent:  "cat-test",
 		Prompt: "unused",
 	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create session: expected 201, got %d", resp.StatusCode)
-	}
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	id := created.SessionID
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -488,14 +618,11 @@ func TestSessionLifecycle_ReplayOnReconnect(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	// Create and run a session to completion.
-	resp := post(t, ts, "/sessions", CreateSessionRequest{
+	created := mustCreateSession(t, ts, SessionRequest{
 		Agent:  "echo-test",
 		Prompt: "replay-this-output",
 	})
-	defer resp.Body.Close()
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	id := created.SessionID
 
 	// First connection — drain until exit so replay buffer is populated.
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
@@ -552,11 +679,8 @@ func TestSessionLifecycle_ReplayOnReconnect(t *testing.T) {
 func TestSessionLifecycle_AppLevelPingPong(t *testing.T) {
 	ts, _ := newTestServer(t)
 
-	resp := post(t, ts, "/sessions", CreateSessionRequest{Agent: "cat-test", Prompt: "x"})
-	defer resp.Body.Close()
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Prompt: "x"})
+	id := created.SessionID
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -588,11 +712,8 @@ func TestSessionLifecycle_AppLevelPingPong(t *testing.T) {
 func TestSessionLifecycle_UnknownFrameType(t *testing.T) {
 	ts, _ := newTestServer(t)
 
-	resp := post(t, ts, "/sessions", CreateSessionRequest{Agent: "cat-test", Prompt: "x"})
-	defer resp.Body.Close()
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Prompt: "x"})
+	id := created.SessionID
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -637,11 +758,8 @@ func TestConcurrentSessions(t *testing.T) {
 		prompt := prompt
 		go func() {
 			// Create.
-			resp := post(t, ts, "/sessions", CreateSessionRequest{Agent: "echo-test", Prompt: prompt})
-			var created map[string]any
-			decodeJSON(t, resp.Body, &created)
-			resp.Body.Close()
-			id := created["id"].(string)
+			created := mustCreateSession(t, ts, SessionRequest{Agent: "echo-test", Prompt: prompt})
+			id := created.SessionID
 
 			// Connect WS and collect stdout.
 			wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
@@ -695,11 +813,8 @@ func TestConcurrentSessions(t *testing.T) {
 func TestSessionState_TransitionsToCompleted(t *testing.T) {
 	ts, _ := newTestServer(t)
 
-	resp := post(t, ts, "/sessions", CreateSessionRequest{Agent: "echo-test", Prompt: "bye"})
-	defer resp.Body.Close()
-	var created map[string]any
-	decodeJSON(t, resp.Body, &created)
-	id := created["id"].(string)
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "echo-test", Prompt: "bye"})
+	id := created.SessionID
 
 	// Wait for process to exit (echo exits immediately).
 	deadline := time.Now().Add(5 * time.Second)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"time"
 
@@ -22,16 +24,6 @@ var wsUpgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
-// CreateSessionRequest is the JSON body for POST /sessions.
-type CreateSessionRequest struct {
-	Agent   string            `json:"agent" binding:"required"`
-	Prompt  string            `json:"prompt" binding:"required"`
-	TaskID  string            `json:"task_id,omitempty"`
-	WorkDir string            `json:"work_dir,omitempty"`
-	Model   string            `json:"model,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-}
-
 func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
@@ -40,11 +32,22 @@ func (s *Server) handleHealth(c *gin.Context) {
 }
 
 func (s *Server) handleCreateSession(c *gin.Context) {
-	var req CreateSessionRequest
+	var req SessionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if req.Agent == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent is required"})
+		return
+	}
+	if req.Prompt == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
+		return
+	}
+
+	mounts := req.EffectiveMounts()
+	workDir := effectiveWorkDir(req.WorkDir, mounts)
 
 	// Look up the agent.
 	ag := s.agents.Get(req.Agent)
@@ -55,8 +58,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 
 	// Build the command.
 	agCfg := agent.AgentConfig{
-		Model:   req.Model,
-		WorkDir: req.WorkDir,
+		WorkDir: workDir,
 		Env:     req.Env,
 	}
 	cmd, err := ag.BuildCmd(req.Prompt, agCfg)
@@ -66,7 +68,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	}
 
 	// Create the session.
-	sess := session.NewSession(req.TaskID, req.Agent, s.runtime.Name())
+	sess := session.NewSession(req.TaskID, req.Agent, s.runtime.Name(), req.Tags)
 	if err := s.sessions.Add(sess); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -78,7 +80,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		AgentName: req.Agent,
 		Cmd:       cmd,
 		Env:       req.Env,
-		WorkDir:   req.WorkDir,
+		WorkDir:   workDir,
 		TaskID:    req.TaskID,
 	})
 	if err != nil {
@@ -98,12 +100,39 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	// Snapshot after SetRunning — the goroutine hasn't had a chance to call
 	// SetCompleted yet, but we use Snapshot for correctness with the race detector.
 	snap := sess.Snapshot()
-	c.JSON(http.StatusCreated, gin.H{
-		"id":      snap.ID,
-		"state":   snap.State,
-		"agent":   snap.AgentName,
-		"runtime": snap.RuntimeName,
+	c.JSON(http.StatusCreated, SessionResponse{
+		SessionID: snap.ID,
+		TaskID:    snap.TaskID,
+		Agent:     snap.AgentName,
+		Runtime:   snap.RuntimeName,
+		Status:    string(snap.State),
+		WSURL:     websocketScheme(c) + "://" + c.Request.Host + "/ws/sessions/" + url.PathEscape(snap.ID),
+		LogURL:    httpScheme(c) + "://" + c.Request.Host + "/sessions/" + url.PathEscape(snap.ID) + "/logs",
 	})
+}
+
+func (s *Server) handleListSessions(c *gin.Context) {
+	sessions := s.sessions.List()
+	summaries := make([]SessionSummary, 0, len(sessions))
+	for _, sess := range sessions {
+		snap := sess.Snapshot()
+		summaries = append(summaries, SessionSummary{
+			SessionID: snap.ID,
+			TaskID:    snap.TaskID,
+			Agent:     snap.AgentName,
+			Runtime:   snap.RuntimeName,
+			Status:    string(snap.State),
+			CreatedAt: snap.CreatedAt,
+			Tags:      snap.Tags,
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].CreatedAt.Equal(summaries[j].CreatedAt) {
+			return summaries[i].SessionID < summaries[j].SessionID
+		}
+		return summaries[i].CreatedAt.Before(summaries[j].CreatedAt)
+	})
+	c.JSON(http.StatusOK, summaries)
 }
 
 func (s *Server) handleGetSession(c *gin.Context) {
@@ -125,6 +154,28 @@ func (s *Server) handleDeleteSession(c *gin.Context) {
 	sess.SetCompleted(-1)
 	snap := sess.Snapshot()
 	c.JSON(http.StatusOK, gin.H{"id": snap.ID, "state": snap.State})
+}
+
+func (s *Server) handleGetLogs(c *gin.Context) {
+	sess := s.sessions.Get(c.Param("id"))
+	if sess == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	cursor := int64(0)
+	if cursorStr := c.Query("cursor"); cursorStr != "" {
+		parsed, err := strconv.ParseInt(cursorStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cursor"})
+			return
+		}
+		cursor = parsed
+	}
+
+	data, nextOffset := sess.Replay.ReadFrom(cursor)
+	c.Header("Agentruntime-Log-Cursor", strconv.FormatInt(nextOffset, 10))
+	c.Data(http.StatusOK, "text/plain", data)
 }
 
 func (s *Server) handleSessionWS(c *gin.Context) {
@@ -158,3 +209,31 @@ func (s *Server) handleSessionWS(c *gin.Context) {
 	b.Run(ctx, sess.ID, sinceOffset)
 }
 
+func effectiveWorkDir(workDir string, mounts []Mount) string {
+	if workDir != "" {
+		return workDir
+	}
+	for _, mount := range mounts {
+		if mount.Mode != "ro" && mount.Host != "" {
+			return mount.Host
+		}
+	}
+	if len(mounts) > 0 {
+		return mounts[0].Host
+	}
+	return ""
+}
+
+func httpScheme(c *gin.Context) string {
+	if c.Request.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func websocketScheme(c *gin.Context) string {
+	if c.Request.TLS != nil {
+		return "wss"
+	}
+	return "ws"
+}

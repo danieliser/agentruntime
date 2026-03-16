@@ -29,6 +29,7 @@ type Session struct {
 	TaskID      string                `json:"task_id,omitempty"`
 	AgentName   string                `json:"agent_name"`
 	RuntimeName string                `json:"runtime_name"`
+	Tags        map[string]string     `json:"tags,omitempty"`
 	State       State                 `json:"state"`
 	ExitCode    *int                  `json:"exit_code,omitempty"`
 	CreatedAt   time.Time             `json:"created_at"`
@@ -40,12 +41,17 @@ type Session struct {
 }
 
 // NewSession creates a session in the Pending state.
-func NewSession(taskID, agentName, runtimeName string) *Session {
+func NewSession(taskID, agentName, runtimeName string, tags ...map[string]string) *Session {
+	var sessionTags map[string]string
+	if len(tags) > 0 {
+		sessionTags = cloneTags(tags[0])
+	}
 	return &Session{
 		ID:          uuid.New().String(),
 		TaskID:      taskID,
 		AgentName:   agentName,
 		RuntimeName: runtimeName,
+		Tags:        sessionTags,
 		State:       StatePending,
 		CreatedAt:   time.Now(),
 		Replay:      newLazyReplayBuffer(0),
@@ -95,11 +101,23 @@ func (s *Session) Snapshot() Session {
 		TaskID:      s.TaskID,
 		AgentName:   s.AgentName,
 		RuntimeName: s.RuntimeName,
+		Tags:        cloneTags(s.Tags),
 		State:       s.State,
 		ExitCode:    s.ExitCode,
 		CreatedAt:   s.CreatedAt,
 		EndedAt:     s.EndedAt,
 	}
+}
+
+func cloneTags(tags map[string]string) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(tags))
+	for key, value := range tags {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // Manager is a thread-safe registry of active sessions.
