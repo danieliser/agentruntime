@@ -209,6 +209,22 @@ func (s *sidecar) startProcess() error {
 		return err
 	}
 
+	// Close stdin for prompt-mode agents (claude -p). They wait for EOF
+	// before processing. Interactive agents get stdin kept open — the WS
+	// readLoop routes stdin frames to the process.
+	// Heuristic: if the command contains "-p", it's prompt mode.
+	isPromptMode := false
+	for _, arg := range s.cmd {
+		if arg == "-p" || arg == "--print" {
+			isPromptMode = true
+			break
+		}
+	}
+	if isPromptMode {
+		stdin.Close()
+		stdin = nil
+	}
+
 	s.mu.Lock()
 	s.process = cmd
 	s.stdin = stdin

@@ -130,10 +130,10 @@ func TestDockerRecover_PrefersSidecarWhenAvailable(t *testing.T) {
 set -eu
 case "$1" in
   ps)
-    printf '%s\n' 'container-123'
+    printf '%%s\n' 'container-123'
     ;;
   inspect)
-    printf '%s\n' '{"agentruntime.session_id":"sess-sidecar","agentruntime.task_id":"task-sidecar"}'
+    printf '%%s\n' '{"agentruntime.session_id":"sess-sidecar","agentruntime.task_id":"task-sidecar"}'
     ;;
   port)
     printf '0.0.0.0:%s\n'
