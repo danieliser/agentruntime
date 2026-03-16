@@ -26,11 +26,11 @@ func TestMaterialize_CredentialsPathTraversalContained(t *testing.T) {
 	defer result.CleanupFn()
 
 	// No separate credentials mount should exist.
-	if hasMount(result.Mounts, "/root/.claude/credentials.json") {
+	if hasMount(result.Mounts, "/home/agent/.claude/credentials.json") {
 		t.Fatal("traversal credentials path should not produce a separate mount")
 	}
 	// The session dir mount should exist.
-	claudeMount := findMount(t, result.Mounts, "/root/.claude")
+	claudeMount := findMount(t, result.Mounts, "/home/agent/.claude")
 	// Credentials should NOT have been copied (source doesn't exist).
 	for _, name := range []string{"credentials.json", ".credentials.json"} {
 		if _, err := os.Stat(filepath.Join(claudeMount.Host, name)); err == nil {
@@ -79,7 +79,7 @@ func TestMaterialize_DeeplyNestedSettingsJSON(t *testing.T) {
 	defer result.CleanupFn()
 
 	var got map[string]any
-	readJSONFile(t, filepath.Join(findMount(t, result.Mounts, "/root/.claude").Host, "settings.json"), &got)
+	readJSONFile(t, filepath.Join(findMount(t, result.Mounts, "/home/agent/.claude").Host, "settings.json"), &got)
 
 	currentValue := any(got)
 	for i := 0; i < 100; i++ {
@@ -109,7 +109,7 @@ func TestMaterialize_LargeClaudeMDWrittenWithoutTruncation(t *testing.T) {
 	}, "session-12345678")
 	defer result.CleanupFn()
 
-	data, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/root/.claude").Host, "CLAUDE.md"))
+	data, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/home/agent/.claude").Host, "CLAUDE.md"))
 	if err != nil {
 		t.Fatalf("read CLAUDE.md: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestMaterialize_ConcurrentCallsUseUniqueTempDirs(t *testing.T) {
 
 			var claudeHost string
 			for _, mount := range result.Mounts {
-				if mount.Container == "/root/.claude" {
+				if mount.Container == "/home/agent/.claude" {
 					claudeHost = mount.Host
 					break
 				}
@@ -250,7 +250,7 @@ func TestMaterialize_SessionIDWithPathSeparatorsUsesSafeTempDirName(t *testing.T
 	}, "../../../tmp/evil")
 	defer result.CleanupFn()
 
-	rootDir := filepath.Dir(findMount(t, result.Mounts, "/root/.claude").Host)
+	rootDir := filepath.Dir(findMount(t, result.Mounts, "/home/agent/.claude").Host)
 	base := filepath.Base(rootDir)
 	if strings.Contains(base, "/") || strings.Contains(base, `\`) {
 		t.Fatalf("expected temp dir basename to avoid path separators, got %q", base)
@@ -277,8 +277,8 @@ func TestMaterialize_ClaudeAndCodexMaterializeIndependently(t *testing.T) {
 	}, "session-12345678")
 	defer result.CleanupFn()
 
-	claudeMount := findMount(t, result.Mounts, "/root/.claude")
-	codexMount := findMount(t, result.Mounts, "/root/.codex")
+	claudeMount := findMount(t, result.Mounts, "/home/agent/.claude")
+	codexMount := findMount(t, result.Mounts, "/home/agent/.codex")
 
 	claudeData, err := os.ReadFile(filepath.Join(claudeMount.Host, "CLAUDE.md"))
 	if err != nil {
@@ -334,7 +334,7 @@ func TestMaterialize_EmptySettingsJSONWritesEmptyObject(t *testing.T) {
 	}, "session-12345678")
 	defer result.CleanupFn()
 
-	data, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/root/.claude").Host, "settings.json"))
+	data, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/home/agent/.claude").Host, "settings.json"))
 	if err != nil {
 		t.Fatalf("read settings.json: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestMaterialize_CleanupFnCanBeCalledTwice(t *testing.T) {
 		Claude: &apischema.ClaudeConfig{},
 	}, "session-12345678")
 
-	rootDir := filepath.Dir(findMount(t, result.Mounts, "/root/.claude").Host)
+	rootDir := filepath.Dir(findMount(t, result.Mounts, "/home/agent/.claude").Host)
 	result.CleanupFn()
 	result.CleanupFn()
 
@@ -360,7 +360,7 @@ func TestMaterialize_CleanupFnCanBeCalledTwice(t *testing.T) {
 func findProjectMount(t *testing.T, mounts []apischema.Mount) apischema.Mount {
 	t.Helper()
 	for _, mount := range mounts {
-		if strings.HasPrefix(mount.Container, "/root/.claude/projects/") {
+		if strings.HasPrefix(mount.Container, "/home/agent/.claude/projects/") {
 			return mount
 		}
 	}
@@ -372,7 +372,7 @@ func readMCPServers(t *testing.T, result *Result) map[string]any {
 	t.Helper()
 
 	var payload map[string]any
-	readJSONFile(t, filepath.Join(findMount(t, result.Mounts, "/root/.claude").Host, ".mcp.json"), &payload)
+	readJSONFile(t, filepath.Join(findMount(t, result.Mounts, "/home/agent/.claude").Host, ".mcp.json"), &payload)
 
 	servers, ok := payload["mcpServers"].(map[string]any)
 	if !ok {
@@ -419,7 +419,7 @@ func TestMaterialize_MCPServerTokenJSONRemainsObjectSafe(t *testing.T) {
 	}, "session-12345678")
 	defer result.CleanupFn()
 
-	data, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/root/.claude").Host, ".mcp.json"))
+	data, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/home/agent/.claude").Host, ".mcp.json"))
 	if err != nil {
 		t.Fatalf("read .mcp.json: %v", err)
 	}

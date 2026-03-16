@@ -99,7 +99,7 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 
 	*mounts = append(*mounts, apischema.Mount{
 		Host:      claudeDir,
-		Container: "/root/.claude",
+		Container: "/home/agent/.claude",
 		Mode:      "rw",
 	})
 
@@ -111,7 +111,7 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 		hash := sha256.Sum256([]byte(hostPath))
 		*mounts = append(*mounts, apischema.Mount{
 			Host:      hostPath,
-			Container: "/root/.claude/projects/" + hex.EncodeToString(hash[:])[:16],
+			Container: "/home/agent/.claude/projects/" + hex.EncodeToString(hash[:])[:16],
 			Mode:      "ro",
 		})
 	}
@@ -143,7 +143,7 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 
 	*mounts = append(*mounts, apischema.Mount{
 		Host:      codexDir,
-		Container: "/root/.codex",
+		Container: "/home/agent/.codex",
 		Mode:      "rw",
 	})
 

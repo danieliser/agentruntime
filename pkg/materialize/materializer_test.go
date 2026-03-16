@@ -156,7 +156,7 @@ func TestMaterialize_CredentialsCopiedIntoSessionDir(t *testing.T) {
 	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
-	mount := findMount(t, result.Mounts, "/root/.claude")
+	mount := findMount(t, result.Mounts, "/home/agent/.claude")
 	for _, name := range []string{"credentials.json", ".credentials.json"} {
 		data, err := os.ReadFile(filepath.Join(mount.Host, name))
 		if err != nil {
@@ -166,7 +166,7 @@ func TestMaterialize_CredentialsCopiedIntoSessionDir(t *testing.T) {
 			t.Fatalf("unexpected credentials in %s: %q", name, string(data))
 		}
 	}
-	if hasMount(result.Mounts, "/root/.claude/credentials.json") {
+	if hasMount(result.Mounts, "/home/agent/.claude/credentials.json") {
 		t.Fatal("expected credentials to be copied into the Claude session dir, not mounted separately")
 	}
 }
@@ -187,7 +187,7 @@ func TestMaterialize_MemoryPathMounted(t *testing.T) {
 	defer result.CleanupFn()
 
 	hash := sha256.Sum256([]byte(memoryDir))
-	wantContainer := "/root/.claude/projects/" + hex.EncodeToString(hash[:])[:16]
+	wantContainer := "/home/agent/.claude/projects/" + hex.EncodeToString(hash[:])[:16]
 	mount := findMount(t, result.Mounts, wantContainer)
 	if mount.Mode != "ro" {
 		t.Fatalf("expected ro mount, got %q", mount.Mode)
@@ -226,7 +226,7 @@ func TestMaterialize_CodexWritesConfigAndInstructions(t *testing.T) {
 	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
-	mount := findMount(t, result.Mounts, "/root/.codex")
+	mount := findMount(t, result.Mounts, "/home/agent/.codex")
 	configData, err := os.ReadFile(filepath.Join(mount.Host, "config.toml"))
 	if err != nil {
 		t.Fatalf("read config.toml: %v", err)
@@ -281,12 +281,12 @@ func TestMaterialize_UsesAgentSessionDir(t *testing.T) {
 	}, sessionID, dataDir)
 	defer result.CleanupFn()
 
-	claudeMount := findMount(t, result.Mounts, "/root/.claude")
+	claudeMount := findMount(t, result.Mounts, "/home/agent/.claude")
 	if want := filepath.Join(dataDir, "claude-sessions", sessionID); claudeMount.Host != want {
 		t.Fatalf("expected Claude mount host %q, got %q", want, claudeMount.Host)
 	}
 
-	codexMount := findMount(t, result.Mounts, "/root/.codex")
+	codexMount := findMount(t, result.Mounts, "/home/agent/.codex")
 	if want := filepath.Join(dataDir, "codex-sessions", sessionID); codexMount.Host != want {
 		t.Fatalf("expected Codex mount host %q, got %q", want, codexMount.Host)
 	}
@@ -301,7 +301,7 @@ func TestMaterialize_SessionDirPersistsAfterCleanup(t *testing.T) {
 		},
 	}, "session-12345678", dataDir)
 
-	sessionDir := findMount(t, result.Mounts, "/root/.claude").Host
+	sessionDir := findMount(t, result.Mounts, "/home/agent/.claude").Host
 	if _, err := os.Stat(sessionDir); err != nil {
 		t.Fatalf("expected session dir to exist before cleanup: %v", err)
 	}
