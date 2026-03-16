@@ -13,11 +13,14 @@ type CodexAgent struct{}
 func (a *CodexAgent) Name() string { return "codex" }
 
 func (a *CodexAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) {
-	if prompt == "" {
+	if !cfg.Interactive && prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	cmd := []string{"codex", "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt}
+	cmd := []string{"codex"}
+	if !cfg.Interactive {
+		cmd = append(cmd, "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt)
+	}
 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)

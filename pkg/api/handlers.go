@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -46,7 +45,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "agent is required"})
 		return
 	}
-	if req.Prompt == "" {
+	if !req.Interactive && req.Prompt == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
 		return
 	}
@@ -75,9 +74,14 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	agCfg := agent.AgentConfig{
 		WorkDir:         workDir,
 		Env:             req.Env,
+		Interactive:     req.Interactive,
 		ResumeSessionID: resumeSessionID,
 	}
-	cmd, err := ag.BuildCmd(req.Prompt, agCfg)
+	prompt := req.Prompt
+	if req.Interactive {
+		prompt = ""
+	}
+	cmd, err := ag.BuildCmd(prompt, agCfg)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -113,9 +117,8 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), cmd)
 
 	// Close stdin for prompt-mode agents (claude -p, codex exec).
-	// An open stdin pipe causes them to wait for EOF before processing.
-	// TODO: interactive sessions need stdin kept open for WS steering.
-	if handle.Stdin() != nil {
+	// Interactive sessions keep stdin open so WS stdin frames can steer them.
+	if !req.Interactive && handle.Stdin() != nil {
 		handle.Stdin().Close()
 	}
 
@@ -123,42 +126,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	// Output is tee'd to both the replay buffer (for WS streaming) and the
 	// log file (for permanent NDJSON record). The log file path is returned
 	// in the session response so callers can retrieve it later.
-	logw, logErr := session.NewLogWriter(s.logDir, sess.ID)
-	if logErr != nil {
-		log.Printf("[session %s] warning: log file creation failed: %v", sess.ID, logErr)
-		// Continue without log file — replay buffer still works.
-	}
-	drainTarget := session.DrainWriter(sess.Replay, logw)
-
-	// Drain stdout/stderr into replay buffer + log file from spawn time.
-	var drainWg sync.WaitGroup
-	if handle.Stdout() != nil {
-		drainWg.Add(1)
-		go func() {
-			defer drainWg.Done()
-			drainTo(sess.ID, "stdout", handle.Stdout(), drainTarget)
-		}()
-	}
-	if handle.Stderr() != nil {
-		drainWg.Add(1)
-		go func() {
-			defer drainWg.Done()
-			drainTo(sess.ID, "stderr", handle.Stderr(), drainTarget)
-		}()
-	}
-
-	// Watch for exit: wait for drains to finish, close replay + log, update session.
-	go func() {
-		result := <-handle.Wait()
-		drainWg.Wait()
-		sess.Replay.Close()
-		if logw != nil {
-			logw.Close()
-			log.Printf("[session %s] log saved: %s", sess.ID, logw.Path())
-		}
-		log.Printf("[session %s] exited: code=%d err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, sess.Replay.TotalBytes())
-		sess.SetCompleted(result.Code)
-	}()
+	AttachSessionIO(sess, s.logDir)
 
 	// Snapshot after SetRunning — the goroutine hasn't had a chance to call
 	// SetCompleted yet, but we use Snapshot for correctness with the race detector.

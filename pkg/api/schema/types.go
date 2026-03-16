@@ -23,6 +23,7 @@ type SessionRequest struct {
 
 	// Session behavior
 	PTY           bool   `json:"pty,omitempty"            yaml:"pty,omitempty"`            // allocate PTY for interactive agents
+	Interactive   bool   `json:"interactive,omitempty"    yaml:"interactive,omitempty"`    // keep stdin open and steer via WS stdin frames
 	ResumeSession string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"` // session ID to resume
 
 	// Filesystem — explicit multi-mount with access modes.

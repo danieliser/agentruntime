@@ -109,6 +109,17 @@ func TestClaudeAgent_BuildCmd_WithAllowedTools(t *testing.T) {
 	}
 }
 
+func TestClaudeAgent_BuildCmd_Interactive(t *testing.T) {
+	a := &ClaudeAgent{}
+	cmd, err := a.BuildCmd("", AgentConfig{Interactive: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if contains(cmd, "-p") {
+		t.Fatalf("did not expect -p in interactive cmd, got %v", cmd)
+	}
+}
+
 func TestClaudeAgent_BuildCmd_NoInjection(t *testing.T) {
 	// A prompt with shell metacharacters must be passed as a single argument,
 	// not interpreted by the shell. Since we use exec (not sh -c), this is
@@ -188,6 +199,17 @@ func TestCodexAgent_BuildCmd_WithModel(t *testing.T) {
 	}
 	if !containsSequence(cmd, "--model", "o4-mini") {
 		t.Fatalf("expected --model o4-mini in cmd, got %v", cmd)
+	}
+}
+
+func TestCodexAgent_BuildCmd_Interactive(t *testing.T) {
+	a := &CodexAgent{}
+	cmd, err := a.BuildCmd("", AgentConfig{Interactive: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if contains(cmd, "exec") {
+		t.Fatalf("did not expect exec in interactive cmd, got %v", cmd)
 	}
 }
 

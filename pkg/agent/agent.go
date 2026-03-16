@@ -36,6 +36,9 @@ type AgentConfig struct {
 	// ResumeSessionID resumes a prior agent-native session if supported.
 	ResumeSessionID string
 
+	// Interactive keeps stdin open and avoids argv prompt injection.
+	Interactive bool
+
 	// AllowedTools restricts which tools the agent can use (agent-specific).
 	AllowedTools []string
 

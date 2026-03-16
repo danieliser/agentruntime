@@ -208,6 +208,75 @@ func mustCreateSession(t *testing.T, ts *httptest.Server, req SessionRequest) Se
 	return created
 }
 
+func mustDeleteSession(t *testing.T, ts *httptest.Server, id string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/sessions/"+id, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete session %s: %v", id, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("delete session %s: expected 200/404, got %d body=%s", id, resp.StatusCode, string(body))
+	}
+}
+
+func mustDialSessionWS(t *testing.T, ts *httptest.Server, id string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("WS dial: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	return conn
+}
+
+func mustReadConnectedFrame(t *testing.T, conn *websocket.Conn) bridge.ServerFrame {
+	t.Helper()
+	var frame bridge.ServerFrame
+	if err := conn.ReadJSON(&frame); err != nil {
+		t.Fatalf("read connected frame: %v", err)
+	}
+	if frame.Type != "connected" {
+		t.Fatalf("expected connected frame, got %q", frame.Type)
+	}
+	return frame
+}
+
+func mustWriteClientFrame(t *testing.T, conn *websocket.Conn, frame bridge.ClientFrame) {
+	t.Helper()
+	if err := conn.WriteJSON(frame); err != nil {
+		t.Fatalf("write client frame: %v", err)
+	}
+}
+
+func waitForStdoutContaining(t *testing.T, conn *websocket.Conn, needle string) bridge.ServerFrame {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var frame bridge.ServerFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("read frame while waiting for %q: %v", needle, err)
+		}
+		if frame.Type == "stdout" && strings.Contains(frame.Data, needle) {
+			return frame
+		}
+		if frame.Type == "error" {
+			t.Fatalf("unexpected error frame while waiting for %q: %s", needle, frame.Error)
+		}
+		if frame.Type == "exit" {
+			t.Fatalf("session exited before stdout containing %q arrived", needle)
+		}
+	}
+	t.Fatalf("timed out waiting for stdout containing %q", needle)
+	return bridge.ServerFrame{}
+}
+
 // --- health ---
 
 func TestHealth(t *testing.T) {
@@ -774,54 +843,23 @@ func TestSessionLifecycle_EchoViaWS(t *testing.T) {
 
 // TestSessionLifecycle_StdinSteering verifies that data sent via WS stdin
 // frame reaches the process stdin (cat echo-back pattern).
-// TODO: Re-enable when interactive mode is implemented (v0.3.0).
-// Currently stdin is closed at spawn time for prompt-mode compatibility.
 func TestSessionLifecycle_StdinSteering(t *testing.T) {
-	t.Skip("stdin is closed at spawn time — interactive mode is v0.3.0")
 	ts, _ := newTestServer(t)
 
 	// Create cat session (reads stdin, echoes to stdout).
 	created := mustCreateSession(t, ts, SessionRequest{
-		Agent:  "cat-test",
-		Prompt: "unused",
+		Agent:       "cat-test",
+		Interactive: true,
 	})
 	id := created.SessionID
+	t.Cleanup(func() { mustDeleteSession(t, ts, id) })
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("WS dial: %v", err)
-	}
+	conn := mustDialSessionWS(t, ts, id)
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	mustReadConnectedFrame(t, conn)
 
-	// Consume the "connected" frame.
-	var connFrame bridge.ServerFrame
-	if err := conn.ReadJSON(&connFrame); err != nil {
-		t.Fatalf("read connected frame: %v", err)
-	}
-	if connFrame.Type != "connected" {
-		t.Fatalf("expected connected frame, got %q", connFrame.Type)
-	}
-
-	// Send stdin.
-	_ = conn.WriteJSON(bridge.ClientFrame{Type: "stdin", Data: "steered input\n"})
-
-	// Expect the echoed stdout frame.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		var f bridge.ServerFrame
-		if err := conn.ReadJSON(&f); err != nil {
-			break
-		}
-		if f.Type == "stdout" && strings.Contains(f.Data, "steered input") {
-			return // success
-		}
-	}
-	t.Fatal("never received echoed stdin on stdout")
+	mustWriteClientFrame(t, conn, bridge.ClientFrame{Type: "stdin", Data: "steered input\n"})
+	waitForStdoutContaining(t, conn, "steered input")
 }
 
 // TestSessionLifecycle_WSNotFound verifies 404 before WS upgrade so the
@@ -907,31 +945,24 @@ func TestSessionLifecycle_ReplayOnReconnect(t *testing.T) {
 
 // TestSessionLifecycle_AppLevelPingPong verifies application-level ping/pong
 // (distinct from WebSocket protocol-level ping/pong).
-// TODO: Re-enable when interactive mode keeps stdin open (v0.3.0).
 func TestSessionLifecycle_AppLevelPingPong(t *testing.T) {
-	t.Skip("requires stdin open (cat-test agent) — interactive mode is v0.3.0")
 	ts, _ := newTestServer(t)
 
-	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Prompt: "x"})
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Interactive: true})
 	id := created.SessionID
+	t.Cleanup(func() { mustDeleteSession(t, ts, id) })
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("WS dial: %v", err)
-	}
+	conn := mustDialSessionWS(t, ts, id)
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-	// Drain connected frame.
-	var f bridge.ServerFrame
-	_ = conn.ReadJSON(&f)
+	mustReadConnectedFrame(t, conn)
 
 	// Send application-level ping.
-	_ = conn.WriteJSON(bridge.ClientFrame{Type: "ping"})
+	mustWriteClientFrame(t, conn, bridge.ClientFrame{Type: "ping"})
 
 	// Expect pong.
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var f bridge.ServerFrame
 	if err := conn.ReadJSON(&f); err != nil {
 		t.Fatalf("read pong: %v", err)
 	}
@@ -942,30 +973,23 @@ func TestSessionLifecycle_AppLevelPingPong(t *testing.T) {
 
 // TestSessionLifecycle_UnknownFrameType verifies the server sends an error
 // frame for unrecognised client frame types instead of silently dropping them.
-// TODO: Re-enable when interactive mode keeps stdin open (v0.3.0).
 func TestSessionLifecycle_UnknownFrameType(t *testing.T) {
-	t.Skip("requires stdin open (cat-test agent) — interactive mode is v0.3.0")
 	ts, _ := newTestServer(t)
 
-	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Prompt: "x"})
+	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Interactive: true})
 	id := created.SessionID
+	t.Cleanup(func() { mustDeleteSession(t, ts, id) })
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("WS dial: %v", err)
-	}
+	conn := mustDialSessionWS(t, ts, id)
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-	// Drain connected frame.
-	var f bridge.ServerFrame
-	_ = conn.ReadJSON(&f)
+	mustReadConnectedFrame(t, conn)
 
 	// Send garbage frame type.
-	_ = conn.WriteJSON(bridge.ClientFrame{Type: "definitely-not-a-real-type"})
+	mustWriteClientFrame(t, conn, bridge.ClientFrame{Type: "definitely-not-a-real-type"})
 
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var f bridge.ServerFrame
 	if err := conn.ReadJSON(&f); err != nil {
 		t.Fatalf("read response: %v", err)
 	}
@@ -975,6 +999,44 @@ func TestSessionLifecycle_UnknownFrameType(t *testing.T) {
 	if f.Error == "" {
 		t.Fatal("expected non-empty error message")
 	}
+}
+
+func TestInteractiveSession_StdinRouting(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	created := mustCreateSession(t, ts, SessionRequest{
+		Agent:       "cat-test",
+		Interactive: true,
+	})
+	t.Cleanup(func() { mustDeleteSession(t, ts, created.SessionID) })
+
+	conn := mustDialSessionWS(t, ts, created.SessionID)
+	defer conn.Close()
+
+	mustReadConnectedFrame(t, conn)
+	mustWriteClientFrame(t, conn, bridge.ClientFrame{Type: "stdin", Data: "route this through stdin\n"})
+	waitForStdoutContaining(t, conn, "route this through stdin")
+}
+
+func TestInteractiveSession_MultiplePrompts(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	created := mustCreateSession(t, ts, SessionRequest{
+		Agent:       "cat-test",
+		Interactive: true,
+	})
+	t.Cleanup(func() { mustDeleteSession(t, ts, created.SessionID) })
+
+	conn := mustDialSessionWS(t, ts, created.SessionID)
+	defer conn.Close()
+
+	mustReadConnectedFrame(t, conn)
+
+	mustWriteClientFrame(t, conn, bridge.ClientFrame{Type: "stdin", Data: "first prompt\n"})
+	waitForStdoutContaining(t, conn, "first prompt")
+
+	mustWriteClientFrame(t, conn, bridge.ClientFrame{Type: "stdin", Data: "second prompt\n"})
+	waitForStdoutContaining(t, conn, "second prompt")
 }
 
 // TestConcurrentSessions verifies that multiple sessions can run in parallel

@@ -17,6 +17,43 @@ go build -o agentd ./cmd/agentd
 ./agentd --port 8090 --runtime local
 ```
 
+## Docker
+
+Build the bundled Docker images:
+
+```bash
+./docker/build.sh
+```
+
+Or build them manually:
+
+```bash
+docker build -t agentruntime-agent:latest \
+  -f docker/Dockerfile.agent \
+  --build-arg HOST_UID="$(id -u)" \
+  --build-arg HOST_GID="$(id -g)" \
+  docker/
+
+docker build -t agentruntime-proxy:latest \
+  -f docker/Dockerfile.proxy \
+  docker/
+```
+
+The Docker runtime now defaults to `agentruntime-agent:latest`, so after building
+the image you can start the daemon with:
+
+```bash
+go build -o agentd ./cmd/agentd
+./agentd --port 8090 --runtime docker
+```
+
+To verify the bundled agent tools inside the container:
+
+```bash
+docker run --rm agentruntime-agent:latest claude --version
+docker run --rm agentruntime-agent:latest codex --version
+```
+
 ### API
 
 | Method | Path | Description |

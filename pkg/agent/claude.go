@@ -13,11 +13,15 @@ type ClaudeAgent struct{}
 func (a *ClaudeAgent) Name() string { return "claude" }
 
 func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) {
-	if prompt == "" {
+	if !cfg.Interactive && prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	cmd := []string{"claude", "-p", prompt, "--output-format", "stream-json", "--verbose"}
+	cmd := []string{"claude"}
+	if !cfg.Interactive {
+		cmd = append(cmd, "-p", prompt)
+	}
+	cmd = append(cmd, "--output-format", "stream-json", "--verbose")
 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
