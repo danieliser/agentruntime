@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
-	"fmt"
 	"io"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -20,6 +20,7 @@ const (
 	pongTimeout  = 10 * time.Second
 	writeTimeout = 5 * time.Second
 	readTimeout  = 60 * time.Second
+	maxOffset    = int64(^uint64(0) >> 1)
 )
 
 // Bridge connects a ProcessHandle's stdio to a WebSocket connection,
@@ -48,6 +49,7 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
 	defer cancel()
+	defer b.conn.Close()
 
 	// Send replay if requested.
 	if sinceOffset >= 0 {
@@ -145,16 +147,21 @@ func (b *Bridge) readPump(ctx context.Context, reader io.Reader, frameType strin
 		default:
 		}
 		line := scanner.Bytes()
-		lineWithNewline := append(line, '\n')
+		lineWithNewline := append(append([]byte(nil), line...), '\n')
+		data := string(lineWithNewline)
+		if !utf8.Valid(lineWithNewline) {
+			data = base64.StdEncoding.EncodeToString(lineWithNewline)
+		}
 
 		// Write to replay buffer.
 		b.replay.Write(lineWithNewline)
+		_, offset := b.replay.ReadFrom(maxOffset)
 
 		// Send to WebSocket.
 		if err := b.writeJSON(ServerFrame{
 			Type:   frameType,
-			Data:   string(lineWithNewline),
-			Offset: b.replay.Total,
+			Data:   data,
+			Offset: offset,
 		}); err != nil {
 			return
 		}
@@ -215,16 +222,14 @@ func (b *Bridge) exitWatch(ctx context.Context, ioPumpsWg *sync.WaitGroup, stdou
 		if stderr != nil {
 			stderr.Close()
 		}
-		fmt.Println("exitWatch: waiting for io pumps")
 		ioPumpsWg.Wait()
-		fmt.Println("exitWatch: pumps done, writing exit frame")
 		code := result.Code
-		err := b.writeJSON(ServerFrame{
+		_ = b.writeJSON(ServerFrame{
 			Type:     "exit",
 			ExitCode: &code,
 		})
-		fmt.Printf("exitWatch: exit frame written, err=%v\n", err)
 		b.cancel()
+		_ = b.conn.Close()
 	}
 }
 
