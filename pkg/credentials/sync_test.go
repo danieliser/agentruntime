@@ -135,33 +135,41 @@ func TestClaudeCredentialsFile_ReturnsStaleCacheOnExtractionFailure(t *testing.T
 	}
 }
 
-func TestCodexAPIKey_PrefersEnvVar(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "env-key-123")
-	mock := &mockExtractor{result: "keychain-key"}
-	s := newSyncWithExtractor(t.TempDir(), mock)
+func TestCodexAPIKey_PrefersOpenAIEnvVar(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-key-123")
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key")
+	s := newSyncWithExtractor(t.TempDir(), &mockExtractor{})
 
 	key, err := s.CodexAPIKey()
 	if err != nil {
 		t.Fatalf("CodexAPIKey: %v", err)
 	}
-	if key != "env-key-123" {
-		t.Fatalf("expected env key, got %q", key)
-	}
-	if mock.calls != 0 {
-		t.Fatal("should not have called extractor when env var is set")
+	if key != "openai-key-123" {
+		t.Fatalf("expected OPENAI_API_KEY, got %q", key)
 	}
 }
 
-func TestCodexAPIKey_FallsBackToKeychain(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	mock := &mockExtractor{result: "keychain-key"}
-	s := newSyncWithExtractor(t.TempDir(), mock)
+func TestCodexAPIKey_FallsBackToAnthropicKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-fallback")
+	s := newSyncWithExtractor(t.TempDir(), &mockExtractor{})
 
 	key, err := s.CodexAPIKey()
 	if err != nil {
 		t.Fatalf("CodexAPIKey: %v", err)
 	}
-	if key != "keychain-key" {
-		t.Fatalf("expected keychain key, got %q", key)
+	if key != "anthropic-fallback" {
+		t.Fatalf("expected ANTHROPIC_API_KEY fallback, got %q", key)
+	}
+}
+
+func TestCodexAPIKey_ErrorsWhenNoKeySet(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	s := newSyncWithExtractor(t.TempDir(), &mockExtractor{})
+
+	_, err := s.CodexAPIKey()
+	if err == nil {
+		t.Fatal("expected error when no API key set")
 	}
 }

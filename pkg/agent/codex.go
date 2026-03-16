@@ -17,7 +17,7 @@ func (a *CodexAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) 
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	cmd := []string{"codex", "--quiet", prompt}
+	cmd := []string{"codex", "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt}
 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)

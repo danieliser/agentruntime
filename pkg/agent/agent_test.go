@@ -160,9 +160,12 @@ func TestCodexAgent_BuildCmd_Basic(t *testing.T) {
 	if cmd[0] != "codex" {
 		t.Fatalf("expected cmd[0]='codex', got %q", cmd[0])
 	}
-	// Codex must be quiet by default so callers can parse its output cleanly.
-	if !contains(cmd, "--quiet") {
-		t.Fatalf("expected --quiet flag in codex cmd, got %v", cmd)
+	// Codex uses exec subcommand with --json for structured output.
+	if !contains(cmd, "exec") {
+		t.Fatalf("expected 'exec' subcommand in codex cmd, got %v", cmd)
+	}
+	if !contains(cmd, "--json") {
+		t.Fatalf("expected --json flag in codex cmd, got %v", cmd)
 	}
 	if !contains(cmd, "write a function") {
 		t.Fatalf("expected prompt in cmd, got %v", cmd)

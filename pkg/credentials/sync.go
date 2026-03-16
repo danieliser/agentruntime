@@ -10,6 +10,7 @@ package credentials
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -93,13 +94,34 @@ func (s *Sync) ClaudeCredentialsFile() (string, error) {
 	return cachePath, nil
 }
 
-// CodexAPIKey returns the Anthropic API key for Codex.
-// Checks ANTHROPIC_API_KEY env first, falls back to Keychain.
+// CodexCredentialsFile returns the path to the Codex auth.json file.
+// Codex uses OAuth by default (~/.codex/auth.json). If that file exists,
+// return its path. Otherwise fall back to OPENAI_API_KEY env var (API key mode).
+//
+// For containers: mount the returned path as /root/.codex/auth.json (ro).
+func (s *Sync) CodexCredentialsFile() (string, error) {
+	// Check default Codex auth location.
+	home, err := os.UserHomeDir()
+	if err == nil {
+		authPath := filepath.Join(home, ".codex", "auth.json")
+		if _, err := os.Stat(authPath); err == nil {
+			return authPath, nil
+		}
+	}
+	return "", fmt.Errorf("codex auth.json not found at ~/.codex/auth.json")
+}
+
+// CodexAPIKey returns the OpenAI API key for Codex (API key mode).
+// Checks OPENAI_API_KEY env first, falls back to ANTHROPIC_API_KEY
+// (some Codex configs use Anthropic models via OpenAI-compatible API).
 func (s *Sync) CodexAPIKey() (string, error) {
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		return key, nil
+	}
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		return key, nil
 	}
-	return s.extractor.Extract("Anthropic API Key")
+	return "", fmt.Errorf("neither OPENAI_API_KEY nor ANTHROPIC_API_KEY set")
 }
 
 // Watch starts a background goroutine that refreshes Claude credentials
