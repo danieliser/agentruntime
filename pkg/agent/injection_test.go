@@ -207,7 +207,7 @@ func TestLocalRuntime_SpawnPreservesMaliciousPrompt_AllAgents(t *testing.T) {
 	installHelperAgentBinaries(t)
 
 	rt := runtimepkg.NewLocalRuntime()
-	prompt := "argv literal ; && || | > < $() `echo-nope`"
+	prompt := "argv literal '\" ; && || | > < $() `echo-nope`"
 
 	for _, tc := range injectionAgentCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -436,6 +436,7 @@ func waitForPSCommand(t *testing.T, pid int, want string) string {
 }
 
 func psCommandLine(pid int) (string, error) {
+	// -ww disables ps truncation so we can assert the full argv string.
 	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return "", err
