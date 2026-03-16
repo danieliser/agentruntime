@@ -87,9 +87,13 @@ func TestBuildCmd_SessionIDPathTraversal_AllAgents(t *testing.T) {
 			}
 
 			if tc.supportsSessionID {
-				assertFlagValue(t, cmd, "--session-id", sessionID)
-				if !contains(cmd, "--resume") {
-					t.Fatalf("expected --resume in cmd, got %v", cmd)
+				// Claude uses --session-id, Codex uses --session.
+				if contains(cmd, "--session-id") {
+					assertFlagValue(t, cmd, "--session-id", sessionID)
+				} else if contains(cmd, "--session") {
+					assertFlagValue(t, cmd, "--session", sessionID)
+				} else {
+					t.Fatalf("expected session flag in cmd, got %v", cmd)
 				}
 			} else if contains(cmd, sessionID) {
 				t.Fatalf("unexpected session id in unsupported agent cmd: %v", cmd)
@@ -312,8 +316,9 @@ func injectionAgentCases() []injectionAgentCase {
 			supportsAllowedTools: true,
 		},
 		{
-			name:  "codex",
-			agent: &CodexAgent{},
+			name:              "codex",
+			agent:             &CodexAgent{},
+			supportsSessionID: true,
 		},
 		{
 			name:  "opencode",

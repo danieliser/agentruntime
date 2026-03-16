@@ -15,11 +15,9 @@ import (
 )
 
 func TestMaterialize_CredentialsPathTraversalContained(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-
+	// Credentials are copied INTO the session dir by agentsessions.InitClaudeSessionDir.
+	// A traversal path like "../../etc/shadow" resolves to a non-existent file,
+	// so credentials are silently skipped. Verify no leaked file or mount.
 	result := mustMaterialize(t, &apischema.SessionRequest{
 		Claude: &apischema.ClaudeConfig{
 			CredentialsPath: "../../etc/shadow",
@@ -27,12 +25,17 @@ func TestMaterialize_CredentialsPathTraversalContained(t *testing.T) {
 	}, "session-12345678")
 	defer result.CleanupFn()
 
-	mount := findMount(t, result.Mounts, "/root/.claude/credentials.json")
-	if mount.Host == filepath.Clean("/etc/shadow") {
-		t.Fatalf("expected traversal path to be contained, got %q", mount.Host)
+	// No separate credentials mount should exist.
+	if hasMount(result.Mounts, "/root/.claude/credentials.json") {
+		t.Fatal("traversal credentials path should not produce a separate mount")
 	}
-	if !strings.HasPrefix(mount.Host, cwd+string(os.PathSeparator)) {
-		t.Fatalf("expected mount host to stay under cwd %q, got %q", cwd, mount.Host)
+	// The session dir mount should exist.
+	claudeMount := findMount(t, result.Mounts, "/root/.claude")
+	// Credentials should NOT have been copied (source doesn't exist).
+	for _, name := range []string{"credentials.json", ".credentials.json"} {
+		if _, err := os.Stat(filepath.Join(claudeMount.Host, name)); err == nil {
+			t.Fatalf("traversal path should not have produced %s in session dir", name)
+		}
 	}
 }
 

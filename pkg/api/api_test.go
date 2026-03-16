@@ -280,7 +280,7 @@ func TestCreateSession_ClaudeResumeSession(t *testing.T) {
 		Agent:         "claude",
 		Prompt:        "resume this",
 		ResumeSession: "resume-source",
-		WorkDir:       "/workspace",
+		WorkDir:       t.TempDir(),
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
@@ -315,7 +315,7 @@ func TestCreateSession_CodexResumeSession(t *testing.T) {
 		Agent:         "codex",
 		Prompt:        "resume this",
 		ResumeSession: "resume-source",
-		WorkDir:       "/workspace",
+		WorkDir:       t.TempDir(),
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
