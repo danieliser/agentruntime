@@ -74,6 +74,34 @@ func (s *Session) SetCompleted(code int) {
 	}
 }
 
+// Kill terminates the session's process if one is attached. Thread-safe.
+func (s *Session) Kill() error {
+	s.mu.Lock()
+	h := s.Handle
+	s.mu.Unlock()
+	if h != nil {
+		return h.Kill()
+	}
+	return nil
+}
+
+// Snapshot returns a copy of the session's fields, safe to read without holding the lock.
+// Use this before JSON serialization to avoid races with concurrent SetCompleted calls.
+func (s *Session) Snapshot() Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Session{
+		ID:          s.ID,
+		TaskID:      s.TaskID,
+		AgentName:   s.AgentName,
+		RuntimeName: s.RuntimeName,
+		State:       s.State,
+		ExitCode:    s.ExitCode,
+		CreatedAt:   s.CreatedAt,
+		EndedAt:     s.EndedAt,
+	}
+}
+
 // Manager is a thread-safe registry of active sessions.
 type Manager struct {
 	mu       sync.RWMutex

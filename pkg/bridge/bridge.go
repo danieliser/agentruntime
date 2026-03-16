@@ -73,47 +73,63 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 		return nil
 	})
 
-	// Start goroutines.
-	var wg sync.WaitGroup
+	// ioPumpsWg tracks the stdout/stderr read pumps. exitWatch waits on this
+	// before sending the exit frame to guarantee no output lines are lost.
+	var ioPumpsWg sync.WaitGroup
+	var allWg sync.WaitGroup
 
 	// Ping/pong keepalive.
-	wg.Add(1)
+	allWg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer allWg.Done()
 		b.pingLoop(ctx)
 	}()
 
 	// Stdout pump.
-	if stdout := b.handle.Stdout(); stdout != nil {
-		wg.Add(1)
+	stdout := b.handle.Stdout()
+	if stdout != nil {
+		ioPumpsWg.Add(1)
+		allWg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer ioPumpsWg.Done()
+			defer allWg.Done()
 			b.readPump(ctx, stdout, "stdout")
 		}()
 	}
 
 	// Stderr pump.
-	if stderr := b.handle.Stderr(); stderr != nil {
-		wg.Add(1)
+	stderr := b.handle.Stderr()
+	if stderr != nil {
+		ioPumpsWg.Add(1)
+		allWg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer ioPumpsWg.Done()
+			defer allWg.Done()
 			b.readPump(ctx, stderr, "stderr")
 		}()
 	}
 
-	// Exit watcher.
-	wg.Add(1)
+	// Exit watcher — waits for IO pumps to drain before sending the exit frame
+	// so the last lines of output are never lost.
+	allWg.Add(1)
 	go func() {
-		defer wg.Done()
-		b.exitWatch(ctx)
+		defer allWg.Done()
+		b.exitWatch(ctx, &ioPumpsWg, stdout, stderr)
 	}()
 
 	// Stdin pump (runs on this goroutine — blocks until WS closes or ctx cancelled).
 	b.stdinPump(ctx)
 
-	// Cancel triggers all goroutines to stop.
+	// On WS disconnect (stdinPump returned due to client close), cancel ctx and
+	// close pipes to unblock any blocked scanner.Scan() calls in the IO pumps.
 	cancel()
-	wg.Wait()
+	if stdout != nil {
+		stdout.Close()
+	}
+	if stderr != nil {
+		stderr.Close()
+	}
+	allWg.Wait()
 }
 
 // readPump reads lines from a process stream and sends them as WS frames.
@@ -182,12 +198,23 @@ func (b *Bridge) stdinPump(ctx context.Context) {
 	}
 }
 
-// exitWatch waits for the process to exit and sends an exit frame.
-func (b *Bridge) exitWatch(ctx context.Context) {
+// exitWatch waits for the process to exit, drains IO pumps, then sends the exit frame.
+// Closing stdout/stderr pipes unblocks any blocked scanner.Scan() in the read pumps.
+func (b *Bridge) exitWatch(ctx context.Context, ioPumpsWg *sync.WaitGroup, stdout, stderr io.ReadCloser) {
 	select {
 	case <-ctx.Done():
 		return
 	case result := <-b.handle.Wait():
+		// Process exited: its write-end of stdout/stderr pipes is closed by the OS.
+		// However, bufio.Scanner may still be blocked on an empty pipe. Close the
+		// read ends to unblock scanners immediately, then wait for pumps to drain.
+		if stdout != nil {
+			stdout.Close()
+		}
+		if stderr != nil {
+			stderr.Close()
+		}
+		ioPumpsWg.Wait()
 		code := result.Code
 		_ = b.writeJSON(ServerFrame{
 			Type:     "exit",
