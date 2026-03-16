@@ -45,6 +45,10 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
 		return
 	}
+	if req.Runtime != "" && req.Runtime != s.runtime.Name() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unknown runtime: %s", req.Runtime)})
+		return
+	}
 
 	mounts := req.EffectiveMounts()
 	workDir := effectiveWorkDir(req.WorkDir, mounts)
