@@ -345,7 +345,10 @@ func TestServerFrame_MarshalOmitsNilExitCode(t *testing.T) {
 	}
 }
 
-func TestBridge_SimultaneousStdoutAndStderrKeepFrameTypes(t *testing.T) {
+// TestBridge_SimultaneousStdoutAndStderrBothCaptured verifies that both stdout
+// and stderr content arrives via the replay buffer. Since the replay buffer
+// merges both streams, all data arrives as "stdout" frames.
+func TestBridge_SimultaneousStdoutAndStderrBothCaptured(t *testing.T) {
 	h := newMockHandle()
 	replay := session.NewReplayBuffer(256)
 	_, conn := bridgeServer(t, h, replay, -1)
@@ -382,16 +385,15 @@ func TestBridge_SimultaneousStdoutAndStderrKeepFrameTypes(t *testing.T) {
 			if strings.Contains(f.Data, "stdout payload") {
 				gotStdout = true
 			}
-		case "stderr":
 			if strings.Contains(f.Data, "stderr payload") {
 				gotStderr = true
 			}
 		case "exit":
 			if !gotStdout {
-				t.Fatal("never received stdout payload as a stdout frame")
+				t.Fatal("never received stdout payload")
 			}
 			if !gotStderr {
-				t.Fatal("never received stderr payload as a stderr frame")
+				t.Fatal("never received stderr payload")
 			}
 			return
 		}

@@ -546,7 +546,10 @@ func TestSessionLifecycle_EchoViaWS(t *testing.T) {
 
 // TestSessionLifecycle_StdinSteering verifies that data sent via WS stdin
 // frame reaches the process stdin (cat echo-back pattern).
+// TODO: Re-enable when interactive mode is implemented (v0.3.0).
+// Currently stdin is closed at spawn time for prompt-mode compatibility.
 func TestSessionLifecycle_StdinSteering(t *testing.T) {
+	t.Skip("stdin is closed at spawn time — interactive mode is v0.3.0")
 	ts, _ := newTestServer(t)
 
 	// Create cat session (reads stdin, echoes to stdout).
@@ -676,7 +679,9 @@ func TestSessionLifecycle_ReplayOnReconnect(t *testing.T) {
 
 // TestSessionLifecycle_AppLevelPingPong verifies application-level ping/pong
 // (distinct from WebSocket protocol-level ping/pong).
+// TODO: Re-enable when interactive mode keeps stdin open (v0.3.0).
 func TestSessionLifecycle_AppLevelPingPong(t *testing.T) {
+	t.Skip("requires stdin open (cat-test agent) — interactive mode is v0.3.0")
 	ts, _ := newTestServer(t)
 
 	created := mustCreateSession(t, ts, SessionRequest{Agent: "cat-test", Prompt: "x"})

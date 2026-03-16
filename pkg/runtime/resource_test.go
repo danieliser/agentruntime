@@ -110,6 +110,45 @@ func (h *bridgeTestHandle) exit(code int) {
 func startBridgeServer(t *testing.T, handle runtime.ProcessHandle, replay *sessionpkg.ReplayBuffer, sinceOffset int64) (*websocket.Conn, <-chan struct{}, func()) {
 	t.Helper()
 
+	// Start drain goroutines: pipe → replay (same as production handler).
+	var drainWg sync.WaitGroup
+	if handle.Stdout() != nil {
+		drainWg.Add(1)
+		go func() {
+			defer drainWg.Done()
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := handle.Stdout().Read(buf)
+				if n > 0 {
+					replay.Write(buf[:n])
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+	if handle.Stderr() != nil {
+		drainWg.Add(1)
+		go func() {
+			defer drainWg.Done()
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := handle.Stderr().Read(buf)
+				if n > 0 {
+					replay.Write(buf[:n])
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		drainWg.Wait()
+		replay.Close()
+	}()
+
 	bridgeDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

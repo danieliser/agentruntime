@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"encoding/base64"
-	"io"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -15,16 +14,16 @@ import (
 )
 
 const (
-	pingInterval  = 30 * time.Second
-	pongTimeout   = 10 * time.Second
-	writeTimeout  = 5 * time.Second
-	readTimeout   = 60 * time.Second
-	readChunkSize = 32 * 1024
+	pingInterval = 30 * time.Second
+	pongTimeout  = 10 * time.Second
+	writeTimeout = 5 * time.Second
+	readTimeout  = 60 * time.Second
 )
 
-// Bridge connects a ProcessHandle's stdio to a WebSocket connection,
-// multiplexing stdout/stderr as ServerFrames and routing ClientFrames
-// to stdin. All output is simultaneously written to the replay buffer.
+// Bridge connects a session's replay buffer to a WebSocket connection.
+// Output flows: process → drain goroutine → ReplayBuffer → Bridge → WS client.
+// The bridge never reads process pipes directly — it subscribes to the replay
+// buffer via WaitFor, which blocks until new data arrives or the buffer is closed.
 type Bridge struct {
 	conn    *websocket.Conn
 	handle  runtime.ProcessHandle
@@ -42,16 +41,20 @@ func New(conn *websocket.Conn, handle runtime.ProcessHandle, replay *session.Rep
 	}
 }
 
-// Run starts the bridge I/O loops. Blocks until the process exits or the
-// WebSocket disconnects. Sends replay frames if sinceOffset >= 0.
+// Run starts the bridge I/O loops. Blocks until the replay buffer is closed
+// (process exited and drains finished) or the WebSocket disconnects.
+// Sends replay of buffered data if sinceOffset >= 0.
 func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 	ctx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
 	defer cancel()
 	defer b.conn.Close()
 
-	// Send replay if requested.
+	// Determine starting offset for the stream pump.
+	var streamOffset int64
 	if sinceOffset >= 0 {
+		streamOffset = sinceOffset
+		// Send initial replay chunk.
 		data, nextOffset := b.replay.ReadFrom(sinceOffset)
 		if len(data) > 0 {
 			_ = b.writeJSON(ServerFrame{
@@ -60,6 +63,10 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 				Offset: nextOffset,
 			})
 		}
+		streamOffset = nextOffset
+	} else {
+		// No replay requested — start streaming from current position.
+		streamOffset = b.replay.TotalBytes()
 	}
 
 	// Send connected frame.
@@ -75,97 +82,81 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 		return nil
 	})
 
-	// ioPumpsWg tracks the stdout/stderr read pumps. exitWatch waits on this
-	// before sending the exit frame to guarantee no output lines are lost.
-	var ioPumpsWg sync.WaitGroup
-	var allWg sync.WaitGroup
+	var wg sync.WaitGroup
 
 	// Ping/pong keepalive.
-	allWg.Add(1)
+	wg.Add(1)
 	go func() {
-		defer allWg.Done()
+		defer wg.Done()
 		b.pingLoop(ctx)
 	}()
 
-	// Stdout pump.
-	stdout := b.handle.Stdout()
-	if stdout != nil {
-		ioPumpsWg.Add(1)
-		allWg.Add(1)
-		go func() {
-			defer ioPumpsWg.Done()
-			defer allWg.Done()
-			b.readPump(ctx, stdout, "stdout")
-		}()
-	}
-
-	// Stderr pump.
-	stderr := b.handle.Stderr()
-	if stderr != nil {
-		ioPumpsWg.Add(1)
-		allWg.Add(1)
-		go func() {
-			defer ioPumpsWg.Done()
-			defer allWg.Done()
-			b.readPump(ctx, stderr, "stderr")
-		}()
-	}
-
-	// Exit watcher — waits for IO pumps to drain before sending the exit frame
-	// so the last lines of output are never lost.
-	allWg.Add(1)
+	// Stream pump — reads from replay buffer (not process pipes).
+	wg.Add(1)
 	go func() {
-		defer allWg.Done()
-		b.exitWatch(ctx, &ioPumpsWg, stdout, stderr)
+		defer wg.Done()
+		b.replayStreamPump(ctx, streamOffset)
 	}()
 
 	// Stdin pump (runs on this goroutine — blocks until WS closes or ctx cancelled).
 	b.stdinPump(ctx)
 
-	// On WS disconnect (stdinPump returned due to client close), cancel ctx and
-	// close pipes to unblock any blocked reads in the IO pumps.
+	// On WS disconnect, cancel all goroutines.
 	cancel()
-	if stdout != nil {
-		stdout.Close()
-	}
-	if stderr != nil {
-		stderr.Close()
-	}
-	allWg.Wait()
+	wg.Wait()
 }
 
-// readPump reads bounded chunks from a process stream and sends them as WS frames.
-func (b *Bridge) readPump(ctx context.Context, reader io.Reader, frameType string) {
-	buf := make([]byte, readChunkSize)
+// replayStreamPump subscribes to the replay buffer and sends new data as
+// stdout frames until the buffer is closed or the context is cancelled.
+func (b *Bridge) replayStreamPump(ctx context.Context, offset int64) {
+	// Unblock WaitFor when context is cancelled.
+	go func() {
+		<-ctx.Done()
+		b.replay.Close()
+	}()
+
 	for {
-		select {
-		case <-ctx.Done():
+		data, nextOffset, done := b.replay.WaitFor(offset)
+
+		// Check context first — we may have been woken by Close from cancellation.
+		if ctx.Err() != nil {
 			return
-		default:
 		}
 
-		n, err := reader.Read(buf)
-		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
-			data := string(chunk)
-			if !utf8.Valid(chunk) {
-				data = base64.StdEncoding.EncodeToString(chunk)
+		if len(data) > 0 {
+			frameData := string(data)
+			if !utf8.Valid(data) {
+				frameData = base64.StdEncoding.EncodeToString(data)
 			}
-
-			// Write to replay buffer and get offset atomically.
-			_, offset := b.replay.WriteOffset(chunk)
-
-			// Send to WebSocket.
 			if err := b.writeJSON(ServerFrame{
-				Type:   frameType,
-				Data:   data,
-				Offset: offset,
+				Type:   "stdout",
+				Data:   frameData,
+				Offset: nextOffset,
 			}); err != nil {
 				return
 			}
 		}
+		offset = nextOffset
 
-		if err != nil {
+		if done {
+			// Buffer closed — process is done. Send exit frame.
+			// Get exit code from the process handle.
+			select {
+			case result := <-b.handle.Wait():
+				code := result.Code
+				_ = b.writeJSON(ServerFrame{
+					Type:     "exit",
+					ExitCode: &code,
+				})
+			default:
+				// Process already waited — send exit 0 as fallback.
+				code := 0
+				_ = b.writeJSON(ServerFrame{
+					Type:     "exit",
+					ExitCode: &code,
+				})
+			}
+			b.cancel()
 			return
 		}
 	}
@@ -173,6 +164,12 @@ func (b *Bridge) readPump(ctx context.Context, reader io.Reader, frameType strin
 
 // stdinPump reads client frames and routes them to the process stdin.
 func (b *Bridge) stdinPump(ctx context.Context) {
+	// Unblock ReadJSON on context cancellation.
+	go func() {
+		<-ctx.Done()
+		b.conn.SetReadDeadline(time.Now())
+	}()
+
 	b.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	for {
 		var frame ClientFrame
@@ -206,33 +203,6 @@ func (b *Bridge) stdinPump(ctx context.Context) {
 				Error: "unknown frame type: " + frame.Type,
 			})
 		}
-	}
-}
-
-// exitWatch waits for the process to exit, drains IO pumps, then sends the exit frame.
-// Closing stdout/stderr pipes unblocks any blocked reads in the pumps.
-func (b *Bridge) exitWatch(ctx context.Context, ioPumpsWg *sync.WaitGroup, stdout, stderr io.ReadCloser) {
-	select {
-	case <-ctx.Done():
-		return
-	case result := <-b.handle.Wait():
-		// Process exited: its write-end of stdout/stderr pipes is closed by the OS.
-		// Close the read ends as well so any blocked reads unblock immediately
-		// before waiting for the pumps to drain.
-		if stdout != nil {
-			stdout.Close()
-		}
-		if stderr != nil {
-			stderr.Close()
-		}
-		ioPumpsWg.Wait()
-		code := result.Code
-		_ = b.writeJSON(ServerFrame{
-			Type:     "exit",
-			ExitCode: &code,
-		})
-		b.cancel()
-		_ = b.conn.Close()
 	}
 }
 

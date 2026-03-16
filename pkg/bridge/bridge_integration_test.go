@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,10 +73,47 @@ func (h *mockHandle) exit(code int) {
 	}
 }
 
+// drain reads from r and writes to replay, same as the production handler.
+func drain(r io.ReadCloser, replay *session.ReplayBuffer, wg *sync.WaitGroup) {
+	if r == nil {
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				replay.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
 // bridgeServer wraps a mock handle in a real httptest server so we can
 // dial it via WebSocket exactly as a production client would.
+// It starts drain goroutines that read from the mock's pipes and write to
+// the replay buffer — mirroring what the production handler does.
 func bridgeServer(t *testing.T, handle *mockHandle, replay *session.ReplayBuffer, sinceOffset int64) (*httptest.Server, *websocket.Conn) {
 	t.Helper()
+
+	// Start drains: pipe → replay (same as production handler).
+	// Drains exit on pipe EOF (when exit() closes stdoutW/stderrW).
+	var drainWg sync.WaitGroup
+	drain(handle.stdoutR, replay, &drainWg)
+	drain(handle.stderrR, replay, &drainWg)
+
+	// Close replay after all drains finish (pipe EOFs from exit()).
+	// Do NOT consume from handle.done — the bridge needs that for the exit code.
+	go func() {
+		drainWg.Wait()
+		replay.Close()
+	}()
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upg := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 		conn, err := upg.Upgrade(w, r, nil)
@@ -163,9 +201,10 @@ func TestBridge_StdoutFrameDelivered(t *testing.T) {
 	}
 }
 
-// TestBridge_StderrFrameDelivered verifies that stderr output arrives as "stderr" frames,
-// distinct from stdout. This matters: callers use frame type to distinguish streams.
-func TestBridge_StderrFrameDelivered(t *testing.T) {
+// TestBridge_StderrCapturedViaReplay verifies that stderr output is captured
+// to the replay buffer and arrives via stdout frames (the replay buffer
+// merges both streams — stream identity is not preserved).
+func TestBridge_StderrCapturedViaReplay(t *testing.T) {
 	h := newMockHandle()
 	replay := session.NewReplayBuffer(1024)
 	_, conn := bridgeServer(t, h, replay, -1)
@@ -178,18 +217,18 @@ func TestBridge_StderrFrameDelivered(t *testing.T) {
 		h.exit(0)
 	}()
 
-	var gotStderr bool
+	var gotOutput bool
 	for {
 		f := readFrame(t, conn)
-		if f.Type == "stderr" && strings.Contains(f.Data, "error output") {
-			gotStderr = true
+		if f.Type == "stdout" && strings.Contains(f.Data, "error output") {
+			gotOutput = true
 		}
 		if f.Type == "exit" {
 			break
 		}
 	}
-	if !gotStderr {
-		t.Fatal("never received stderr frame")
+	if !gotOutput {
+		t.Fatal("never received stderr content in stdout frame")
 	}
 }
 
@@ -350,11 +389,20 @@ func TestBridge_ReplayPartialOffset(t *testing.T) {
 }
 
 // TestBridge_OutputWrittenToReplayBuffer verifies that stdout written through the
-// bridge is also accumulated in the replay buffer. This is the durability guarantee:
+// drain pipeline is accumulated in the replay buffer. This is the durability guarantee:
 // output survives WS disconnections as long as the buffer hasn't wrapped.
 func TestBridge_OutputWrittenToReplayBuffer(t *testing.T) {
 	h := newMockHandle()
 	replay := session.NewReplayBuffer(1024)
+
+	// Start drains like production handler does.
+	var drainWg sync.WaitGroup
+	drain(h.stdoutR, replay, &drainWg)
+	drain(h.stderrR, replay, &drainWg)
+	go func() {
+		drainWg.Wait()
+		replay.Close()
+	}()
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upg := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

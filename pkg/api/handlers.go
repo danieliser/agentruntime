@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"net/url"
 	"sort"
 	"strconv"
@@ -101,22 +102,37 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	sess.SetRunning(handle)
 	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), cmd)
 
-	// TODO(v0.3.0): The current architecture has a fundamental tension:
-	// - Prompt-mode agents (claude -p) need stdin closed to start processing
-	// - Interactive agents need stdin open for steering via WS
-	// - Output needs to be captured to replay buffer from spawn time
-	//   (not just when a WS client connects) for the logs endpoint
-	// - But the WS bridge also reads from the process pipes, causing
-	//   a dual-reader conflict with background drain goroutines
-	//
-	// Resolution: the bridge should read from the replay buffer (via tee),
-	// not directly from process pipes. That decouples the capture layer
-	// from the streaming layer. For now, output only flows when a WS
-	// client is connected (the bridge reads the pipes and writes to replay).
+	// Close stdin for prompt-mode agents (claude -p, codex exec).
+	// An open stdin pipe causes them to wait for EOF before processing.
+	// TODO: interactive sessions need stdin kept open for WS steering.
+	if handle.Stdin() != nil {
+		handle.Stdin().Close()
+	}
 
-	// Watch for exit in the background.
+	// Drain stdout/stderr into replay buffer from spawn time.
+	// The bridge reads from replay (via WaitFor), never from pipes directly.
+	// This eliminates the dual-reader conflict.
+	var drainWg sync.WaitGroup
+	if handle.Stdout() != nil {
+		drainWg.Add(1)
+		go func() {
+			defer drainWg.Done()
+			drainToReplay(sess.ID, "stdout", handle.Stdout(), sess.Replay)
+		}()
+	}
+	if handle.Stderr() != nil {
+		drainWg.Add(1)
+		go func() {
+			defer drainWg.Done()
+			drainToReplay(sess.ID, "stderr", handle.Stderr(), sess.Replay)
+		}()
+	}
+
+	// Watch for exit: wait for drains to finish, close replay, update session.
 	go func() {
 		result := <-handle.Wait()
+		drainWg.Wait() // ensure all output is captured before closing replay
+		sess.Replay.Close()
 		log.Printf("[session %s] exited: code=%d err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, sess.Replay.TotalBytes())
 		sess.SetCompleted(result.Code)
 	}()
