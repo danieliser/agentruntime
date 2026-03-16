@@ -25,6 +25,11 @@ type wsHandle struct {
 	containerID string
 	hostPort    string
 	cancel      context.CancelFunc
+	metaMu      sync.RWMutex
+	cleanup     func()
+	finished    bool
+	cleanupDone bool
+	recovery    *RecoveryInfo
 }
 
 type wsServerFrame struct {
@@ -66,6 +71,7 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 			if handle.conn != nil {
 				_ = handle.conn.Close()
 			}
+			handle.runCleanup()
 		})
 	}
 
@@ -152,6 +158,40 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 	return handle
 }
 
+func (h *wsHandle) setCleanup(cleanup func()) {
+	var runCleanup func()
+	h.metaMu.Lock()
+	h.cleanup = cleanup
+	if h.finished && !h.cleanupDone && h.cleanup != nil {
+		h.cleanupDone = true
+		runCleanup = h.cleanup
+	}
+	h.metaMu.Unlock()
+	if runCleanup != nil {
+		runCleanup()
+	}
+}
+
+func (h *wsHandle) setRecoveryInfo(info *RecoveryInfo) {
+	h.metaMu.Lock()
+	defer h.metaMu.Unlock()
+	h.recovery = info
+}
+
+func (h *wsHandle) runCleanup() {
+	var cleanup func()
+	h.metaMu.Lock()
+	h.finished = true
+	if !h.cleanupDone && h.cleanup != nil {
+		h.cleanupDone = true
+		cleanup = h.cleanup
+	}
+	h.metaMu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
 func dialSidecar(containerID, hostPort string, sinceOffset int64) (*wsHandle, error) {
 	u := url.URL{
 		Scheme: "ws",
@@ -188,6 +228,7 @@ func (h *wsHandle) Kill() error {
 	if h.conn != nil {
 		_ = h.conn.Close()
 	}
+	h.runCleanup()
 
 	return errors.Join(stopErr, rmErr)
 }
@@ -195,5 +236,7 @@ func (h *wsHandle) Kill() error {
 func (h *wsHandle) PID() int { return 0 }
 
 func (h *wsHandle) RecoveryInfo() *RecoveryInfo {
-	return &RecoveryInfo{SessionID: h.containerID}
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+	return h.recovery
 }

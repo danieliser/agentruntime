@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/gorilla/websocket"
 )
 
 func TestDockerAdversarial_MountHostWithSpacesStaysSingleVArg(t *testing.T) {
@@ -91,7 +95,7 @@ func TestDockerAdversarial_ImageMetacharactersPassedLiterally(t *testing.T) {
 		t.Fatalf("buildRunArgs failed: %v", err)
 	}
 
-	got := args[len(args)-len(cmd)-1]
+	got := args[len(args)-1]
 	if got != image {
 		t.Fatalf("expected image %q, got %q in args %v", image, got, args)
 	}
@@ -123,26 +127,21 @@ exit 0
 `)
 
 	rt := NewDockerRuntime(DockerConfig{Image: "alpine:latest"})
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
+	_, err := rt.Spawn(testContext(t), SpawnConfig{
 		Cmd:       []string{"echo", "ignored"},
 		SessionID: "invalid-memory-1234",
 		Request: &apischema.SessionRequest{
 			Container: &apischema.ContainerConfig{Memory: "lots"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("spawn failed before docker returned an exit code: %v", err)
+	if err == nil {
+		t.Fatal("expected spawn to fail when docker rejects the memory limit")
 	}
-
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
+	if !strings.Contains(err.Error(), "docker run") {
+		t.Fatalf("expected error to mention docker run, got %v", err)
 	}
-	if result.Code == 0 {
-		t.Fatalf("expected non-zero exit for invalid memory, got stdout=%q stderr=%q", stdout, stderr)
-	}
-	if !strings.Contains(stderr, "invalid memory value") {
-		t.Fatalf("expected docker stderr to mention invalid memory, got %q", stderr)
+	if !strings.Contains(err.Error(), "invalid memory value") {
+		t.Fatalf("expected docker error to mention invalid memory value, got %v", err)
 	}
 }
 
@@ -255,51 +254,55 @@ func TestDockerAdversarial_FiftyMountsAllAppearInArgs(t *testing.T) {
 }
 
 func TestDockerAdversarial_ContainerNameCollisionFailsOrUsesUniqueName(t *testing.T) {
+	sidecarPort := startFakeDockerSidecar(t)
 	stateDir := t.TempDir()
 	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
 set -eu
 state_dir=%q
-if [ "$1" != "run" ]; then
-  echo "unexpected docker command: $1" >&2
-  exit 2
-fi
-name=""
-hold=0
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --name)
-      name=$2
-      shift 2
-      ;;
-    __hold__)
-      hold=1
-      shift
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-if [ -z "$name" ]; then
-  echo "missing container name" >&2
-  exit 2
-fi
-marker="$state_dir/$name"
-if [ -e "$marker" ]; then
-  echo "docker: Error response from daemon: Conflict. The container name \"/$name\" is already in use." >&2
-  exit 125
-fi
-: >"$marker"
-if [ "$hold" -eq 1 ]; then
-  while :; do sleep 1; done
-fi
-rm -f "$marker"
-exit 0
-`, stateDir))
+sidecar_port=%q
+case "$1" in
+  run)
+    shift
+    name=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name)
+          name=$2
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    if [ -z "$name" ]; then
+      echo "missing container name" >&2
+      exit 2
+    fi
+    marker="$state_dir/$name"
+    if [ -e "$marker" ]; then
+      echo "docker: Error response from daemon: Conflict. The container name \"/$name\" is already in use." >&2
+      exit 125
+    fi
+    : >"$marker"
+    printf '%%s\n' "$name"
+    ;;
+  port)
+    printf '0.0.0.0:%%s\n' "$sidecar_port"
+    ;;
+  stop|rm)
+    rm -f "$state_dir/$2"
+    ;;
+  *)
+    echo "unexpected docker command: $1" >&2
+    exit 2
+    ;;
+esac
+`, stateDir, sidecarPort))
 
 	rt := NewDockerRuntime(DockerConfig{Image: "alpine:latest"})
 	firstCfg := SpawnConfig{
-		Cmd:       []string{"__hold__"},
+		Cmd:       []string{"echo", "first"},
 		SessionID: "deadbeef-first",
 	}
 	secondCfg := SpawnConfig{
@@ -335,30 +338,17 @@ exit 0
 		if firstName != secondName {
 			t.Fatalf("expected unique names to avoid immediate spawn failure, got %v", err)
 		}
-		if !strings.Contains(err.Error(), "docker run start") {
-			t.Fatalf("expected docker start error for collision, got %v", err)
+		if !strings.Contains(err.Error(), "docker run") {
+			t.Fatalf("expected docker run error for collision, got %v", err)
 		}
 		return
 	}
-
-	stdout, stderr, result := readProcessOutput(t, second)
-	if result.Err != nil {
-		t.Fatalf("wait(second) failed: %v (stderr=%q)", result.Err, stderr)
-	}
-
 	if firstName == secondName {
-		if result.Code == 0 {
-			t.Fatalf("expected collision to fail for duplicate container name %q, got stdout=%q stderr=%q", firstName, stdout, stderr)
-		}
-		if !strings.Contains(stderr, "already in use") {
-			t.Fatalf("expected duplicate-name error, got %q", stderr)
-		}
-		return
+		t.Fatalf("expected duplicate container name %q to fail, but spawn succeeded", firstName)
 	}
-
-	if result.Code != 0 {
-		t.Fatalf("expected unique name path to succeed, got code=%d stderr=%q", result.Code, stderr)
-	}
+	t.Cleanup(func() {
+		_ = second.Kill()
+	})
 }
 
 func TestDockerAdversarial_PTYAddsTFlag(t *testing.T) {
@@ -393,7 +383,7 @@ func TestDockerAdversarial_RequestImageWinsOverRuntimeConfig(t *testing.T) {
 		t.Fatalf("buildRunArgs failed: %v", err)
 	}
 
-	got := args[len(args)-len(cmd)-1]
+	got := args[len(args)-1]
 	if got != "busybox:1.36" {
 		t.Fatalf("expected request image to win, got %q in args %v", got, args)
 	}
@@ -436,7 +426,7 @@ func TestDockerAdversarial_NilRequestFallsBackToSpawnConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env file: %v", err)
 	}
-	if string(data) != "VISIBLE_VAR=from-spawn-config\n" {
+	if string(data) != "AGENT_CMD=[\"env\"]\nVISIBLE_VAR=from-spawn-config\n" {
 		t.Fatalf("expected spawn config env in env file, got %q", string(data))
 	}
 }
@@ -505,4 +495,41 @@ func waitForFile(path string, timeout time.Duration) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out waiting for %s", path)
+}
+
+func startFakeDockerSidecar(t *testing.T) string {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case dockerSidecarHealthPath:
+			w.WriteHeader(http.StatusOK)
+		case "/ws":
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Fatalf("upgrade websocket: %v", err)
+			}
+			defer conn.Close()
+
+			if err := conn.WriteJSON(wsServerFrame{Type: "connected"}); err != nil {
+				t.Fatalf("write connected: %v", err)
+			}
+			for {
+				var frame wsClientFrame
+				if err := conn.ReadJSON(&frame); err != nil {
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	return u.Port()
 }

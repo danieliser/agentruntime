@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
@@ -121,6 +124,56 @@ exit 2
 	}
 }
 
+func TestDockerRecover_PrefersSidecarWhenAvailable(t *testing.T) {
+	sidecarPort := startFakeDockerSidecar(t)
+	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    printf '%s\n' 'container-123'
+    ;;
+  inspect)
+    printf '%s\n' '{"agentruntime.session_id":"sess-sidecar","agentruntime.task_id":"task-sidecar"}'
+    ;;
+  port)
+    printf '0.0.0.0:%s\n'
+    ;;
+  stop|rm)
+    exit 0
+    ;;
+  *)
+    echo "unexpected docker command: $1" >&2
+    exit 2
+    ;;
+esac
+`, sidecarPort))
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	handles, err := rt.Recover(context.Background())
+	if err != nil {
+		t.Fatalf("recover failed: %v", err)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("expected 1 recovered handle, got %d", len(handles))
+	}
+
+	wsRecovered, ok := handles[0].(*wsHandle)
+	if !ok {
+		t.Fatalf("expected wsHandle, got %T", handles[0])
+	}
+	t.Cleanup(func() {
+		_ = wsRecovered.Kill()
+	})
+
+	info := wsRecovered.RecoveryInfo()
+	if info == nil {
+		t.Fatal("expected recovery info")
+	}
+	if info.SessionID != "sess-sidecar" || info.TaskID != "task-sidecar" {
+		t.Fatalf("unexpected recovery info: %+v", info)
+	}
+}
+
 func TestDockerSpawn_SecurityFlagsPresent(t *testing.T) {
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 
@@ -144,6 +197,96 @@ func TestDockerSpawn_SecurityFlagsPresent(t *testing.T) {
 	}
 	if !hasFlagValue(spec.args, "--security-opt", "no-new-privileges:true") {
 		t.Fatalf("expected no-new-privileges security opt, got %v", spec.args)
+	}
+}
+
+func TestDockerSpawn_WSBased_DetachedMode(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"echo", "ok"},
+		SessionID: "detached-mode-1234",
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	if !containsArg(spec.args, "-d") {
+		t.Fatalf("expected -d in args, got %v", spec.args)
+	}
+	if containsArg(spec.args, "-i") {
+		t.Fatalf("did not expect -i in args, got %v", spec.args)
+	}
+}
+
+func TestDockerSpawn_WSBased_PortMapping(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"echo", "ok"},
+		SessionID: "port-mapping-1234",
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	if !hasFlagValue(spec.args, "-p", "0:9090") {
+		t.Fatalf("expected -p 0:9090 in args, got %v", spec.args)
+	}
+}
+
+func TestDockerSpawn_WSBased_AgentCmdEnv(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	cmd := []string{"echo", "hello world"}
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       cmd,
+		SessionID: "agent-cmd-env-1234",
+		Request: &apischema.SessionRequest{
+			Env: map[string]string{
+				"VISIBLE_VAR": "docker-value",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	envFile := flagValue(spec.args, "--env-file")
+	if envFile == "" {
+		t.Fatalf("expected --env-file in args, got %v", spec.args)
+	}
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+
+	encodedCmd, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal command: %v", err)
+	}
+	if !strings.Contains(string(data), "AGENT_CMD="+string(encodedCmd)+"\n") {
+		t.Fatalf("expected AGENT_CMD in env file, got %q", string(data))
+	}
+}
+
+func TestDockerSpawn_WSBased_NoCommandAfterImage(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+
+	args, err := rt.buildRunArgs(SpawnConfig{
+		Cmd:       []string{"echo", "ok"},
+		SessionID: "no-command-after-image-1234",
+	})
+	if err != nil {
+		t.Fatalf("buildRunArgs failed: %v", err)
+	}
+
+	if got := args[len(args)-1]; got != "ubuntu:22.04" {
+		t.Fatalf("expected image to be final arg, got %q in args %v", got, args)
 	}
 }
 
@@ -213,7 +356,7 @@ func TestDockerSpawn_EnvFileCreatedAndDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env file: %v", err)
 	}
-	if string(data) != "VISIBLE_VAR=docker-value\n" {
+	if string(data) != "AGENT_CMD=[\"env\"]\nVISIBLE_VAR=docker-value\n" {
 		t.Fatalf("unexpected env file contents %q", string(data))
 	}
 
@@ -273,7 +416,7 @@ func TestDockerSpawn_ResourceLimits(t *testing.T) {
 	if !hasFlagValue(spec.args, "--network", "none") {
 		t.Fatalf("expected network override in args, got %v", spec.args)
 	}
-	if spec.args[len(spec.args)-3] != "custom:latest" {
+	if spec.args[len(spec.args)-1] != "custom:latest" {
 		t.Fatalf("expected resource image override in args, got %v", spec.args)
 	}
 }

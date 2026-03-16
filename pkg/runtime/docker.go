@@ -1,22 +1,32 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/materialize"
 )
 
 const DefaultDockerImage = "agentruntime-agent:latest"
+
+const (
+	dockerSidecarContainerPort = "9090"
+	dockerSidecarHealthPath    = "/health"
+	dockerSidecarHealthTimeout = 15 * time.Second
+	dockerSidecarHealthPoll    = 200 * time.Millisecond
+)
 
 // DockerConfig holds configuration for the Docker runtime.
 type DockerConfig struct {
@@ -75,8 +85,8 @@ type dockerRunSpec struct {
 
 func (r *DockerRuntime) Name() string { return "docker" }
 
-// Spawn runs a command inside a Docker container. The container is created with
-// stdin attached and labeled for orphan recovery.
+// Spawn runs a command inside a Docker container sidecar and connects to it
+// over the in-container WebSocket bridge.
 func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandle, error) {
 	if len(cfg.Cmd) == 0 {
 		return nil, &SpawnError{Reason: "cmd is empty"}
@@ -87,63 +97,53 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	}
 
 	cmd := exec.CommandContext(ctx, "docker", spec.args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
-	stdin, err := cmd.StdinPipe()
+	if err := cmd.Run(); err != nil {
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
+		return nil, &SpawnError{Reason: "docker run", Err: dockerCommandError(err, stderr.String())}
+	}
+
+	containerID := strings.TrimSpace(stdout.String())
+	if containerID == "" {
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
+		return nil, &SpawnError{Reason: "docker run", Err: fmt.Errorf("missing container ID")}
+	}
+
+	hostPort, err := dockerContainerPort(ctx, containerID, dockerSidecarContainerPort)
 	if err != nil {
+		stopDockerContainer(containerID)
 		if spec.cleanup != nil {
 			spec.cleanup()
 		}
-		return nil, &SpawnError{Reason: "stdin pipe", Err: err}
+		return nil, &SpawnError{Reason: "docker port", Err: err}
 	}
-	stdout, err := cmd.StdoutPipe()
+
+	if err := waitForDockerSidecarHealth(ctx, hostPort); err != nil {
+		stopDockerContainer(containerID)
+		if spec.cleanup != nil {
+			spec.cleanup()
+		}
+		return nil, &SpawnError{Reason: "sidecar health", Err: err}
+	}
+
+	handle, err := dialSidecar(containerID, hostPort, 0)
 	if err != nil {
+		stopDockerContainer(containerID)
 		if spec.cleanup != nil {
 			spec.cleanup()
 		}
-		return nil, &SpawnError{Reason: "stdout pipe", Err: err}
+		return nil, &SpawnError{Reason: "sidecar ws", Err: err}
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		if spec.cleanup != nil {
-			spec.cleanup()
-		}
-		return nil, &SpawnError{Reason: "stderr pipe", Err: err}
-	}
-
-	if err := cmd.Start(); err != nil {
-		if spec.cleanup != nil {
-			spec.cleanup()
-		}
-		return nil, &SpawnError{Reason: "docker run start", Err: err}
-	}
-	// NOTE: spec.cleanup (which removes temp artifacts after materialization)
-	// must NOT run until after the container has started and read its files.
-	// We defer it to after cmd.Wait() completes in the goroutine below.
-
-	done := make(chan ExitResult, 1)
-	go func() {
-		waitErr := cmd.Wait()
-		// Now safe to clean up temp files — container has exited.
-		if spec.cleanup != nil {
-			spec.cleanup()
-		}
-		code := 0
-		if waitErr != nil {
-			if exitErr, ok := waitErr.(*exec.ExitError); ok {
-				code = exitErr.ExitCode()
-				waitErr = nil
-			}
-		}
-		done <- ExitResult{Code: code, Err: waitErr}
-	}()
-
-	return &dockerHandle{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		stderr: stderr,
-		done:   done,
-	}, nil
+	handle.setCleanup(spec.cleanup)
+	return handle, nil
 }
 
 func (r *DockerRuntime) buildRunArgs(cfg SpawnConfig) ([]string, error) {
@@ -189,7 +189,19 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		mounts = append(mounts, result.Mounts...)
 	}
 
-	envFile, err := writeDockerEnvFile(requestEnv(cfg))
+	agentCmd, err := json.Marshal(cfg.Cmd)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+
+	envValues := make(map[string]string, len(requestEnv(cfg))+1)
+	for key, value := range requestEnv(cfg) {
+		envValues[key] = value
+	}
+	envValues["AGENT_CMD"] = string(agentCmd)
+
+	envFile, err := writeDockerEnvFile(envValues)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -201,7 +213,8 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	args := []string{
 		"run",
 		"--rm",
-		"-i",
+		"-d",
+		"-p", "0:" + dockerSidecarContainerPort,
 		"--init",
 		"--cap-drop", "ALL",
 		"--cap-add", "DAC_OVERRIDE",
@@ -240,7 +253,6 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 
 	args = append(args, r.cfg.ExtraArgs...)
 	args = append(args, image)
-	args = append(args, cfg.Cmd...)
 
 	return &dockerRunSpec{
 		args:    args,
@@ -410,13 +422,106 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		if err != nil {
 			return nil, fmt.Errorf("docker inspect %s: %w", id, err)
 		}
-		handle, err := newRecoveredDockerHandle(ctx, id, strings.TrimSpace(labels[dockerSessionLabelKey]), strings.TrimSpace(labels[dockerTaskLabelKey]))
+		sessionID := strings.TrimSpace(labels[dockerSessionLabelKey])
+		taskID := strings.TrimSpace(labels[dockerTaskLabelKey])
+
+		if hostPort, err := dockerContainerPort(ctx, id, dockerSidecarContainerPort); err == nil {
+			handle, err := dialSidecar(id, hostPort, 0)
+			if err == nil {
+				handle.setRecoveryInfo(&RecoveryInfo{
+					SessionID: sessionID,
+					TaskID:    taskID,
+				})
+				handles = append(handles, handle)
+				continue
+			}
+		}
+
+		handle, err := newRecoveredDockerHandle(ctx, id, sessionID, taskID)
 		if err != nil {
 			return nil, fmt.Errorf("docker logs %s: %w", id, err)
 		}
 		handles = append(handles, handle)
 	}
 	return handles, nil
+}
+
+func dockerCommandError(err error, stderr string) error {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, stderr)
+}
+
+func dockerContainerPort(ctx context.Context, containerID, containerPort string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "port", containerID, containerPort).Output()
+	if err != nil {
+		return "", err
+	}
+	return parseDockerPortOutput(string(out))
+}
+
+func parseDockerPortOutput(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, rhs, ok := strings.Cut(line, "->"); ok {
+			line = strings.TrimSpace(rhs)
+		}
+
+		idx := strings.LastIndex(line, ":")
+		if idx < 0 || idx == len(line)-1 {
+			continue
+		}
+		port := strings.TrimSpace(line[idx+1:])
+		if _, err := strconv.Atoi(port); err != nil {
+			continue
+		}
+		return port, nil
+	}
+	return "", fmt.Errorf("parse docker port output %q", strings.TrimSpace(output))
+}
+
+func waitForDockerSidecarHealth(ctx context.Context, hostPort string) error {
+	deadlineCtx, cancel := context.WithTimeout(ctx, dockerSidecarHealthTimeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: time.Second}
+	url := "http://localhost:" + hostPort + dockerSidecarHealthPath
+	ticker := time.NewTicker(dockerSidecarHealthPoll)
+	defer ticker.Stop()
+
+	for {
+		req, err := http.NewRequestWithContext(deadlineCtx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+
+		select {
+		case <-deadlineCtx.Done():
+			return fmt.Errorf("timed out waiting for sidecar health on port %s: %w", hostPort, deadlineCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func stopDockerContainer(containerID string) {
+	if containerID == "" {
+		return
+	}
+	_ = exec.Command("docker", "stop", containerID).Run()
+	_ = exec.Command("docker", "rm", containerID).Run()
 }
 
 func dockerContainerLabels(ctx context.Context, containerID string) (map[string]string, error) {
