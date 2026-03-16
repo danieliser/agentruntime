@@ -50,7 +50,10 @@ func Materialize(req *apischema.SessionRequest, sessionID, dataDir string) (*Res
 
 	cleanup := result.CleanupFn
 
-	if req.Claude != nil {
+	if req.Claude != nil || req.Agent == "claude" {
+		if req.Claude == nil {
+			req.Claude = &apischema.ClaudeConfig{}
+		}
 		sessionDir, err := materializeClaude(tmpDir, dataDir, sessionID, req, &result.Mounts)
 		if err != nil {
 			cleanup()
@@ -59,7 +62,10 @@ func Materialize(req *apischema.SessionRequest, sessionID, dataDir string) (*Res
 		result.SessionDir = sessionDir
 	}
 
-	if req.Codex != nil {
+	if req.Codex != nil || req.Agent == "codex" {
+		if req.Codex == nil {
+			req.Codex = &apischema.CodexConfig{}
+		}
 		sessionDir, err := materializeCodex(tmpDir, dataDir, sessionID, req, &result.Mounts)
 		if err != nil {
 			cleanup()
@@ -139,6 +145,16 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 
 	if err := writeTextFile(filepath.Join(codexDir, "instructions.md"), req.Codex.Instructions); err != nil {
 		return "", err
+	}
+
+	// Copy Codex auth.json from host if it exists.
+	// Codex uses OAuth tokens stored in ~/.codex/auth.json.
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		hostAuth := filepath.Join(home, ".codex", "auth.json")
+		if data, err := os.ReadFile(hostAuth); err == nil {
+			_ = os.WriteFile(filepath.Join(codexDir, "auth.json"), data, 0o600)
+		}
 	}
 
 	*mounts = append(*mounts, apischema.Mount{
