@@ -31,16 +31,28 @@ import (
 // so our API tests exercise actual subprocess lifecycle, not stubs.
 // We use "echo", "cat", and "sleep" — universally available on POSIX.
 type fakeRuntime struct {
-	rt *runtime.LocalRuntime
+	rt             *runtime.LocalRuntime
+	sessionDirRoot string
 }
 
-func newFakeRuntime() *fakeRuntime {
-	return &fakeRuntime{rt: runtime.NewLocalRuntime()}
+func newFakeRuntime(t *testing.T) *fakeRuntime {
+	t.Helper()
+	return &fakeRuntime{
+		rt:             runtime.NewLocalRuntime(),
+		sessionDirRoot: t.TempDir(),
+	}
 }
 
 func (f *fakeRuntime) Name() string { return "test" }
 
 func (f *fakeRuntime) Spawn(ctx context.Context, cfg runtime.SpawnConfig) (runtime.ProcessHandle, error) {
+	if cfg.SessionDir != nil {
+		sessionDir := filepath.Join(f.sessionDirRoot, cfg.SessionID)
+		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+			return nil, err
+		}
+		*cfg.SessionDir = sessionDir
+	}
 	return f.rt.Spawn(ctx, cfg)
 }
 
@@ -114,7 +126,7 @@ func (a *captureAgent) LastConfig() agent.AgentConfig {
 
 func newTestServer(t *testing.T) (*httptest.Server, *Server) {
 	t.Helper()
-	rt := newFakeRuntime()
+	rt := newFakeRuntime(t)
 	reg := agent.NewRegistry()
 	reg.Register(&echoAgent{})
 	reg.Register(&catAgent{})
@@ -132,7 +144,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *Server) {
 
 func newConfiguredTestServer(t *testing.T, reg *agent.Registry, cfg ServerConfig) (*httptest.Server, *Server) {
 	t.Helper()
-	rt := newFakeRuntime()
+	rt := newFakeRuntime(t)
 	mgr := session.NewManager()
 	srv := NewServer(mgr, rt, reg, cfg)
 	ts := httptest.NewServer(srv.router)
@@ -403,6 +415,93 @@ func TestGetSession_Found(t *testing.T) {
 	decodeJSON(t, resp2.Body, &body)
 	if body["id"] != id {
 		t.Fatalf("expected id %q, got %v", id, body["id"])
+	}
+}
+
+func TestGetSessionInfo_ReturnsAllFields(t *testing.T) {
+	ts, srv := newTestServer(t)
+
+	created := mustCreateSession(t, ts, SessionRequest{
+		TaskID: "task-info",
+		Agent:  "sleep-test",
+		Prompt: "ignored",
+	})
+	t.Cleanup(func() {
+		req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/sessions/"+created.SessionID, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil && resp != nil {
+			resp.Body.Close()
+		}
+	})
+
+	resp := get(t, ts, "/sessions/"+created.SessionID+"/info")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	var info SessionInfo
+	decodeJSON(t, resp.Body, &info)
+
+	sess := srv.sessions.Get(created.SessionID)
+	if sess == nil {
+		t.Fatalf("expected session %q in manager", created.SessionID)
+	}
+	snap := sess.Snapshot()
+	expectedLogFile := filepath.Join(srv.logDir, created.SessionID+".jsonl")
+
+	if info.SessionID != created.SessionID {
+		t.Fatalf("expected session_id %q, got %q", created.SessionID, info.SessionID)
+	}
+	if info.TaskID != "task-info" {
+		t.Fatalf("expected task_id %q, got %q", "task-info", info.TaskID)
+	}
+	if info.Agent != "sleep-test" {
+		t.Fatalf("expected agent %q, got %q", "sleep-test", info.Agent)
+	}
+	if info.Runtime != "test" {
+		t.Fatalf("expected runtime %q, got %q", "test", info.Runtime)
+	}
+	if info.Status != string(session.StateRunning) {
+		t.Fatalf("expected status %q, got %q", session.StateRunning, info.Status)
+	}
+	if info.CreatedAt.IsZero() {
+		t.Fatal("expected non-zero created_at")
+	}
+	if info.EndedAt != nil {
+		t.Fatalf("expected nil ended_at for running session, got %v", info.EndedAt)
+	}
+	if info.ExitCode != nil {
+		t.Fatalf("expected nil exit_code for running session, got %v", info.ExitCode)
+	}
+	if info.SessionDir == "" {
+		t.Fatal("expected non-empty session_dir")
+	}
+	if info.SessionDir != snap.SessionDir {
+		t.Fatalf("expected session_dir %q, got %q", snap.SessionDir, info.SessionDir)
+	}
+	if _, err := os.Stat(info.SessionDir); err != nil {
+		t.Fatalf("expected session_dir to exist: %v", err)
+	}
+	if info.LogFile != expectedLogFile {
+		t.Fatalf("expected log_file %q, got %q", expectedLogFile, info.LogFile)
+	}
+	if info.WSURL != created.WSURL {
+		t.Fatalf("expected ws_url %q, got %q", created.WSURL, info.WSURL)
+	}
+	if info.LogURL != created.LogURL {
+		t.Fatalf("expected log_url %q, got %q", created.LogURL, info.LogURL)
+	}
+}
+
+func TestGetSessionInfo_NotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp := get(t, ts, "/sessions/does-not-exist/info")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -92,14 +93,15 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	// Spawn the process.
 	ctx := context.Background()
 	handle, err := s.runtime.Spawn(ctx, runtime.SpawnConfig{
-		SessionID: sess.ID,
-		AgentName: req.Agent,
-		Cmd:       cmd,
-		Env:       req.Env,
-		WorkDir:   workDir,
-		TaskID:    req.TaskID,
-		Request:   &req,
-		PTY:       req.PTY,
+		SessionID:  sess.ID,
+		AgentName:  req.Agent,
+		Cmd:        cmd,
+		Env:        req.Env,
+		WorkDir:    workDir,
+		TaskID:     req.TaskID,
+		Request:    &req,
+		SessionDir: &sess.SessionDir,
+		PTY:        req.PTY,
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
@@ -167,8 +169,8 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		Agent:     snap.AgentName,
 		Runtime:   snap.RuntimeName,
 		Status:    string(snap.State),
-		WSURL:     websocketScheme(c) + "://" + c.Request.Host + "/ws/sessions/" + url.PathEscape(snap.ID),
-		LogURL:    httpScheme(c) + "://" + c.Request.Host + "/sessions/" + url.PathEscape(snap.ID) + "/logs",
+		WSURL:     sessionWSURL(c, snap.ID),
+		LogURL:    sessionLogURL(c, snap.ID),
 	})
 }
 
@@ -203,6 +205,30 @@ func (s *Server) handleGetSession(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, sess.Snapshot())
+}
+
+func (s *Server) handleGetSessionInfo(c *gin.Context) {
+	sess := s.sessions.Get(c.Param("id"))
+	if sess == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	snap := sess.Snapshot()
+	c.JSON(http.StatusOK, SessionInfo{
+		SessionID:  snap.ID,
+		TaskID:     snap.TaskID,
+		Agent:      snap.AgentName,
+		Runtime:    snap.RuntimeName,
+		Status:     string(snap.State),
+		CreatedAt:  snap.CreatedAt,
+		EndedAt:    snap.EndedAt,
+		ExitCode:   snap.ExitCode,
+		SessionDir: snap.SessionDir,
+		LogFile:    filepath.Join(s.logDir, snap.ID+".jsonl"),
+		WSURL:      sessionWSURL(c, snap.ID),
+		LogURL:     sessionLogURL(c, snap.ID),
+	})
 }
 
 func (s *Server) handleDeleteSession(c *gin.Context) {
@@ -312,6 +338,14 @@ func websocketScheme(c *gin.Context) string {
 		return "wss"
 	}
 	return "ws"
+}
+
+func sessionWSURL(c *gin.Context, sessionID string) string {
+	return websocketScheme(c) + "://" + c.Request.Host + "/ws/sessions/" + url.PathEscape(sessionID)
+}
+
+func sessionLogURL(c *gin.Context, sessionID string) string {
+	return httpScheme(c) + "://" + c.Request.Host + "/sessions/" + url.PathEscape(sessionID) + "/logs"
 }
 
 func (s *Server) lookupResumeSessionID(agentName, sessionID string) (string, error) {

@@ -20,8 +20,8 @@ import (
 // Result is the output of materializing agent config into an agent home directory.
 type Result struct {
 	SessionDir string
-	Mounts    []apischema.Mount
-	CleanupFn func()
+	Mounts     []apischema.Mount
+	CleanupFn  func()
 }
 
 // Materialize writes agent config files into an agent home directory and returns mounts.
