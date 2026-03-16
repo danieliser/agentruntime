@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	goruntime "runtime"
 	"runtime/debug"
@@ -37,6 +38,39 @@ type bridgeTestHandle struct {
 	once    sync.Once
 }
 
+func TestRuntimeResourceHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_RESOURCE_HELPER_PROCESS") != "1" {
+		return
+	}
+
+	switch os.Getenv("RESOURCE_HELPER_ACTION") {
+	case "write-stdout":
+		total, err := strconv.Atoi(os.Getenv("RESOURCE_HELPER_BYTES"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "parse RESOURCE_HELPER_BYTES: %v", err)
+			os.Exit(2)
+		}
+
+		chunk := bytes.Repeat([]byte("x"), 32<<10)
+		for total > 0 {
+			n := len(chunk)
+			if total < n {
+				n = total
+			}
+			if _, err := os.Stdout.Write(chunk[:n]); err != nil {
+				fmt.Fprintf(os.Stderr, "write stdout: %v", err)
+				os.Exit(2)
+			}
+			total -= n
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown resource helper action %q", os.Getenv("RESOURCE_HELPER_ACTION"))
+		os.Exit(2)
+	}
+
+	os.Exit(0)
+}
+
 func newBridgeTestHandle() *bridgeTestHandle {
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
@@ -52,11 +86,11 @@ func newBridgeTestHandle() *bridgeTestHandle {
 	}
 }
 
-func (h *bridgeTestHandle) Stdin() io.WriteCloser   { return h.stdinW }
-func (h *bridgeTestHandle) Stdout() io.ReadCloser   { return h.stdoutR }
-func (h *bridgeTestHandle) Stderr() io.ReadCloser   { return h.stderrR }
+func (h *bridgeTestHandle) Stdin() io.WriteCloser           { return h.stdinW }
+func (h *bridgeTestHandle) Stdout() io.ReadCloser           { return h.stdoutR }
+func (h *bridgeTestHandle) Stderr() io.ReadCloser           { return h.stderrR }
 func (h *bridgeTestHandle) Wait() <-chan runtime.ExitResult { return h.done }
-func (h *bridgeTestHandle) PID() int                { return 1 }
+func (h *bridgeTestHandle) PID() int                        { return 1 }
 
 func (h *bridgeTestHandle) Kill() error {
 	h.exit(137)
@@ -124,6 +158,21 @@ func requireCommands(t *testing.T, names ...string) {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Skipf("skip: %s not available: %v", name, err)
 		}
+	}
+}
+
+func resourceHelperConfig(action string, env map[string]string) runtime.SpawnConfig {
+	mergedEnv := map[string]string{
+		"GO_WANT_RESOURCE_HELPER_PROCESS": "1",
+		"RESOURCE_HELPER_ACTION":          action,
+	}
+	for key, value := range env {
+		mergedEnv[key] = value
+	}
+
+	return runtime.SpawnConfig{
+		Cmd: []string{os.Args[0], "-test.run=^TestRuntimeResourceHelperProcess$"},
+		Env: mergedEnv,
 	}
 }
 
@@ -270,7 +319,18 @@ func TestLocalRuntime_ResourceBoundaries_50ProcessesComplete(t *testing.T) {
 }
 
 func TestBridge_ResourceBoundaries_10MBStdoutReplayRemainsBounded(t *testing.T) {
-	handle := newBridgeTestHandle()
+	rt := runtime.NewLocalRuntime()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const totalBytes = 10 << 20
+	handle, err := rt.Spawn(ctx, resourceHelperConfig("write-stdout", map[string]string{
+		"RESOURCE_HELPER_BYTES": strconv.Itoa(totalBytes),
+	}))
+	if err != nil {
+		t.Fatalf("spawn large stdout helper: %v", err)
+	}
+
 	replay := sessionpkg.NewReplayBuffer(testReplayBufferSize)
 	conn, bridgeDone, cleanup := startBridgeServer(t, handle, replay, -1)
 	defer cleanup()
@@ -278,24 +338,6 @@ func TestBridge_ResourceBoundaries_10MBStdoutReplayRemainsBounded(t *testing.T) 
 	if frame := readFrame(t, conn); frame.Type != "connected" {
 		t.Fatalf("expected connected frame, got %q", frame.Type)
 	}
-
-	const totalBytes = 10 << 20
-	go func() {
-		defer handle.exit(0)
-
-		payload := bytes.Repeat([]byte("x"), 32<<10)
-		remaining := totalBytes
-		for remaining > 0 {
-			chunk := payload
-			if remaining < len(chunk) {
-				chunk = chunk[:remaining]
-			}
-			if _, err := handle.stdoutW.Write(chunk); err != nil {
-				return
-			}
-			remaining -= len(chunk)
-		}
-	}()
 
 	var streamed int
 	for {
@@ -385,6 +427,10 @@ func TestBridge_ResourceBoundaries_InfiniteOutputCleansUpAfterKill(t *testing.T)
 }
 
 func TestLocalRuntime_ResourceBoundaries_KillReapsProcessGroup(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("process groups are only asserted on unix-like platforms")
+	}
+
 	requireCommands(t, "sh", "sleep", "ps")
 
 	rt := runtime.NewLocalRuntime()
