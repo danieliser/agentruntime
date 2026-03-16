@@ -15,9 +15,11 @@ import (
 	"github.com/danieliser/agentruntime/pkg/materialize"
 )
 
+const DefaultDockerImage = "agentruntime-agent:latest"
+
 // DockerConfig holds configuration for the Docker runtime.
 type DockerConfig struct {
-	// Image is the default container image (e.g., "alpine:latest").
+	// Image is the default container image (e.g., "agentruntime-agent:latest").
 	Image string
 
 	// Network is the Docker network to attach containers to.
@@ -39,6 +41,9 @@ type DockerRuntime struct {
 
 // NewDockerRuntime creates a new Docker runtime with the given configuration.
 func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
+	if cfg.Image == "" {
+		cfg.Image = DefaultDockerImage
+	}
 	return &DockerRuntime{
 		cfg: cfg,
 		materializer: dockerMaterializerFunc(func(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error) {
