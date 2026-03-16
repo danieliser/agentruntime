@@ -25,15 +25,15 @@ const (
 // Session represents a running or completed agent process with its associated
 // metadata, replay buffer, and process handle.
 type Session struct {
-	ID          string         `json:"id"`
-	TaskID      string         `json:"task_id,omitempty"`
-	AgentName   string         `json:"agent_name"`
-	RuntimeName string         `json:"runtime_name"`
-	State       State          `json:"state"`
-	ExitCode    *int           `json:"exit_code,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	EndedAt     *time.Time     `json:"ended_at,omitempty"`
-	Replay      *ReplayBuffer  `json:"-"`
+	ID          string                `json:"id"`
+	TaskID      string                `json:"task_id,omitempty"`
+	AgentName   string                `json:"agent_name"`
+	RuntimeName string                `json:"runtime_name"`
+	State       State                 `json:"state"`
+	ExitCode    *int                  `json:"exit_code,omitempty"`
+	CreatedAt   time.Time             `json:"created_at"`
+	EndedAt     *time.Time            `json:"ended_at,omitempty"`
+	Replay      *ReplayBuffer         `json:"-"`
 	Handle      runtime.ProcessHandle `json:"-"`
 
 	mu sync.Mutex
@@ -48,7 +48,7 @@ func NewSession(taskID, agentName, runtimeName string) *Session {
 		RuntimeName: runtimeName,
 		State:       StatePending,
 		CreatedAt:   time.Now(),
-		Replay:      NewReplayBuffer(0),
+		Replay:      newLazyReplayBuffer(0),
 	}
 }
 
@@ -159,7 +159,7 @@ func (m *Manager) Recover(handles []runtime.ProcessHandle, runtimeName string) [
 			RuntimeName: runtimeName,
 			State:       StateOrphaned,
 			CreatedAt:   time.Now(),
-			Replay:      NewReplayBuffer(0),
+			Replay:      newLazyReplayBuffer(0),
 			Handle:      h,
 		}
 		m.mu.Lock()

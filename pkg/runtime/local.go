@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os/exec"
+	"sync"
 )
 
 // LocalRuntime spawns agent processes as local OS subprocesses.
@@ -24,6 +25,7 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 
 	cmd := exec.CommandContext(ctx, cfg.Cmd[0], cfg.Cmd[1:]...)
 	cmd.Dir = cfg.WorkDir
+	configureLocalProcessGroup(cmd)
 
 	env, err := buildSpawnEnv(cfg.Env)
 	if err != nil {
@@ -48,7 +50,15 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 		return nil, &SpawnError{Reason: "start", Err: err}
 	}
 
-	done := make(chan ExitResult, 1)
+	raw := make(chan ExitResult, 1)
+	h := &localHandle{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
+		raw:    raw,
+	}
+
 	go func() {
 		waitErr := cmd.Wait()
 		code := 0
@@ -58,16 +68,11 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 				waitErr = nil // non-zero exit is not an error
 			}
 		}
-		done <- ExitResult{Code: code, Err: waitErr}
+		raw <- ExitResult{Code: code, Err: waitErr}
 	}()
+	go h.fanoutLoop()
 
-	return &localHandle{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		stderr: stderr,
-		done:   done,
-	}, nil
+	return h, nil
 }
 
 // Recover returns an empty slice — local processes don't survive daemon restarts.
@@ -76,22 +81,58 @@ func (r *LocalRuntime) Recover(_ context.Context) ([]ProcessHandle, error) {
 }
 
 // localHandle wraps an os/exec.Cmd into the ProcessHandle interface.
+// Wait() fans out the single process-exit event to multiple callers.
 type localHandle struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	stderr io.ReadCloser
-	done   chan ExitResult
+
+	// raw is written exactly once by the cmd.Wait goroutine.
+	raw chan ExitResult
+
+	// fanout guards subscriber list and cached result.
+	fanMu  sync.Mutex
+	fanSub []chan ExitResult
+	fanRes *ExitResult
 }
 
-func (h *localHandle) Stdin() io.WriteCloser   { return h.stdin }
-func (h *localHandle) Stdout() io.ReadCloser   { return h.stdout }
-func (h *localHandle) Stderr() io.ReadCloser   { return h.stderr }
-func (h *localHandle) Wait() <-chan ExitResult { return h.done }
+// fanoutLoop drains raw once, caches the result, and broadcasts to all subscribers.
+func (h *localHandle) fanoutLoop() {
+	result := <-h.raw
+	h.fanMu.Lock()
+	h.fanRes = &result
+	subs := h.fanSub
+	h.fanSub = nil
+	h.fanMu.Unlock()
+	for _, ch := range subs {
+		ch <- result
+	}
+}
+
+func (h *localHandle) Stdin() io.WriteCloser { return h.stdin }
+func (h *localHandle) Stdout() io.ReadCloser { return h.stdout }
+func (h *localHandle) Stderr() io.ReadCloser { return h.stderr }
+
+// Wait returns a channel that receives the process exit result exactly once.
+// Safe to call multiple times — each caller gets its own channel.
+func (h *localHandle) Wait() <-chan ExitResult {
+	ch := make(chan ExitResult, 1)
+	h.fanMu.Lock()
+	if h.fanRes != nil {
+		// Already exited — deliver immediately.
+		ch <- *h.fanRes
+		h.fanMu.Unlock()
+		return ch
+	}
+	h.fanSub = append(h.fanSub, ch)
+	h.fanMu.Unlock()
+	return ch
+}
 
 func (h *localHandle) Kill() error {
 	if h.cmd.Process != nil {
-		return h.cmd.Process.Kill()
+		return killLocalProcessGroup(h.cmd)
 	}
 	return nil
 }
