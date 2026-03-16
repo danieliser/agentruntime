@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -214,12 +215,15 @@ func (b *Bridge) exitWatch(ctx context.Context, ioPumpsWg *sync.WaitGroup, stdou
 		if stderr != nil {
 			stderr.Close()
 		}
+		fmt.Println("exitWatch: waiting for io pumps")
 		ioPumpsWg.Wait()
+		fmt.Println("exitWatch: pumps done, writing exit frame")
 		code := result.Code
-		_ = b.writeJSON(ServerFrame{
+		err := b.writeJSON(ServerFrame{
 			Type:     "exit",
 			ExitCode: &code,
 		})
+		fmt.Printf("exitWatch: exit frame written, err=%v\n", err)
 		b.cancel()
 	}
 }

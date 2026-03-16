@@ -25,5 +25,11 @@ Thumbs.db
 /bin/
 /dist/
 
+# PAOP agent logs
+.paop/
+
+# Fuzz corpus (can be large)
+**/testdata/fuzz/
+
 # Vendor (use modules)
 /vendor/

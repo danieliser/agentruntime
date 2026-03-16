@@ -361,9 +361,11 @@ func TestSessionLifecycle_EchoViaWS(t *testing.T) {
 	for {
 		var f bridge.ServerFrame
 		if err := conn.ReadJSON(&f); err != nil {
+			t.Logf("ReadJSON error: %v (frames so far: %d)", err, len(frames))
 			// Connection closed — normal after exit frame.
 			break
 		}
+		t.Logf("frame received: type=%q data=%q exit_code=%v", f.Type, f.Data, f.ExitCode)
 		frames = append(frames, f)
 		if f.Type == "exit" {
 			break
