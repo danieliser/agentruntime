@@ -256,7 +256,30 @@ func cloneValue(value any) any {
 		}
 		return cloned
 	default:
-		return value
+		rv := reflect.ValueOf(value)
+		if !rv.IsValid() {
+			return nil
+		}
+		switch rv.Kind() {
+		case reflect.Map:
+			if rv.Type().Key().Kind() != reflect.String {
+				return value
+			}
+			cloned := make(map[string]any, rv.Len())
+			iter := rv.MapRange()
+			for iter.Next() {
+				cloned[iter.Key().String()] = cloneValue(iter.Value().Interface())
+			}
+			return cloned
+		case reflect.Slice, reflect.Array:
+			cloned := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				cloned[i] = cloneValue(rv.Index(i).Interface())
+			}
+			return cloned
+		default:
+			return value
+		}
 	}
 }
 
@@ -283,7 +306,30 @@ func resolveValue(value any) any {
 	case string:
 		return ResolveVars(v)
 	default:
-		return value
+		rv := reflect.ValueOf(value)
+		if !rv.IsValid() {
+			return nil
+		}
+		switch rv.Kind() {
+		case reflect.Map:
+			if rv.Type().Key().Kind() != reflect.String {
+				return value
+			}
+			resolved := make(map[string]any, rv.Len())
+			iter := rv.MapRange()
+			for iter.Next() {
+				resolved[iter.Key().String()] = resolveValue(iter.Value().Interface())
+			}
+			return resolved
+		case reflect.Slice, reflect.Array:
+			resolved := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				resolved[i] = resolveValue(rv.Index(i).Interface())
+			}
+			return resolved
+		default:
+			return value
+		}
 	}
 }
 

@@ -57,7 +57,7 @@ func TestMaterialize_ClaudeWritesMcpJSON_MergesServers(t *testing.T) {
 		Claude: &api.ClaudeConfig{
 			McpJSON: map[string]any{
 				"other": "value",
-				"mcpServers": map[string]any{
+				"mcpServers": map[string]map[string]any{
 					"existing": map[string]any{
 						"type": "stdio",
 						"cmd":  []any{"old-server"},
