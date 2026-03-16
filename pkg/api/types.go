@@ -1,6 +1,8 @@
 package api
 
-import "time"
+import (
+	"time"
+)
 
 // SessionRequest is the top-level dispatch shape for creating agent sessions.
 // Three equal dispatch paths use this struct: HTTP JSON, Go SDK, CLI YAML file.
@@ -8,14 +10,22 @@ import "time"
 // Minimum valid request: Agent + Prompt + (WorkDir or a Mount).
 type SessionRequest struct {
 	// Task identity
-	TaskID    string            `json:"task_id,omitempty"    yaml:"task_id,omitempty"`
-	Tags      map[string]string `json:"tags,omitempty"       yaml:"tags,omitempty"`
-	TimeoutMs int               `json:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"` // default: 300000
+	TaskID string            `json:"task_id,omitempty" yaml:"task_id,omitempty"`
+	Name   string            `json:"name,omitempty"    yaml:"name,omitempty"` // human label for observability
+	Tags   map[string]string `json:"tags,omitempty"    yaml:"tags,omitempty"`
 
 	// What to run
 	Agent   string `json:"agent"              yaml:"agent"`
 	Runtime string `json:"runtime,omitempty"  yaml:"runtime,omitempty"` // "local" | "docker" (default: server default)
+	Model   string `json:"model,omitempty"    yaml:"model,omitempty"`   // cross-agent convenience (e.g. "claude-opus-4-5")
 	Prompt  string `json:"prompt"             yaml:"prompt"`
+
+	// Timing
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"` // duration string: "5m", "1h30m" (default: "5m")
+
+	// Session behavior
+	PTY           bool   `json:"pty,omitempty"            yaml:"pty,omitempty"`            // allocate PTY for interactive agents
+	ResumeSession string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"` // session ID to resume
 
 	// Filesystem — explicit multi-mount with access modes.
 	// WorkDir is shorthand: becomes {Host: val, Container: "/workspace", Mode: "rw"}.
@@ -33,8 +43,9 @@ type SessionRequest struct {
 	// Clean-room env: only these vars enter the container. Never inherits host env.
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
 
-	// Container resources — fully optional, sane defaults applied if omitted.
-	Resources *Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
+	// Container settings — image, resource limits, network, security options.
+	// Renamed from "resources" because image isn't a resource — honest naming.
+	Container *ContainerConfig `json:"container,omitempty" yaml:"container,omitempty"`
 }
 
 // Mount describes a bind-mount between host and container.
@@ -78,15 +89,14 @@ type MCPServer struct {
 	Token string            `json:"token,omitempty" yaml:"token,omitempty"`
 }
 
-// Resources holds optional container resource constraints.
+// ContainerConfig holds container image, resource limits, and security options.
 // If omitted entirely, sane defaults are applied:
 // --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges:true
-type Resources struct {
+type ContainerConfig struct {
 	Image       string   `json:"image,omitempty"        yaml:"image,omitempty"`        // default: "ubuntu:22.04"
 	Memory      string   `json:"memory,omitempty"       yaml:"memory,omitempty"`       // e.g. "4g"
 	CPUs        float64  `json:"cpus,omitempty"         yaml:"cpus,omitempty"`         // e.g. 2.0
 	Network     string   `json:"network,omitempty"      yaml:"network,omitempty"`      // default: "bridge"
-	PTY         bool     `json:"pty,omitempty"          yaml:"pty,omitempty"`
 	SecurityOpt []string `json:"security_opt,omitempty" yaml:"security_opt,omitempty"`
 }
 
@@ -127,10 +137,17 @@ func (r *SessionRequest) EffectiveMounts() []Mount {
 	return mounts
 }
 
-// EffectiveTimeout returns the timeout in milliseconds, defaulting to 300000 (5min).
-func (r *SessionRequest) EffectiveTimeout() int {
-	if r.TimeoutMs > 0 {
-		return r.TimeoutMs
+// EffectiveTimeout parses the Timeout duration string and returns it.
+// Defaults to 5 minutes if empty or unparseable.
+func (r *SessionRequest) EffectiveTimeout() time.Duration {
+	if r.Timeout != "" {
+		if d, err := time.ParseDuration(r.Timeout); err == nil {
+			return d
+		}
 	}
-	return 300000
+	return 5 * time.Minute
 }
+
+// Resources is an alias for backward compatibility during migration.
+// Deprecated: use ContainerConfig instead.
+type Resources = ContainerConfig
