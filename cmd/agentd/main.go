@@ -48,7 +48,7 @@ func main() {
 	}
 	if len(recovered) > 0 {
 		orphaned := sessions.Recover(recovered, rt.Name())
-		restoreRecoveredReplay(logDir, orphaned)
+		restoreRecoveredSessions(logDir, orphaned)
 		log.Printf("recovered %d orphaned sessions", len(orphaned))
 	}
 
@@ -93,21 +93,22 @@ func main() {
 	log.Println("agentd stopped")
 }
 
-func restoreRecoveredReplay(logDir string, sessions []*session.Session) {
+func restoreRecoveredSessions(logDir string, sessions []*session.Session) {
 	for _, sess := range sessions {
+		var restoredBytes int64
 		logPath, exists, err := session.ExistingLogFilePath(logDir, sess.ID)
 		if err != nil {
 			log.Printf("[session %s] warning: check replay log failed: %v", sess.ID, err)
-			continue
+		} else if exists {
+			if err := sess.Replay.LoadFromFile(logPath); err != nil {
+				log.Printf("[session %s] warning: restore replay from %s failed: %v", sess.ID, logPath, err)
+			} else {
+				restoredBytes = sess.Replay.TotalBytes()
+			}
 		}
-		if !exists {
-			continue
-		}
-		if err := sess.Replay.LoadFromFile(logPath); err != nil {
-			log.Printf("[session %s] warning: restore replay from %s failed: %v", sess.ID, logPath, err)
-			continue
-		}
-		log.Printf("[session %s] restored replay buffer from %s (%d bytes)", sess.ID, logPath, sess.Replay.TotalBytes())
+
+		api.AttachSessionIO(sess, logDir)
+		log.Printf("recovered session %s: replay loaded (%d bytes), stdio reattached", sess.ID, restoredBytes)
 	}
 }
 
@@ -130,7 +131,6 @@ func newRuntime(name, dataDir string) (runtime.Runtime, error) {
 		return runtime.NewLocalRuntime(), nil
 	case "docker":
 		return runtime.NewDockerRuntime(runtime.DockerConfig{
-			Image:   "alpine:latest",
 			DataDir: dataDir,
 		}), nil
 	case "opensandbox":

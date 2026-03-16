@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/materialize"
@@ -409,13 +410,11 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		if err != nil {
 			return nil, fmt.Errorf("docker inspect %s: %w", id, err)
 		}
-		// Attach to the running container's logs for stdout.
-		// This is a best-effort recovery — full stdio reattach would need docker attach.
-		handles = append(handles, &recoveredDockerHandle{
-			containerID: id,
-			SessionID:   strings.TrimSpace(labels[dockerSessionLabelKey]),
-			TaskID:      strings.TrimSpace(labels[dockerTaskLabelKey]),
-		})
+		handle, err := newRecoveredDockerHandle(ctx, id, strings.TrimSpace(labels[dockerSessionLabelKey]), strings.TrimSpace(labels[dockerTaskLabelKey]))
+		if err != nil {
+			return nil, fmt.Errorf("docker logs %s: %w", id, err)
+		}
+		handles = append(handles, handle)
 	}
 	return handles, nil
 }
@@ -469,17 +468,28 @@ func (h *dockerHandle) PID() int {
 func (h *dockerHandle) RecoveryInfo() *RecoveryInfo { return nil }
 
 // recoveredDockerHandle is a minimal handle for containers found during recovery.
-// It can kill the container but doesn't have full stdio access.
+// It follows docker logs so recovered sessions can resume stdout/stderr streaming.
 type recoveredDockerHandle struct {
 	containerID string
 	SessionID   string
 	TaskID      string
+
+	cmd    *exec.Cmd
+	stdout io.ReadCloser
+	stderr io.ReadCloser
+	done   chan ExitResult
+	killMu sync.Mutex
 }
 
 func (h *recoveredDockerHandle) Stdin() io.WriteCloser { return nil }
-func (h *recoveredDockerHandle) Stdout() io.ReadCloser { return nil }
-func (h *recoveredDockerHandle) Stderr() io.ReadCloser { return nil }
-func (h *recoveredDockerHandle) PID() int              { return 0 }
+func (h *recoveredDockerHandle) Stdout() io.ReadCloser { return h.stdout }
+func (h *recoveredDockerHandle) Stderr() io.ReadCloser { return h.stderr }
+func (h *recoveredDockerHandle) PID() int {
+	if h.cmd != nil && h.cmd.Process != nil {
+		return h.cmd.Process.Pid
+	}
+	return 0
+}
 func (h *recoveredDockerHandle) RecoveryInfo() *RecoveryInfo {
 	if h.SessionID == "" && h.TaskID == "" {
 		return nil
@@ -491,11 +501,51 @@ func (h *recoveredDockerHandle) RecoveryInfo() *RecoveryInfo {
 }
 
 func (h *recoveredDockerHandle) Wait() <-chan ExitResult {
-	// Recovered containers need explicit management.
-	ch := make(chan ExitResult)
-	return ch
+	return h.done
 }
 
 func (h *recoveredDockerHandle) Kill() error {
+	h.killMu.Lock()
+	defer h.killMu.Unlock()
 	return exec.Command("docker", "kill", h.containerID).Run()
+}
+
+func newRecoveredDockerHandle(ctx context.Context, containerID, sessionID, taskID string) (*recoveredDockerHandle, error) {
+	cmd := exec.CommandContext(ctx, "docker", "logs", "--follow", "--since=0", containerID)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdout.Close()
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		return nil, fmt.Errorf("start: %w", err)
+	}
+
+	handle := &recoveredDockerHandle{
+		containerID: containerID,
+		SessionID:   sessionID,
+		TaskID:      taskID,
+		cmd:         cmd,
+		stdout:      stdout,
+		stderr:      stderr,
+		done:        make(chan ExitResult, 1),
+	}
+	go func() {
+		waitErr := cmd.Wait()
+		code := 0
+		if waitErr != nil {
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+				code = exitErr.ExitCode()
+				waitErr = nil
+			}
+		}
+		handle.done <- ExitResult{Code: code, Err: waitErr}
+	}()
+	return handle, nil
 }
