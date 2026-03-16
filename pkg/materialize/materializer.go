@@ -411,9 +411,11 @@ func sanitizeSessionID(sessionID string) string {
 			b.WriteRune(r)
 		case r >= '0' && r <= '9':
 			b.WriteRune(r)
-		case r == '.', r == '-', r == '_':
+		case r == '-', r == '_':
 			b.WriteRune(r)
 		default:
+			// Replace path separators, dots, and other unsafe chars with '-'.
+			// Dots are excluded to prevent ".." path traversal in temp dir names.
 			b.WriteByte('-')
 		}
 	}
