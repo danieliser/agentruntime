@@ -2,6 +2,12 @@ package schema
 
 import "time"
 
+// HealthResponse is returned by GET /health.
+type HealthResponse struct {
+	Status  string `json:"status"`
+	Runtime string `json:"runtime"`
+}
+
 // SessionRequest is the top-level dispatch shape for creating agent sessions.
 // Three equal dispatch paths use this struct: HTTP JSON, Go SDK, CLI YAML file.
 //

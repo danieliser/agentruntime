@@ -26,6 +26,19 @@ func New(baseURL string) *Client {
 	}
 }
 
+func (c *Client) Health(ctx context.Context) (*api.HealthResponse, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodGet, "/health", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp api.HealthResponse
+	if err := c.doJSON(httpReq, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *Client) Dispatch(ctx context.Context, req api.SessionRequest) (*api.SessionResponse, error) {
 	httpReq, err := c.newJSONRequest(ctx, http.MethodPost, "/sessions", req)
 	if err != nil {
@@ -92,6 +105,19 @@ func (c *Client) ListSessions(ctx context.Context) ([]api.SessionSummary, error)
 	return sessions, nil
 }
 
+func (c *Client) GetSessionInfo(ctx context.Context, id string) (*api.SessionInfo, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodGet, "/sessions/"+url.PathEscape(id)+"/info", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var info api.SessionInfo
+	if err := c.doJSON(httpReq, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 func (c *Client) Kill(ctx context.Context, id string) error {
 	httpReq, err := c.newRequest(ctx, http.MethodDelete, "/sessions/"+url.PathEscape(id), nil)
 	if err != nil {
@@ -145,6 +171,25 @@ func (c *Client) GetLogs(ctx context.Context, id string, cursor int64) (data []b
 	}
 
 	return data, nextCursor, nil
+}
+
+func (c *Client) GetLog(ctx context.Context, id string) ([]byte, error) {
+	httpReq, err := c.newRequest(ctx, http.MethodGet, "/sessions/"+url.PathEscape(id)+"/log", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := checkResponse(resp); err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(resp.Body)
 }
 
 func (c *Client) StreamLogs(ctx context.Context, id string) (io.ReadCloser, error) {

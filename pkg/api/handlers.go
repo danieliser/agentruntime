@@ -89,6 +89,10 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 
 	// Create the session.
 	sess := session.NewSession(req.TaskID, req.Agent, s.runtime.Name(), req.Tags)
+	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	if err := s.sessions.Add(sess); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -357,6 +361,36 @@ func resumeSessionIDFromArgs(args []string) (string, error) {
 	}
 
 	return "", fmt.Errorf("resume args missing session id")
+}
+
+func (s *Server) prepareSessionDir(sess *session.Session, req *SessionRequest, workDir string) error {
+	if sess == nil || req == nil || s.runtime == nil || s.runtime.Name() != "local" {
+		return nil
+	}
+
+	switch req.Agent {
+	case "claude":
+		credentialsPath := ""
+		if req.Claude != nil {
+			credentialsPath = req.Claude.CredentialsPath
+		}
+		if workDir == "" {
+			workDir = "/"
+		}
+		sessionDir, err := agentsessions.InitClaudeSessionDir(s.dataDir, sess.ID, workDir, credentialsPath)
+		if err != nil {
+			return fmt.Errorf("prepare claude session dir: %w", err)
+		}
+		sess.SessionDir = sessionDir
+	case "codex":
+		sessionDir, err := agentsessions.InitCodexSessionDir(s.dataDir, sess.ID)
+		if err != nil {
+			return fmt.Errorf("prepare codex session dir: %w", err)
+		}
+		sess.SessionDir = sessionDir
+	}
+
+	return nil
 }
 
 // drainTo reads from r and writes all data to w (typically a MultiWriter

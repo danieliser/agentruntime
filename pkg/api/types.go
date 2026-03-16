@@ -8,6 +8,7 @@ type ClaudeConfig = apischema.ClaudeConfig
 type CodexConfig = apischema.CodexConfig
 type MCPServer = apischema.MCPServer
 type ContainerConfig = apischema.ContainerConfig
+type HealthResponse = apischema.HealthResponse
 type SessionResponse = apischema.SessionResponse
 type SessionSummary = apischema.SessionSummary
 type SessionInfo = apischema.SessionInfo
