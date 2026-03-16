@@ -51,6 +51,10 @@ type SpawnConfig struct {
 	// container resources, or agent-config materialization.
 	Request *apischema.SessionRequest
 
+	// SessionDir points to a location where runtimes can publish the host path
+	// to any materialized per-session files they create.
+	SessionDir *string
+
 	// PTY requests a pseudo-terminal allocation. Not all runtimes support this.
 	PTY bool
 }
@@ -77,6 +81,10 @@ type ProcessHandle interface {
 
 	// PID returns the OS process ID. Returns 0 if not applicable (e.g., remote runtime).
 	PID() int
+
+	// RecoveryInfo returns metadata captured during orphan recovery.
+	// Non-recovered handles should return nil.
+	RecoveryInfo() *RecoveryInfo
 }
 
 // ExitResult holds the outcome of a process termination.
@@ -86,4 +94,10 @@ type ExitResult struct {
 
 	// Err is any error encountered waiting for the process, distinct from a non-zero exit code.
 	Err error
+}
+
+// RecoveryInfo carries stable identifiers for a recovered process handle.
+type RecoveryInfo struct {
+	SessionID string
+	TaskID    string
 }

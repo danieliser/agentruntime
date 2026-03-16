@@ -91,6 +91,9 @@ func (h *bridgeTestHandle) Stdout() io.ReadCloser           { return h.stdoutR }
 func (h *bridgeTestHandle) Stderr() io.ReadCloser           { return h.stderrR }
 func (h *bridgeTestHandle) Wait() <-chan runtime.ExitResult { return h.done }
 func (h *bridgeTestHandle) PID() int                        { return 1 }
+func (h *bridgeTestHandle) RecoveryInfo() *runtime.RecoveryInfo {
+	return nil
+}
 
 func (h *bridgeTestHandle) Kill() error {
 	h.exit(137)

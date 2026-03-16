@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -30,7 +31,7 @@ type DockerConfig struct {
 }
 
 // DockerRuntime spawns agent processes inside Docker containers using the
-// docker CLI. Containers are labeled with agentruntime.task_id for recovery.
+// docker CLI. Containers are labeled with task/session identifiers for recovery.
 type DockerRuntime struct {
 	cfg          DockerConfig
 	materializer dockerMaterializer
@@ -69,7 +70,7 @@ type dockerRunSpec struct {
 func (r *DockerRuntime) Name() string { return "docker" }
 
 // Spawn runs a command inside a Docker container. The container is created with
-// stdin attached and labeled with the task ID for recovery.
+// stdin attached and labeled for orphan recovery.
 func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandle, error) {
 	if len(cfg.Cmd) == 0 {
 		return nil, &SpawnError{Reason: "cmd is empty"}
@@ -174,6 +175,9 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		result, err := r.materializer.Materialize(req, cfg.SessionID)
 		if err != nil {
 			return nil, err
+		}
+		if cfg.SessionDir != nil {
+			*cfg.SessionDir = result.SessionDir
 		}
 		cleanups = append(cleanups, result.CleanupFn)
 		mounts = append(mounts, result.Mounts...)
@@ -383,7 +387,7 @@ func sessionIDPrefix(sessionID string) string {
 func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 	// List running containers with our label.
 	out, err := exec.CommandContext(ctx, "docker", "ps", "-q",
-		"--filter", fmt.Sprintf("label=%s", dockerTaskLabelKey),
+		"--filter", fmt.Sprintf("label=%s", dockerSessionLabelKey),
 	).Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps: %w", err)
@@ -396,11 +400,37 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		if id == "" {
 			continue
 		}
+		labels, err := dockerContainerLabels(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("docker inspect %s: %w", id, err)
+		}
 		// Attach to the running container's logs for stdout.
 		// This is a best-effort recovery — full stdio reattach would need docker attach.
-		handles = append(handles, &recoveredDockerHandle{containerID: id})
+		handles = append(handles, &recoveredDockerHandle{
+			containerID: id,
+			SessionID:   strings.TrimSpace(labels[dockerSessionLabelKey]),
+			TaskID:      strings.TrimSpace(labels[dockerTaskLabelKey]),
+		})
 	}
 	return handles, nil
+}
+
+func dockerContainerLabels(ctx context.Context, containerID string) (map[string]string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .Config.Labels}}", containerID).Output()
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var labels map[string]string
+	if err := json.Unmarshal([]byte(trimmed), &labels); err != nil {
+		return nil, fmt.Errorf("parse labels: %w", err)
+	}
+	return labels, nil
 }
 
 // dockerHandle wraps a docker run subprocess.
@@ -431,16 +461,29 @@ func (h *dockerHandle) PID() int {
 	return 0
 }
 
+func (h *dockerHandle) RecoveryInfo() *RecoveryInfo { return nil }
+
 // recoveredDockerHandle is a minimal handle for containers found during recovery.
 // It can kill the container but doesn't have full stdio access.
 type recoveredDockerHandle struct {
 	containerID string
+	SessionID   string
+	TaskID      string
 }
 
 func (h *recoveredDockerHandle) Stdin() io.WriteCloser { return nil }
 func (h *recoveredDockerHandle) Stdout() io.ReadCloser { return nil }
 func (h *recoveredDockerHandle) Stderr() io.ReadCloser { return nil }
 func (h *recoveredDockerHandle) PID() int              { return 0 }
+func (h *recoveredDockerHandle) RecoveryInfo() *RecoveryInfo {
+	if h.SessionID == "" && h.TaskID == "" {
+		return nil
+	}
+	return &RecoveryInfo{
+		SessionID: h.SessionID,
+		TaskID:    h.TaskID,
+	}
+}
 
 func (h *recoveredDockerHandle) Wait() <-chan ExitResult {
 	// Recovered containers need explicit management.

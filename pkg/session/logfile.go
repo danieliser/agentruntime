@@ -7,6 +7,11 @@ import (
 	"path/filepath"
 )
 
+const (
+	logFileExt       = ".ndjson"
+	legacyLogFileExt = ".jsonl"
+)
+
 // LogWriter writes all session output to a persistent NDJSON log file.
 // It implements io.Writer so it can be composed with the ReplayBuffer
 // via io.MultiWriter in the drain goroutine.
@@ -21,12 +26,33 @@ func NewLogWriter(dir, sessionID string) (*LogWriter, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
-	path := filepath.Join(dir, sessionID+".jsonl")
+	path := LogFilePath(dir, sessionID)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 	return &LogWriter{file: f, path: path}, nil
+}
+
+// LogFilePath returns the canonical NDJSON log file path for a session.
+func LogFilePath(dir, sessionID string) string {
+	return filepath.Join(dir, sessionID+logFileExt)
+}
+
+// ExistingLogFilePath returns the current or legacy log path if one exists.
+func ExistingLogFilePath(dir, sessionID string) (string, bool, error) {
+	paths := []string{
+		LogFilePath(dir, sessionID),
+		filepath.Join(dir, sessionID+legacyLogFileExt),
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path, true, nil
+		} else if !os.IsNotExist(err) {
+			return "", false, err
+		}
+	}
+	return "", false, nil
 }
 
 // Write appends data to the log file.

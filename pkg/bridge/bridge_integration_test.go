@@ -57,12 +57,15 @@ func newMockHandle() *mockHandle {
 	}
 }
 
-func (h *mockHandle) Stdin() io.WriteCloser  { return h.stdinW }
-func (h *mockHandle) Stdout() io.ReadCloser  { return h.stdoutR }
-func (h *mockHandle) Stderr() io.ReadCloser  { return h.stderrR }
+func (h *mockHandle) Stdin() io.WriteCloser           { return h.stdinW }
+func (h *mockHandle) Stdout() io.ReadCloser           { return h.stdoutR }
+func (h *mockHandle) Stderr() io.ReadCloser           { return h.stderrR }
 func (h *mockHandle) Wait() <-chan runtime.ExitResult { return h.done }
-func (h *mockHandle) Kill() error            { h.exit(137); return nil }
-func (h *mockHandle) PID() int               { return h.pid }
+func (h *mockHandle) Kill() error                     { h.exit(137); return nil }
+func (h *mockHandle) PID() int                        { return h.pid }
+func (h *mockHandle) RecoveryInfo() *runtime.RecoveryInfo {
+	return nil
+}
 
 func (h *mockHandle) exit(code int) {
 	h.stdoutW.Close()

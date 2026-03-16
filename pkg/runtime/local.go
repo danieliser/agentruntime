@@ -144,6 +144,8 @@ func (h *localHandle) PID() int {
 	return 0
 }
 
+func (h *localHandle) RecoveryInfo() *RecoveryInfo { return nil }
+
 // SpawnError wraps errors from the spawn process.
 type SpawnError struct {
 	Reason string

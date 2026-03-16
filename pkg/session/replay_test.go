@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"math"
+	"os"
 	"sync"
 	"testing"
 )
@@ -13,6 +14,33 @@ func TestReplayBuffer_WriteAndRead(t *testing.T) {
 	rb.Write(data)
 
 	got, next := rb.ReadFrom(0)
+	if !bytes.Equal(got, data) {
+		t.Fatalf("expected %q, got %q", data, got)
+	}
+	if next != int64(len(data)) {
+		t.Fatalf("expected next=%d, got %d", len(data), next)
+	}
+}
+
+func TestReplayBuffer_LoadFromFile(t *testing.T) {
+	source := NewReplayBuffer(64)
+	data := []byte("line one\nline two\n")
+	if _, err := source.Write(data); err != nil {
+		t.Fatalf("write source replay: %v", err)
+	}
+
+	saved, _ := source.ReadFrom(0)
+	path := t.TempDir() + "/replay.ndjson"
+	if err := os.WriteFile(path, saved, 0o644); err != nil {
+		t.Fatalf("write replay file: %v", err)
+	}
+
+	restored := NewReplayBuffer(64)
+	if err := restored.LoadFromFile(path); err != nil {
+		t.Fatalf("load replay file: %v", err)
+	}
+
+	got, next := restored.ReadFrom(0)
 	if !bytes.Equal(got, data) {
 		t.Fatalf("expected %q, got %q", data, got)
 	}

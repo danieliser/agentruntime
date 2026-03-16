@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,54 @@ func TestDockerRuntime_Name(t *testing.T) {
 	rt := NewDockerRuntime(DockerConfig{})
 	if rt.Name() != "docker" {
 		t.Fatalf("expected name 'docker', got %q", rt.Name())
+	}
+}
+
+func TestDockerRecover_ReturnsSessionID(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "ps" ]; then
+  printf '%s\n' 'container-123'
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  if [ "$4" != "container-123" ]; then
+    echo "unexpected container id: $4" >&2
+    exit 3
+  fi
+  printf '%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered"}'
+  exit 0
+fi
+echo "unexpected docker command: $1" >&2
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	handles, err := rt.Recover(context.Background())
+	if err != nil {
+		t.Fatalf("recover failed: %v", err)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("expected 1 recovered handle, got %d", len(handles))
+	}
+
+	recovered, ok := handles[0].(*recoveredDockerHandle)
+	if !ok {
+		t.Fatalf("expected recoveredDockerHandle, got %T", handles[0])
+	}
+	if recovered.SessionID != "sess-recovered" {
+		t.Fatalf("expected session ID from label, got %q", recovered.SessionID)
+	}
+	if recovered.TaskID != "task-recovered" {
+		t.Fatalf("expected task ID from label, got %q", recovered.TaskID)
+	}
+
+	info := handles[0].RecoveryInfo()
+	if info == nil {
+		t.Fatal("expected recovery info")
+	}
+	if info.SessionID != "sess-recovered" {
+		t.Fatalf("expected recovery info session ID %q, got %q", "sess-recovered", info.SessionID)
 	}
 }
 

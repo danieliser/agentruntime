@@ -1,6 +1,11 @@
 package session
 
-import "sync"
+import (
+	"fmt"
+	"io"
+	"os"
+	"sync"
+)
 
 const defaultReplayBufSize = 1 << 20 // 1 MiB
 
@@ -161,4 +166,18 @@ func (r *ReplayBuffer) ReadFrom(offset int64) ([]byte, int64) {
 		out[i] = r.buf[(start+i)%r.size]
 	}
 	return out, r.Total
+}
+
+// LoadFromFile streams file contents into the replay buffer.
+func (r *ReplayBuffer) LoadFromFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open replay file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(r, f); err != nil {
+		return fmt.Errorf("load replay file: %w", err)
+	}
+	return nil
 }

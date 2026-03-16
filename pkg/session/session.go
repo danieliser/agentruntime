@@ -29,6 +29,7 @@ type Session struct {
 	TaskID      string                `json:"task_id,omitempty"`
 	AgentName   string                `json:"agent_name"`
 	RuntimeName string                `json:"runtime_name"`
+	SessionDir  string                `json:"session_dir,omitempty"`
 	Tags        map[string]string     `json:"tags,omitempty"`
 	State       State                 `json:"state"`
 	ExitCode    *int                  `json:"exit_code,omitempty"`
@@ -101,6 +102,7 @@ func (s *Session) Snapshot() Session {
 		TaskID:      s.TaskID,
 		AgentName:   s.AgentName,
 		RuntimeName: s.RuntimeName,
+		SessionDir:  s.SessionDir,
 		Tags:        cloneTags(s.Tags),
 		State:       s.State,
 		ExitCode:    s.ExitCode,
@@ -172,8 +174,17 @@ func (m *Manager) List() []*Session {
 func (m *Manager) Recover(handles []runtime.ProcessHandle, runtimeName string) []*Session {
 	var recovered []*Session
 	for _, h := range handles {
+		sessionID := uuid.New().String()
+		taskID := ""
+		if info := h.RecoveryInfo(); info != nil {
+			if info.SessionID != "" {
+				sessionID = info.SessionID
+			}
+			taskID = info.TaskID
+		}
 		s := &Session{
-			ID:          uuid.New().String(),
+			ID:          sessionID,
+			TaskID:      taskID,
 			RuntimeName: runtimeName,
 			State:       StateOrphaned,
 			CreatedAt:   time.Now(),
