@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -161,11 +162,11 @@ func buildClaudeMCPJSON(base map[string]any, servers []apischema.MCPServer) (map
 	}
 
 	for _, server := range servers {
-		serverMap[server.Name] = resolveValue(mcpServerToMap(server))
+		serverMap[server.Name] = mcpServerToMap(server)
 	}
 
-	merged["mcpServers"] = resolveValue(serverMap)
-	resolved, ok := resolveValue(merged).(map[string]any)
+	merged["mcpServers"] = serverMap
+	resolved, ok := sanitizeMCPConfigValue("", merged).(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("resolved MCP JSON was not an object")
 	}
@@ -228,17 +229,27 @@ func expandPath(path string) (string, error) {
 			}
 		}
 	}
-	return filepath.Abs(expanded)
+	if filepath.IsAbs(expanded) {
+		return filepath.Clean(expanded), nil
+	}
+
+	base, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(base, stripRelativeTraversal(expanded)), nil
 }
 
 func sessionIDPrefix(sessionID string) string {
-	if len(sessionID) == 0 {
+	safe := sanitizeSessionID(sessionID)
+	if len(safe) == 0 {
 		return ""
 	}
-	if len(sessionID) < 8 {
-		return sessionID
+	if len(safe) < 8 {
+		return safe
 	}
-	return sessionID[:8]
+	return safe[:8]
 }
 
 func cloneValue(value any) any {
@@ -283,28 +294,35 @@ func cloneValue(value any) any {
 	}
 }
 
-func resolveValue(value any) any {
+func sanitizeMCPConfigValue(parentKey string, value any) any {
 	switch v := value.(type) {
 	case map[string]any:
 		resolved := make(map[string]any, len(v))
 		for key, item := range v {
-			resolved[key] = resolveValue(item)
+			next := sanitizeMCPConfigValue(key, item)
+			if key == "url" {
+				if urlValue, ok := next.(string); !ok || urlValue == "" {
+					continue
+				}
+			}
+			resolved[key] = next
 		}
 		return resolved
 	case []any:
 		resolved := make([]any, len(v))
 		for i, item := range v {
-			resolved[i] = resolveValue(item)
-		}
-		return resolved
-	case []string:
-		resolved := make([]any, len(v))
-		for i, item := range v {
-			resolved[i] = ResolveVars(item)
+			resolved[i] = sanitizeMCPConfigValue(parentKey, item)
 		}
 		return resolved
 	case string:
-		return ResolveVars(v)
+		switch parentKey {
+		case "url":
+			return sanitizeMCPURL(v)
+		case "token":
+			return sanitizeMCPToken(v)
+		default:
+			return v
+		}
 	default:
 		rv := reflect.ValueOf(value)
 		if !rv.IsValid() {
@@ -318,19 +336,89 @@ func resolveValue(value any) any {
 			resolved := make(map[string]any, rv.Len())
 			iter := rv.MapRange()
 			for iter.Next() {
-				resolved[iter.Key().String()] = resolveValue(iter.Value().Interface())
+				key := iter.Key().String()
+				next := sanitizeMCPConfigValue(key, iter.Value().Interface())
+				if key == "url" {
+					if urlValue, ok := next.(string); !ok || urlValue == "" {
+						continue
+					}
+				}
+				resolved[key] = next
 			}
 			return resolved
 		case reflect.Slice, reflect.Array:
 			resolved := make([]any, rv.Len())
 			for i := 0; i < rv.Len(); i++ {
-				resolved[i] = resolveValue(rv.Index(i).Interface())
+				resolved[i] = sanitizeMCPConfigValue(parentKey, rv.Index(i).Interface())
 			}
 			return resolved
 		default:
 			return value
 		}
 	}
+}
+
+func sanitizeMCPURL(raw string) string {
+	resolved := ResolveVars(raw)
+	parsed, err := url.Parse(resolved)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "ws", "wss":
+		return resolved
+	default:
+		return ""
+	}
+}
+
+func sanitizeMCPToken(raw string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, raw)
+}
+
+func stripRelativeTraversal(path string) string {
+	cleaned := filepath.Clean(path)
+	if cleaned == "." || cleaned == "" {
+		return ""
+	}
+
+	sep := string(os.PathSeparator)
+	for cleaned == ".." || strings.HasPrefix(cleaned, ".."+sep) {
+		cleaned = strings.TrimPrefix(cleaned, "..")
+		cleaned = strings.TrimPrefix(cleaned, sep)
+		if cleaned == "" {
+			return ""
+		}
+	}
+
+	return cleaned
+}
+
+func sanitizeSessionID(sessionID string) string {
+	var b strings.Builder
+	b.Grow(len(sessionID))
+
+	for _, r := range sessionID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	return strings.Trim(b.String(), "-")
 }
 
 func marshalSimpleTOML(values map[string]any) ([]byte, error) {
