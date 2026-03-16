@@ -20,20 +20,34 @@ type Server struct {
 	sessions *session.Manager
 	runtime  runtime.Runtime
 	agents   *agent.Registry
+	logDir   string // directory for persistent session NDJSON logs
 	srv      *http.Server
 }
 
+// ServerConfig holds optional configuration for the server.
+type ServerConfig struct {
+	// LogDir is the directory for persistent session NDJSON log files.
+	// Defaults to "./logs" if empty.
+	LogDir string
+}
+
 // NewServer creates a configured HTTP server ready to start.
-func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Registry) *Server {
+func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Registry, cfgs ...ServerConfig) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
+
+	logDir := "./logs"
+	if len(cfgs) > 0 && cfgs[0].LogDir != "" {
+		logDir = cfgs[0].LogDir
+	}
 
 	s := &Server{
 		router:   router,
 		sessions: sessions,
 		runtime:  rt,
 		agents:   agents,
+		logDir:   logDir,
 	}
 
 	RegisterRoutes(router, s)

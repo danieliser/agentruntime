@@ -12,6 +12,7 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 		sessions.GET("", s.handleListSessions)
 		sessions.GET("/:id", s.handleGetSession)
 		sessions.GET("/:id/logs", s.handleGetLogs)
+		sessions.GET("/:id/log", s.handleGetLogFile) // full NDJSON log file
 		sessions.DELETE("/:id", s.handleDeleteSession)
 	}
 

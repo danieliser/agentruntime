@@ -33,3 +33,5 @@ Thumbs.db
 
 # Vendor (use modules)
 /vendor/
+/logs/
+**/logs/

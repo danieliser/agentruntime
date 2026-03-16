@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"net/url"
 	"sort"
@@ -109,30 +111,43 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		handle.Stdin().Close()
 	}
 
-	// Drain stdout/stderr into replay buffer from spawn time.
-	// The bridge reads from replay (via WaitFor), never from pipes directly.
-	// This eliminates the dual-reader conflict.
+	// Create persistent log file for full chat log preservation.
+	// Output is tee'd to both the replay buffer (for WS streaming) and the
+	// log file (for permanent NDJSON record). The log file path is returned
+	// in the session response so callers can retrieve it later.
+	logw, logErr := session.NewLogWriter(s.logDir, sess.ID)
+	if logErr != nil {
+		log.Printf("[session %s] warning: log file creation failed: %v", sess.ID, logErr)
+		// Continue without log file — replay buffer still works.
+	}
+	drainTarget := session.DrainWriter(sess.Replay, logw)
+
+	// Drain stdout/stderr into replay buffer + log file from spawn time.
 	var drainWg sync.WaitGroup
 	if handle.Stdout() != nil {
 		drainWg.Add(1)
 		go func() {
 			defer drainWg.Done()
-			drainToReplay(sess.ID, "stdout", handle.Stdout(), sess.Replay)
+			drainTo(sess.ID, "stdout", handle.Stdout(), drainTarget)
 		}()
 	}
 	if handle.Stderr() != nil {
 		drainWg.Add(1)
 		go func() {
 			defer drainWg.Done()
-			drainToReplay(sess.ID, "stderr", handle.Stderr(), sess.Replay)
+			drainTo(sess.ID, "stderr", handle.Stderr(), drainTarget)
 		}()
 	}
 
-	// Watch for exit: wait for drains to finish, close replay, update session.
+	// Watch for exit: wait for drains to finish, close replay + log, update session.
 	go func() {
 		result := <-handle.Wait()
-		drainWg.Wait() // ensure all output is captured before closing replay
+		drainWg.Wait()
 		sess.Replay.Close()
+		if logw != nil {
+			logw.Close()
+			log.Printf("[session %s] log saved: %s", sess.ID, logw.Path())
+		}
 		log.Printf("[session %s] exited: code=%d err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, sess.Replay.TotalBytes())
 		sess.SetCompleted(result.Code)
 	}()
@@ -249,6 +264,17 @@ func (s *Server) handleSessionWS(c *gin.Context) {
 	b.Run(ctx, sess.ID, sinceOffset)
 }
 
+func (s *Server) handleGetLogFile(c *gin.Context) {
+	id := c.Param("id")
+	logPath := filepath.Join(s.logDir, id+".jsonl")
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
+		return
+	}
+	c.Header("Content-Type", "application/x-ndjson")
+	c.File(logPath)
+}
+
 func effectiveWorkDir(workDir string, mounts []Mount) string {
 	if workDir != "" {
 		return workDir
@@ -278,11 +304,10 @@ func websocketScheme(c *gin.Context) string {
 	return "ws"
 }
 
-// drainToReplay reads from r and writes all data to the replay buffer.
-// Runs as a background goroutine from spawn time so the process never
-// blocks on stdout/stderr pipe writes, even if no WS client is connected.
-func drainToReplay(sessionID, stream string, r io.ReadCloser, replay *session.ReplayBuffer) {
-	if r == nil || replay == nil {
+// drainTo reads from r and writes all data to w (typically a MultiWriter
+// wrapping both the replay buffer and a log file).
+func drainTo(sessionID, stream string, r io.ReadCloser, w io.Writer) {
+	if r == nil || w == nil {
 		return
 	}
 	buf := make([]byte, 32*1024)
@@ -290,10 +315,9 @@ func drainToReplay(sessionID, stream string, r io.ReadCloser, replay *session.Re
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			replay.Write(buf[:n])
+			w.Write(buf[:n])
 			total += n
 			if total == n {
-				// First data received — log it.
 				log.Printf("[session %s] first %s data: %d bytes", sessionID, stream, n)
 			}
 		}
