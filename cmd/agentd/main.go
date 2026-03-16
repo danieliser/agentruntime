@@ -32,9 +32,10 @@ func main() {
 	flag.Parse()
 
 	log.Printf("data dir: %s", *dataDir)
+	logDir := filepath.Join(*dataDir, "logs")
 
 	// Initialize runtime.
-	rt, err := newRuntime(*rtName)
+	rt, err := newRuntime(*rtName, *dataDir)
 	if err != nil {
 		log.Fatalf("failed to initialize runtime: %v", err)
 	}
@@ -47,6 +48,7 @@ func main() {
 	}
 	if len(recovered) > 0 {
 		orphaned := sessions.Recover(recovered, rt.Name())
+		restoreRecoveredReplay(logDir, orphaned)
 		log.Printf("recovered %d orphaned sessions", len(orphaned))
 	}
 
@@ -64,8 +66,10 @@ func main() {
 
 	// Start HTTP server.
 	addr := fmt.Sprintf(":%d", *port)
-	logDir := filepath.Join(*dataDir, "logs")
-	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{LogDir: logDir})
+	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{
+		DataDir: *dataDir,
+		LogDir:  logDir,
+	})
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	go func() {
@@ -89,6 +93,24 @@ func main() {
 	log.Println("agentd stopped")
 }
 
+func restoreRecoveredReplay(logDir string, sessions []*session.Session) {
+	for _, sess := range sessions {
+		logPath, exists, err := session.ExistingLogFilePath(logDir, sess.ID)
+		if err != nil {
+			log.Printf("[session %s] warning: check replay log failed: %v", sess.ID, err)
+			continue
+		}
+		if !exists {
+			continue
+		}
+		if err := sess.Replay.LoadFromFile(logPath); err != nil {
+			log.Printf("[session %s] warning: restore replay from %s failed: %v", sess.ID, logPath, err)
+			continue
+		}
+		log.Printf("[session %s] restored replay buffer from %s (%d bytes)", sess.ID, logPath, sess.Replay.TotalBytes())
+	}
+}
+
 // defaultDataDir returns the XDG-compliant data directory.
 // Respects AGENTRUNTIME_DATA_DIR env, then XDG_DATA_HOME, then ~/.local/share/agentruntime.
 func defaultDataDir() string {
@@ -102,13 +124,14 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".local", "share", "agentruntime")
 }
 
-func newRuntime(name string) (runtime.Runtime, error) {
+func newRuntime(name, dataDir string) (runtime.Runtime, error) {
 	switch name {
 	case "local":
 		return runtime.NewLocalRuntime(), nil
 	case "docker":
 		return runtime.NewDockerRuntime(runtime.DockerConfig{
-			Image: "alpine:latest",
+			Image:   "alpine:latest",
+			DataDir: dataDir,
 		}), nil
 	case "opensandbox":
 		return &runtime.OpenSandboxRuntime{}, nil

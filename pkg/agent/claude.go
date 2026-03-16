@@ -25,8 +25,12 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	if cfg.MaxTokens > 0 {
 		cmd = append(cmd, "--max-turns", fmt.Sprintf("%d", cfg.MaxTokens))
 	}
-	if cfg.SessionID != "" {
-		cmd = append(cmd, "--session-id", cfg.SessionID, "--resume")
+	resumeSessionID := cfg.ResumeSessionID
+	if resumeSessionID == "" {
+		resumeSessionID = cfg.SessionID
+	}
+	if resumeSessionID != "" {
+		cmd = append(cmd, "--resume", "--session-id", resumeSessionID)
 	}
 	for _, tool := range cfg.AllowedTools {
 		cmd = append(cmd, "--allowedTools", tool)

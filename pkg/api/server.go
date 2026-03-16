@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,12 +21,17 @@ type Server struct {
 	sessions *session.Manager
 	runtime  runtime.Runtime
 	agents   *agent.Registry
+	dataDir  string
 	logDir   string // directory for persistent session NDJSON logs
 	srv      *http.Server
 }
 
 // ServerConfig holds optional configuration for the server.
 type ServerConfig struct {
+	// DataDir stores agent session state, credentials, and logs.
+	// Defaults to the parent of LogDir, or "." if LogDir is also empty.
+	DataDir string
+
 	// LogDir is the directory for persistent session NDJSON log files.
 	// Defaults to "./logs" if empty.
 	LogDir string
@@ -41,12 +47,17 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 	if len(cfgs) > 0 && cfgs[0].LogDir != "" {
 		logDir = cfgs[0].LogDir
 	}
+	dataDir := filepath.Dir(logDir)
+	if len(cfgs) > 0 && cfgs[0].DataDir != "" {
+		dataDir = cfgs[0].DataDir
+	}
 
 	s := &Server{
 		router:   router,
 		sessions: sessions,
 		runtime:  rt,
 		agents:   agents,
+		dataDir:  dataDir,
 		logDir:   logDir,
 	}
 

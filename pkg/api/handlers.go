@@ -6,12 +6,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sync"
 	"net/url"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +19,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/bridge"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
+	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
 )
 
 var wsUpgrader = websocket.Upgrader{
@@ -65,10 +64,17 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		return
 	}
 
+	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// Build the command.
 	agCfg := agent.AgentConfig{
-		WorkDir: workDir,
-		Env:     req.Env,
+		WorkDir:         workDir,
+		Env:             req.Env,
+		ResumeSessionID: resumeSessionID,
 	}
 	cmd, err := ag.BuildCmd(req.Prompt, agCfg)
 	if err != nil {
@@ -266,8 +272,12 @@ func (s *Server) handleSessionWS(c *gin.Context) {
 
 func (s *Server) handleGetLogFile(c *gin.Context) {
 	id := c.Param("id")
-	logPath := filepath.Join(s.logDir, id+".jsonl")
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+	logPath, exists, err := session.ExistingLogFilePath(s.logDir, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "log file lookup failed"})
+		return
+	}
+	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
 		return
 	}
@@ -302,6 +312,49 @@ func websocketScheme(c *gin.Context) string {
 		return "wss"
 	}
 	return "ws"
+}
+
+func (s *Server) lookupResumeSessionID(agentName, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+
+	var (
+		args []string
+		err  error
+	)
+
+	switch agentName {
+	case "claude":
+		args, err = agentsessions.ClaudeResumeArgs(s.dataDir, sessionID)
+	case "codex":
+		args, err = agentsessions.CodexResumeArgs(s.dataDir, sessionID)
+	default:
+		return "", fmt.Errorf("resume_session is not supported for agent: %s", agentName)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	return resumeSessionIDFromArgs(args)
+}
+
+func resumeSessionIDFromArgs(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+
+	for i := 0; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--session", "--session-id":
+			if args[i+1] == "" {
+				return "", fmt.Errorf("resume args contain empty session id")
+			}
+			return args[i+1], nil
+		}
+	}
+
+	return "", fmt.Errorf("resume args missing session id")
 }
 
 // drainTo reads from r and writes all data to w (typically a MultiWriter

@@ -30,8 +30,11 @@ type AgentConfig struct {
 	// WorkDir is the working directory for the agent process.
 	WorkDir string
 
-	// SessionID resumes a prior session if supported by the agent.
+	// SessionID identifies the agentruntime session for this invocation.
 	SessionID string
+
+	// ResumeSessionID resumes a prior agent-native session if supported.
+	ResumeSessionID string
 
 	// AllowedTools restricts which tools the agent can use (agent-specific).
 	AllowedTools []string

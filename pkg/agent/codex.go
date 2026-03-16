@@ -22,6 +22,13 @@ func (a *CodexAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
 	}
+	resumeSessionID := cfg.ResumeSessionID
+	if resumeSessionID == "" {
+		resumeSessionID = cfg.SessionID
+	}
+	if resumeSessionID != "" {
+		cmd = append(cmd, "--session", resumeSessionID)
+	}
 
 	return cmd, nil
 }

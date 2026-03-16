@@ -8,8 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/bridge"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
+	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
 )
 
 // --- test doubles ---
@@ -83,6 +87,29 @@ func (a *sleepAgent) BuildCmd(prompt string, _ agent.AgentConfig) ([]string, err
 
 func (a *sleepAgent) ParseOutput(output []byte) (*agent.AgentResult, bool) { return nil, false }
 
+type captureAgent struct {
+	name string
+	mu   sync.Mutex
+	cfg  agent.AgentConfig
+}
+
+func (a *captureAgent) Name() string { return a.name }
+
+func (a *captureAgent) BuildCmd(prompt string, cfg agent.AgentConfig) ([]string, error) {
+	a.mu.Lock()
+	a.cfg = cfg
+	a.mu.Unlock()
+	return []string{"/bin/echo", prompt}, nil
+}
+
+func (a *captureAgent) ParseOutput(output []byte) (*agent.AgentResult, bool) { return nil, false }
+
+func (a *captureAgent) LastConfig() agent.AgentConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
+}
+
 // --- test server builder ---
 
 func newTestServer(t *testing.T) (*httptest.Server, *Server) {
@@ -93,7 +120,21 @@ func newTestServer(t *testing.T) (*httptest.Server, *Server) {
 	reg.Register(&catAgent{})
 	reg.Register(&sleepAgent{})
 	mgr := session.NewManager()
-	srv := NewServer(mgr, rt, reg)
+	dataDir := t.TempDir()
+	srv := NewServer(mgr, rt, reg, ServerConfig{
+		DataDir: dataDir,
+		LogDir:  filepath.Join(dataDir, "logs"),
+	})
+	ts := httptest.NewServer(srv.router)
+	t.Cleanup(ts.Close)
+	return ts, srv
+}
+
+func newConfiguredTestServer(t *testing.T, reg *agent.Registry, cfg ServerConfig) (*httptest.Server, *Server) {
+	t.Helper()
+	rt := newFakeRuntime()
+	mgr := session.NewManager()
+	srv := NewServer(mgr, rt, reg, cfg)
 	ts := httptest.NewServer(srv.router)
 	t.Cleanup(ts.Close)
 	return ts, srv
@@ -125,6 +166,20 @@ func decodeJSON(t *testing.T, r io.Reader, v any) {
 	t.Helper()
 	if err := json.NewDecoder(r).Decode(v); err != nil {
 		t.Fatalf("decode JSON: %v", err)
+	}
+}
+
+func writeJSONFile(t *testing.T, path string, v any) {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -184,6 +239,80 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 	if !strings.Contains(body.LogURL, "/sessions/"+body.SessionID+"/logs") {
 		t.Fatalf("expected log_url to include logs path, got %q", body.LogURL)
+	}
+}
+
+func TestCreateSession_ClaudeResumeSession(t *testing.T) {
+	dataDir := t.TempDir()
+	sessionDir, err := agentsessions.InitClaudeSessionDir(dataDir, "resume-source", "/workspace", "")
+	if err != nil {
+		t.Fatalf("init claude session dir: %v", err)
+	}
+	sessionsDir := filepath.Join(sessionDir, "sessions")
+	writeJSONFile(t, filepath.Join(sessionsDir, "5000.json"), map[string]any{
+		"pid":       5000,
+		"sessionId": "claude-native-123",
+		"cwd":       "/workspace",
+		"startedAt": 5000,
+	})
+
+	reg := agent.NewRegistry()
+	capture := &captureAgent{name: "claude"}
+	reg.Register(capture)
+	ts, _ := newConfiguredTestServer(t, reg, ServerConfig{
+		DataDir: dataDir,
+		LogDir:  filepath.Join(dataDir, "logs"),
+	})
+
+	resp := post(t, ts, "/sessions", SessionRequest{
+		Agent:         "claude",
+		Prompt:        "resume this",
+		ResumeSession: "resume-source",
+		WorkDir:       "/workspace",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	if got := capture.LastConfig().ResumeSessionID; got != "claude-native-123" {
+		t.Fatalf("expected resolved claude session id, got %q", got)
+	}
+}
+
+func TestCreateSession_CodexResumeSession(t *testing.T) {
+	dataDir := t.TempDir()
+	sessionDir, err := agentsessions.InitCodexSessionDir(dataDir, "resume-source")
+	if err != nil {
+		t.Fatalf("init codex session dir: %v", err)
+	}
+	writeJSONFile(t, filepath.Join(sessionDir, "sessions", "latest.json"), map[string]any{
+		"id": "codex-native-456",
+	})
+
+	reg := agent.NewRegistry()
+	capture := &captureAgent{name: "codex"}
+	reg.Register(capture)
+	ts, _ := newConfiguredTestServer(t, reg, ServerConfig{
+		DataDir: dataDir,
+		LogDir:  filepath.Join(dataDir, "logs"),
+	})
+
+	resp := post(t, ts, "/sessions", SessionRequest{
+		Agent:         "codex",
+		Prompt:        "resume this",
+		ResumeSession: "resume-source",
+		WorkDir:       "/workspace",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	if got := capture.LastConfig().ResumeSessionID; got != "codex-native-456" {
+		t.Fatalf("expected resolved codex session id, got %q", got)
 	}
 }
 
