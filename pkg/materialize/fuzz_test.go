@@ -180,7 +180,7 @@ func FuzzMaterialize(f *testing.F) {
 			}
 		}
 
-		result, err := Materialize(req, sessionID)
+		result, err := Materialize(req, sessionID, "")
 		if err != nil {
 			return
 		}

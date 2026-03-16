@@ -13,14 +13,14 @@ import (
 )
 
 func TestMaterialize_ClaudeWritesSettingsJSON(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{
 			SettingsJSON: map[string]any{
 				"theme": "light",
 				"count": float64(2),
 			},
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	var got map[string]any
@@ -35,11 +35,11 @@ func TestMaterialize_ClaudeWritesSettingsJSON(t *testing.T) {
 }
 
 func TestMaterialize_ClaudeWritesClaudeMD(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{
 			ClaudeMD: "# team instructions\nuse ripgrep\n",
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	data, err := os.ReadFile(filepath.Join(result.Mounts[0].Host, "CLAUDE.md"))
@@ -53,7 +53,7 @@ func TestMaterialize_ClaudeWritesClaudeMD(t *testing.T) {
 }
 
 func TestMaterialize_ClaudeWritesMcpJSON_MergesServers(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{
 			McpJSON: map[string]any{
 				"other": "value",
@@ -81,7 +81,7 @@ func TestMaterialize_ClaudeWritesMcpJSON_MergesServers(t *testing.T) {
 				Cmd:  []string{"mcp-added", "--serve"},
 			},
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	var got map[string]any
@@ -105,7 +105,7 @@ func TestMaterialize_ClaudeWritesMcpJSON_MergesServers(t *testing.T) {
 }
 
 func TestMaterialize_HostGatewayResolved(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{
 			McpJSON: map[string]any{
 				"mcpServers": map[string]any{
@@ -123,7 +123,7 @@ func TestMaterialize_HostGatewayResolved(t *testing.T) {
 				URL:  "http://${HOST_GATEWAY}:9000",
 			},
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	var got map[string]any
@@ -141,7 +141,7 @@ func TestMaterialize_HostGatewayResolved(t *testing.T) {
 	}
 }
 
-func TestMaterialize_CredentialsPathMounted(t *testing.T) {
+func TestMaterialize_CredentialsCopiedIntoSessionDir(t *testing.T) {
 	dir := t.TempDir()
 	credPath := filepath.Join(dir, "credentials.json")
 	if err := os.WriteFile(credPath, []byte("{}"), 0o644); err != nil {
@@ -149,19 +149,25 @@ func TestMaterialize_CredentialsPathMounted(t *testing.T) {
 	}
 	t.Setenv("MATERIALIZE_CREDENTIALS_FILE", credPath)
 
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{
 			CredentialsPath: "${MATERIALIZE_CREDENTIALS_FILE}",
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
-	mount := findMount(t, result.Mounts, "/root/.claude/credentials.json")
-	if mount.Mode != "ro" {
-		t.Fatalf("expected ro mount, got %q", mount.Mode)
+	mount := findMount(t, result.Mounts, "/root/.claude")
+	for _, name := range []string{"credentials.json", ".credentials.json"} {
+		data, err := os.ReadFile(filepath.Join(mount.Host, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(data) != "{}" {
+			t.Fatalf("unexpected credentials in %s: %q", name, string(data))
+		}
 	}
-	if mount.Host != credPath {
-		t.Fatalf("expected host path %q, got %q", credPath, mount.Host)
+	if hasMount(result.Mounts, "/root/.claude/credentials.json") {
+		t.Fatal("expected credentials to be copied into the Claude session dir, not mounted separately")
 	}
 }
 
@@ -173,11 +179,11 @@ func TestMaterialize_MemoryPathMounted(t *testing.T) {
 	}
 	t.Setenv("MATERIALIZE_MEMORY_DIR", memoryDir)
 
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{
 			MemoryPath: "${MATERIALIZE_MEMORY_DIR}",
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	hash := sha256.Sum256([]byte(memoryDir))
@@ -192,9 +198,9 @@ func TestMaterialize_MemoryPathMounted(t *testing.T) {
 }
 
 func TestMaterialize_CleanupDeletesTempDir(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{},
-	}, "session-12345678")
+	}, "session-12345678", "")
 
 	rootDir := filepath.Dir(result.Mounts[0].Host)
 	if _, err := os.Stat(rootDir); err != nil {
@@ -209,7 +215,7 @@ func TestMaterialize_CleanupDeletesTempDir(t *testing.T) {
 }
 
 func TestMaterialize_CodexWritesConfigAndInstructions(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Codex: &api.CodexConfig{
 			ConfigTOML: map[string]any{
 				"model": "gpt-5-codex",
@@ -217,7 +223,7 @@ func TestMaterialize_CodexWritesConfigAndInstructions(t *testing.T) {
 			},
 			Instructions: "Follow repo conventions.\n",
 		},
-	}, "session-12345678")
+	}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	mount := findMount(t, result.Mounts, "/root/.codex")
@@ -243,7 +249,7 @@ func TestMaterialize_CodexWritesConfigAndInstructions(t *testing.T) {
 }
 
 func TestMaterialize_NilAgentConfig(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{}, "session-12345678")
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()
 
 	if len(result.Mounts) != 0 {
@@ -255,9 +261,9 @@ func TestMaterialize_NilAgentConfig(t *testing.T) {
 }
 
 func TestMaterialize_EmptySessionID(t *testing.T) {
-	result := mustMaterialize(t, &api.SessionRequest{
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{},
-	}, "")
+	}, "", "")
 	defer result.CleanupFn()
 
 	if len(result.Mounts) == 0 {
@@ -265,9 +271,54 @@ func TestMaterialize_EmptySessionID(t *testing.T) {
 	}
 }
 
-func mustMaterialize(t *testing.T, req *api.SessionRequest, sessionID string) *Result {
+func TestMaterialize_UsesAgentSessionDir(t *testing.T) {
+	dataDir := t.TempDir()
+	sessionID := "session-12345678"
+
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Claude: &api.ClaudeConfig{},
+		Codex:  &api.CodexConfig{},
+	}, sessionID, dataDir)
+	defer result.CleanupFn()
+
+	claudeMount := findMount(t, result.Mounts, "/root/.claude")
+	if want := filepath.Join(dataDir, "claude-sessions", sessionID); claudeMount.Host != want {
+		t.Fatalf("expected Claude mount host %q, got %q", want, claudeMount.Host)
+	}
+
+	codexMount := findMount(t, result.Mounts, "/root/.codex")
+	if want := filepath.Join(dataDir, "codex-sessions", sessionID); codexMount.Host != want {
+		t.Fatalf("expected Codex mount host %q, got %q", want, codexMount.Host)
+	}
+}
+
+func TestMaterialize_SessionDirPersistsAfterCleanup(t *testing.T) {
+	dataDir := t.TempDir()
+
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Claude: &api.ClaudeConfig{
+			ClaudeMD: "persistent session",
+		},
+	}, "session-12345678", dataDir)
+
+	sessionDir := findMount(t, result.Mounts, "/root/.claude").Host
+	if _, err := os.Stat(sessionDir); err != nil {
+		t.Fatalf("expected session dir to exist before cleanup: %v", err)
+	}
+
+	result.CleanupFn()
+
+	if _, err := os.Stat(sessionDir); err != nil {
+		t.Fatalf("expected session dir to persist after cleanup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionDir, "CLAUDE.md")); err != nil {
+		t.Fatalf("expected session contents to persist after cleanup: %v", err)
+	}
+}
+
+func mustMaterializeWithDataDir(t *testing.T, req *api.SessionRequest, sessionID, dataDir string) *Result {
 	t.Helper()
-	result, err := Materialize(req, sessionID)
+	result, err := Materialize(req, sessionID, dataDir)
 	if err != nil {
 		t.Fatalf("Materialize returned error: %v", err)
 	}
@@ -278,6 +329,11 @@ func mustMaterialize(t *testing.T, req *api.SessionRequest, sessionID string) *R
 		t.Fatal("expected cleanup function")
 	}
 	return result
+}
+
+func mustMaterialize(t *testing.T, req *api.SessionRequest, sessionID string) *Result {
+	t.Helper()
+	return mustMaterializeWithDataDir(t, req, sessionID, "")
 }
 
 func readJSONFile(t *testing.T, path string, out any) {
@@ -300,4 +356,13 @@ func findMount(t *testing.T, mounts []api.Mount, container string) api.Mount {
 	}
 	t.Fatalf("mount for container %q not found", container)
 	return api.Mount{}
+}
+
+func hasMount(mounts []api.Mount, container string) bool {
+	for _, mount := range mounts {
+		if mount.Container == container {
+			return true
+		}
+	}
+	return false
 }

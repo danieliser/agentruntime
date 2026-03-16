@@ -22,6 +22,9 @@ type DockerConfig struct {
 	// Network is the Docker network to attach containers to.
 	Network string
 
+	// DataDir is the persistent agentruntime data directory for session homes.
+	DataDir string
+
 	// ExtraArgs are additional arguments passed to docker run.
 	ExtraArgs []string
 }
@@ -36,8 +39,10 @@ type DockerRuntime struct {
 // NewDockerRuntime creates a new Docker runtime with the given configuration.
 func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 	return &DockerRuntime{
-		cfg:          cfg,
-		materializer: dockerMaterializerFunc(materialize.Materialize),
+		cfg: cfg,
+		materializer: dockerMaterializerFunc(func(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error) {
+			return materialize.Materialize(req, sessionID, cfg.DataDir)
+		}),
 	}
 }
 
@@ -104,7 +109,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		}
 		return nil, &SpawnError{Reason: "docker run start", Err: err}
 	}
-	// NOTE: spec.cleanup (which removes the env-file and materialized config)
+	// NOTE: spec.cleanup (which removes temp artifacts after materialization)
 	// must NOT run until after the container has started and read its files.
 	// We defer it to after cmd.Wait() completes in the goroutine below.
 

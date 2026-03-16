@@ -198,7 +198,7 @@ func TestMaterialize_ConcurrentCallsUseUniqueTempDirs(t *testing.T) {
 
 			result, err := Materialize(&apischema.SessionRequest{
 				Claude: &apischema.ClaudeConfig{},
-			}, "shared-session")
+			}, "shared-session", "")
 			if err != nil {
 				results <- outcome{err: err}
 				return

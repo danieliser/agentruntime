@@ -14,55 +14,67 @@ import (
 	"strings"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
 )
 
-// Result is the output of materializing agent config into a temp directory.
+// Result is the output of materializing agent config into an agent home directory.
 type Result struct {
+	SessionDir string
 	Mounts    []apischema.Mount
 	CleanupFn func()
 }
 
-// Materialize writes agent config files into a temp directory and returns mounts.
-func Materialize(req *apischema.SessionRequest, sessionID string) (*Result, error) {
+// Materialize writes agent config files into an agent home directory and returns mounts.
+// When dataDir is empty, it falls back to the legacy tempdir behavior.
+func Materialize(req *apischema.SessionRequest, sessionID, dataDir string) (*Result, error) {
 	if req == nil {
 		req = &apischema.SessionRequest{}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "agentruntime-"+sessionIDPrefix(sessionID))
-	if err != nil {
-		return nil, err
-	}
-
-	cleanup := func() {
-		_ = os.RemoveAll(tmpDir)
-	}
-
 	result := &Result{
 		Mounts:    nil,
-		CleanupFn: cleanup,
+		CleanupFn: func() {},
 	}
 
+	var tmpDir string
+	if dataDir == "" {
+		var err error
+		tmpDir, err = os.MkdirTemp("", "agentruntime-"+sessionIDPrefix(sessionID))
+		if err != nil {
+			return nil, err
+		}
+		result.CleanupFn = func() {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}
+
+	cleanup := result.CleanupFn
+
 	if req.Claude != nil {
-		if err := materializeClaude(tmpDir, req, &result.Mounts); err != nil {
+		sessionDir, err := materializeClaude(tmpDir, dataDir, sessionID, req, &result.Mounts)
+		if err != nil {
 			cleanup()
 			return nil, err
 		}
+		result.SessionDir = sessionDir
 	}
 
 	if req.Codex != nil {
-		if err := materializeCodex(tmpDir, req, &result.Mounts); err != nil {
+		sessionDir, err := materializeCodex(tmpDir, dataDir, sessionID, req, &result.Mounts)
+		if err != nil {
 			cleanup()
 			return nil, err
 		}
+		result.SessionDir = sessionDir
 	}
 
 	return result, nil
 }
 
-func materializeClaude(tmpDir string, req *apischema.SessionRequest, mounts *[]apischema.Mount) error {
-	claudeDir := filepath.Join(tmpDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		return err
+func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.SessionRequest, mounts *[]apischema.Mount) (string, error) {
+	claudeDir, err := claudeMountSource(tmpDir, dataDir, sessionID, req)
+	if err != nil {
+		return "", err
 	}
 
 	settings := req.Claude.SettingsJSON
@@ -70,19 +82,19 @@ func materializeClaude(tmpDir string, req *apischema.SessionRequest, mounts *[]a
 		settings = map[string]any{}
 	}
 	if err := writeJSONFile(filepath.Join(claudeDir, "settings.json"), settings); err != nil {
-		return err
+		return "", err
 	}
 
 	if err := writeTextFile(filepath.Join(claudeDir, "CLAUDE.md"), req.Claude.ClaudeMD); err != nil {
-		return err
+		return "", err
 	}
 
 	mcpJSON, err := buildClaudeMCPJSON(req.Claude.McpJSON, req.MCPServers)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := writeJSONFile(filepath.Join(claudeDir, ".mcp.json"), mcpJSON); err != nil {
-		return err
+		return "", err
 	}
 
 	*mounts = append(*mounts, apischema.Mount{
@@ -91,22 +103,10 @@ func materializeClaude(tmpDir string, req *apischema.SessionRequest, mounts *[]a
 		Mode:      "rw",
 	})
 
-	if req.Claude.CredentialsPath != "" {
-		hostPath, err := expandPath(req.Claude.CredentialsPath)
-		if err != nil {
-			return err
-		}
-		*mounts = append(*mounts, apischema.Mount{
-			Host:      hostPath,
-			Container: "/root/.claude/credentials.json",
-			Mode:      "ro",
-		})
-	}
-
 	if req.Claude.MemoryPath != "" {
 		hostPath, err := expandPath(req.Claude.MemoryPath)
 		if err != nil {
-			return err
+			return "", err
 		}
 		hash := sha256.Sum256([]byte(hostPath))
 		*mounts = append(*mounts, apischema.Mount{
@@ -116,13 +116,13 @@ func materializeClaude(tmpDir string, req *apischema.SessionRequest, mounts *[]a
 		})
 	}
 
-	return nil
+	return claudeDir, nil
 }
 
-func materializeCodex(tmpDir string, req *apischema.SessionRequest, mounts *[]apischema.Mount) error {
-	codexDir := filepath.Join(tmpDir, ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		return err
+func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionRequest, mounts *[]apischema.Mount) (string, error) {
+	codexDir, err := codexMountSource(tmpDir, dataDir, sessionID)
+	if err != nil {
+		return "", err
 	}
 
 	config := req.Codex.ConfigTOML
@@ -131,14 +131,14 @@ func materializeCodex(tmpDir string, req *apischema.SessionRequest, mounts *[]ap
 	}
 	tomlData, err := marshalSimpleTOML(config)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), tomlData, 0o644); err != nil {
-		return err
+		return "", err
 	}
 
 	if err := writeTextFile(filepath.Join(codexDir, "instructions.md"), req.Codex.Instructions); err != nil {
-		return err
+		return "", err
 	}
 
 	*mounts = append(*mounts, apischema.Mount{
@@ -147,7 +147,44 @@ func materializeCodex(tmpDir string, req *apischema.SessionRequest, mounts *[]ap
 		Mode:      "rw",
 	})
 
-	return nil
+	return codexDir, nil
+}
+
+func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.SessionRequest) (string, error) {
+	if dataDir == "" {
+		claudeDir := filepath.Join(tmpDir, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+			return "", err
+		}
+		return claudeDir, nil
+	}
+
+	credentialsPath := ""
+	if req.Claude.CredentialsPath != "" {
+		expanded, err := expandPath(req.Claude.CredentialsPath)
+		if err != nil {
+			return "", err
+		}
+		credentialsPath = expanded
+	}
+
+	return agentsessions.InitClaudeSessionDir(dataDir, sessionID, claudeProjectPath(), credentialsPath)
+}
+
+func codexMountSource(tmpDir, dataDir, sessionID string) (string, error) {
+	if dataDir == "" {
+		codexDir := filepath.Join(tmpDir, ".codex")
+		if err := os.MkdirAll(codexDir, 0o755); err != nil {
+			return "", err
+		}
+		return codexDir, nil
+	}
+
+	return agentsessions.InitCodexSessionDir(dataDir, sessionID)
+}
+
+func claudeProjectPath() string {
+	return "/workspace"
 }
 
 func buildClaudeMCPJSON(base map[string]any, servers []apischema.MCPServer) (map[string]any, error) {

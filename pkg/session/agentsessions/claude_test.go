@@ -61,14 +61,18 @@ func TestInitClaudeSessionDir_CopiesCredentials(t *testing.T) {
 		t.Fatalf("InitClaudeSessionDir: %v", err)
 	}
 
-	// Credentials should be copied into session dir.
-	copied := filepath.Join(sessionDir, ".credentials.json")
-	data, err := os.ReadFile(copied)
-	if err != nil {
-		t.Fatalf("credentials not copied: %v", err)
-	}
-	if string(data) != `{"token":"test-oauth"}` {
-		t.Fatalf("credentials content mismatch: %q", data)
+	// Credentials should be copied into session dir under both names.
+	for _, copied := range []string{
+		filepath.Join(sessionDir, "credentials.json"),
+		filepath.Join(sessionDir, ".credentials.json"),
+	} {
+		data, err := os.ReadFile(copied)
+		if err != nil {
+			t.Fatalf("credentials not copied: %v", err)
+		}
+		if string(data) != `{"token":"test-oauth"}` {
+			t.Fatalf("credentials content mismatch: %q", data)
+		}
 	}
 }
 

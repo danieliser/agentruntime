@@ -37,7 +37,8 @@ func MangleProjectPath(absPath string) string {
 //	{dataDir}/claude-sessions/{sessionID}/
 //	  projects/{mangled-project-path}/     ← Claude writes .jsonl here
 //	  sessions/                            ← session discovery index
-//	  .credentials.json                    ← copied from credentialsPath if set
+//	  credentials.json                     ← copied from credentialsPath if set
+//	  .credentials.json                    ← legacy-compatible credentials copy
 func InitClaudeSessionDir(dataDir, sessionID, projectPath, credentialsPath string) (string, error) {
 	sessionDir := filepath.Join(dataDir, "claude-sessions", sessionID)
 
@@ -61,9 +62,11 @@ func InitClaudeSessionDir(dataDir, sessionID, projectPath, credentialsPath strin
 	if credentialsPath != "" {
 		expandedCreds := expandHome(credentialsPath)
 		if data, err := os.ReadFile(expandedCreds); err == nil {
-			credsTarget := filepath.Join(sessionDir, ".credentials.json")
-			if err := os.WriteFile(credsTarget, data, 0o600); err != nil {
-				return "", fmt.Errorf("write credentials: %w", err)
+			for _, name := range []string{"credentials.json", ".credentials.json"} {
+				credsTarget := filepath.Join(sessionDir, name)
+				if err := os.WriteFile(credsTarget, data, 0o600); err != nil {
+					return "", fmt.Errorf("write credentials: %w", err)
+				}
 			}
 		}
 		// Silently skip if credentials file doesn't exist — caller may provide
