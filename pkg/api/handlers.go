@@ -95,11 +95,14 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		sess.SetCompleted(result.Code)
 	}()
 
+	// Snapshot after SetRunning — the goroutine hasn't had a chance to call
+	// SetCompleted yet, but we use Snapshot for correctness with the race detector.
+	snap := sess.Snapshot()
 	c.JSON(http.StatusCreated, gin.H{
-		"id":      sess.ID,
-		"state":   sess.State,
-		"agent":   sess.AgentName,
-		"runtime": sess.RuntimeName,
+		"id":      snap.ID,
+		"state":   snap.State,
+		"agent":   snap.AgentName,
+		"runtime": snap.RuntimeName,
 	})
 }
 
@@ -109,7 +112,7 @@ func (s *Server) handleGetSession(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	c.JSON(http.StatusOK, sess)
+	c.JSON(http.StatusOK, sess.Snapshot())
 }
 
 func (s *Server) handleDeleteSession(c *gin.Context) {
@@ -118,11 +121,10 @@ func (s *Server) handleDeleteSession(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if sess.Handle != nil {
-		_ = sess.Handle.Kill()
-	}
+	_ = sess.Kill()
 	sess.SetCompleted(-1)
-	c.JSON(http.StatusOK, gin.H{"id": sess.ID, "state": sess.State})
+	snap := sess.Snapshot()
+	c.JSON(http.StatusOK, gin.H{"id": snap.ID, "state": snap.State})
 }
 
 func (s *Server) handleSessionWS(c *gin.Context) {

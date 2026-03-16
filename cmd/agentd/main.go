@@ -73,7 +73,9 @@ func newRuntime(name string) (runtime.Runtime, error) {
 	case "local":
 		return runtime.NewLocalRuntime(), nil
 	case "docker":
-		return &runtime.DockerRuntime{}, nil
+		return runtime.NewDockerRuntime(runtime.DockerConfig{
+			Image: "alpine:latest",
+		}), nil
 	case "opensandbox":
 		return &runtime.OpenSandboxRuntime{}, nil
 	default:
