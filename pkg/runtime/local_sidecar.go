@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -81,15 +82,41 @@ func (r *LocalSidecarRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (Proce
 	// Health check — wait for sidecar to be ready
 	healthURL := fmt.Sprintf("http://localhost:%d/health", port)
 	deadline := time.Now().Add(15 * time.Second)
+	healthy := false
+	lastHTTPDetail := ""
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(healthURL)
 		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				break
+			if resp.StatusCode == http.StatusOK {
+				var health struct {
+					Status      string `json:"status"`
+					AgentType   string `json:"agent_type"`
+					ErrorDetail string `json:"error_detail"`
+				}
+				decodeErr := json.NewDecoder(resp.Body).Decode(&health)
+				_ = resp.Body.Close()
+				if decodeErr == nil && health.Status == "error" {
+					_ = sidecar.Process.Kill()
+					return nil, &SpawnError{Reason: "sidecar health", Err: fmt.Errorf("sidecar health check failed: %s", health.ErrorDetail)}
+				}
+				if decodeErr == nil && health.AgentType != "" {
+					lastHTTPDetail = ""
+					healthy = true
+					break
+				}
+			} else {
+				lastHTTPDetail = fmt.Sprintf("status %s: %s", resp.Status, httpResponseBody(resp))
+				_ = resp.Body.Close()
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+	if !healthy && time.Now().After(deadline) {
+		_ = sidecar.Process.Kill()
+		if lastHTTPDetail == "" {
+			lastHTTPDetail = "timed out waiting for sidecar health"
+		}
+		return nil, &SpawnError{Reason: "sidecar health", Err: errors.New(lastHTTPDetail)}
 	}
 
 	// Connect WS — prompt is sent via AGENT_PROMPT env, not WS

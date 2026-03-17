@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -591,24 +592,23 @@ func (b *codexBackend) readStderr() {
 	}
 	defer stderr.Close()
 
-	buf, err := io.ReadAll(stderr)
-	if err != nil || len(buf) == 0 {
-		return
-	}
+	scanner := bufio.NewScanner(stderr)
+	scanner.Buffer(make([]byte, 0, 16*1024), 256*1024)
+	for scanner.Scan() {
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" {
+			continue
+		}
 
-	text := strings.TrimSpace(string(buf))
-	if text == "" {
-		return
+		b.appendStderr(text)
+		b.emit(Event{
+			Type: "system",
+			Data: map[string]any{
+				"subtype": "stderr",
+				"text":    text,
+			},
+		})
 	}
-
-	b.appendStderr(text)
-	b.emit(Event{
-		Type: "system",
-		Data: map[string]any{
-			"subtype": "stderr",
-			"text":    text,
-		},
-	})
 }
 
 func (b *codexBackend) waitLoop(wait <-chan error) {

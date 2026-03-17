@@ -512,8 +512,11 @@ func waitForDockerSidecarHealth(ctx context.Context, hostPort string) error {
 	defer ticker.Stop()
 
 	type sidecarHealthResponse struct {
-		AgentType string `json:"agent_type"`
+		Status      string `json:"status"`
+		AgentType   string `json:"agent_type"`
+		ErrorDetail string `json:"error_detail"`
 	}
+	var lastHTTPDetail string
 
 	for {
 		req, err := http.NewRequestWithContext(deadlineCtx, http.MethodGet, url, nil)
@@ -527,16 +530,27 @@ func waitForDockerSidecarHealth(ctx context.Context, hostPort string) error {
 				var health sidecarHealthResponse
 				decodeErr := json.NewDecoder(resp.Body).Decode(&health)
 				_ = resp.Body.Close()
+				if decodeErr == nil && health.Status == "error" {
+					detail := strings.TrimSpace(health.ErrorDetail)
+					if detail == "" {
+						detail = "unknown sidecar error"
+					}
+					return fmt.Errorf("sidecar health check failed: %s", detail)
+				}
 				if decodeErr == nil && strings.TrimSpace(health.AgentType) != "" {
 					return nil
 				}
 			} else {
+				lastHTTPDetail = fmt.Sprintf("status %s: %s", resp.Status, strings.TrimSpace(httpResponseBody(resp)))
 				_ = resp.Body.Close()
 			}
 		}
 
 		select {
 		case <-deadlineCtx.Done():
+			if lastHTTPDetail != "" {
+				return fmt.Errorf("timed out waiting for sidecar health on port %s: %s", hostPort, lastHTTPDetail)
+			}
 			return fmt.Errorf("timed out waiting for sidecar health on port %s: %w", hostPort, deadlineCtx.Err())
 		case <-ticker.C:
 		}
