@@ -76,9 +76,15 @@ func TestClaudeBackend_SendPrompt(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(proc.stdin.String())
-	want := `{"content":"fix the bug","type":"user"}`
-	if got != want {
-		t.Fatalf("stdin = %q, want %q", got, want)
+	// Verify the Anthropic API message format
+	if !strings.Contains(got, `"type":"user"`) {
+		t.Fatalf("expected type:user in stdin, got %q", got)
+	}
+	if !strings.Contains(got, `"role":"user"`) {
+		t.Fatalf("expected role:user in stdin, got %q", got)
+	}
+	if !strings.Contains(got, `"text":"fix the bug"`) {
+		t.Fatalf("expected prompt text in stdin, got %q", got)
 	}
 }
 
