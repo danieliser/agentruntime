@@ -1,6 +1,7 @@
 package materialize
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -30,6 +31,101 @@ func FuzzResolveVars(f *testing.F) {
 		if strings.Contains(got, hostGatewayVar) {
 			t.Fatalf("expected placeholder to be resolved in %q", got)
 		}
+	})
+}
+
+func FuzzExpandPath(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"/absolute/path",
+		"~/relative/home",
+		"~",
+		"relative/path",
+		"../../etc/passwd",
+		"$HOME/.claude/credentials.json",
+		"$NONEXISTENT_VAR/file",
+		strings.Repeat("a/", 256),
+		"./local",
+		"...",
+		"..",
+		"~/../../escape",
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, path string) {
+		if len(path) > 4096 {
+			path = path[:4096]
+		}
+		// Must never panic — errors are fine.
+		_, _ = expandPath(path)
+	})
+}
+
+func FuzzSanitizeMCPURL(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"http://localhost:8080",
+		"https://example.com/api",
+		"http://${HOST_GATEWAY}:8080",
+		"ws://localhost:9090/ws",
+		"wss://${HOST_GATEWAY}:443/ws",
+		"ftp://evil.com/file",
+		"javascript:alert(1)",
+		"file:///etc/passwd",
+		"://missing-scheme",
+		"http://",
+		"not-a-url",
+		"\x00\x01\x02",
+		"http://example.com/" + strings.Repeat("a", 4096),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, raw string) {
+		if len(raw) > 8192 {
+			raw = raw[:8192]
+		}
+		result := sanitizeMCPURL(raw)
+
+		// If non-empty, must have a valid scheme.
+		if result != "" {
+			lower := strings.ToLower(result)
+			hasValid := strings.HasPrefix(lower, "http://") ||
+				strings.HasPrefix(lower, "https://") ||
+				strings.HasPrefix(lower, "ws://") ||
+				strings.HasPrefix(lower, "wss://")
+			if !hasValid {
+				t.Fatalf("sanitizeMCPURL returned invalid scheme: %q", result)
+			}
+		}
+	})
+}
+
+func FuzzSanitizeMCPConfigValue(f *testing.F) {
+	for _, seed := range []string{
+		"{}",
+		`{"url":"http://localhost:8080"}`,
+		`{"url":"http://${HOST_GATEWAY}:8080","token":"abc123"}`,
+		`{"url":"ftp://evil","token":"x\u0000y"}`,
+		`{"nested":{"url":"https://ok.com","other":"val"}}`,
+		`[{"url":"http://a"},{"url":"file:///bad"}]`,
+		`{"url":"","token":""}`,
+		`null`,
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, raw string) {
+		if len(raw) > 8192 {
+			raw = raw[:8192]
+		}
+		var value any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return
+		}
+		// Must never panic on any valid JSON.
+		_ = sanitizeMCPConfigValue("", value)
 	})
 }
 

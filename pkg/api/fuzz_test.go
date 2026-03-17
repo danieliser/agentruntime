@@ -1,9 +1,51 @@
 package api
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+const fuzzMaxBytes = 8 << 10
+
+func clampFuzzBytes(data []byte) []byte {
+	if len(data) > fuzzMaxBytes {
+		return data[:fuzzMaxBytes]
+	}
+	return data
+}
+
+func FuzzSessionRequest_JSON(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte(`{}`),
+		[]byte(`{"agent":"claude","prompt":"hello"}`),
+		[]byte(`{"agent":"codex","prompt":"build it","runtime":"docker","timeout":"5m","pty":true,"interactive":false}`),
+		[]byte(`{"agent":"claude","prompt":"go","work_dir":"/tmp","mounts":[{"host":"/a","container":"/b","mode":"rw"}],"claude":{"claude_md":"# hi","credentials_path":"~/.claude/credentials.json","memory_path":"~/.claude/projects","settings_json":{"key":"val"},"mcp_json":{"mcpServers":{}},"max_turns":10,"allowed_tools":["Read"]}}`),
+		[]byte(`{"agent":"codex","prompt":"test","codex":{"config_toml":{"model":"o3"},"instructions":"use rg","approval_mode":"suggest"},"mcp_servers":[{"name":"s","type":"http","url":"http://${HOST_GATEWAY}:8080"}],"env":{"FOO":"bar"},"container":{"image":"ubuntu:22.04","memory":"4g","cpus":2.0,"network":"bridge","security_opt":["no-new-privileges:true"]}}`),
+		[]byte(`{"agent":"","prompt":"","timeout":"not-a-duration","mounts":[{},{}]}`),
+		[]byte(`[1,2,3]`),
+		[]byte(`{"agent":"claude","prompt":"x","tags":{"":""},"env":{"":""}}`),
+		[]byte(`{"agent":"` + strings.Repeat("a", 4096) + `"}`),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		data = clampFuzzBytes(data)
+		var req SessionRequest
+		if err := json.Unmarshal(data, &req); err != nil {
+			return
+		}
+
+		// Exercise methods that process fuzzed fields.
+		_ = req.EffectiveMounts()
+		_ = req.EffectiveTimeout()
+
+		// Re-marshal should not panic.
+		_, _ = json.Marshal(req)
+	})
+}
 
 func FuzzSessionRequest_EffectiveMounts(f *testing.F) {
 	f.Add("", "", "", "", "", "", "")

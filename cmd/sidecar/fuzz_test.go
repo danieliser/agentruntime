@@ -69,6 +69,57 @@ func FuzzDecodeReplay(f *testing.F) {
 	})
 }
 
+func FuzzParseAgentConfig(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"{}",
+		`{"model":"claude-opus-4-5"}`,
+		`{"model":"o3","resume_session":"sess-abc","env":{"FOO":"bar"},"approval_mode":"full-auto","max_turns":5,"allowed_tools":["Read","Write"]}`,
+		`{"max_turns":-1,"allowed_tools":null}`,
+		`[1,2,3]`,
+		`{"env":{"":""}}`,
+		"not-json",
+		`{"model":` + strings.Repeat(`"x"`, 2048) + `}`,
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, raw string) {
+		t.Setenv("AGENT_CONFIG", raw)
+		_, _ = parseAgentConfig()
+	})
+}
+
+func FuzzDecodeCommandData(f *testing.F) {
+	for _, seed := range [][]byte{
+		nil,
+		{},
+		[]byte("null"),
+		[]byte("{}"),
+		[]byte(`{"content":"hello world"}`),
+		[]byte(`{"text":"ctx","filePath":"/tmp/a.go"}`),
+		[]byte(`{"filePath":"/app/main.go","lineStart":10,"lineEnd":20}`),
+		[]byte(`{"content":""}`),
+		[]byte(`[1,2,3]`),
+		[]byte(`{"unknown_field": true, "content": 42}`),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		data = clampBytes(data)
+		// Exercise all command payload types — none should panic.
+		var p promptCommand
+		_ = decodeCommandData(json.RawMessage(data), &p)
+		var s steerCommand
+		_ = decodeCommandData(json.RawMessage(data), &s)
+		var c contextCommand
+		_ = decodeCommandData(json.RawMessage(data), &c)
+		var m mentionCommand
+		_ = decodeCommandData(json.RawMessage(data), &m)
+	})
+}
+
 func FuzzParseAgentCommand(f *testing.F) {
 	for _, seed := range []string{
 		"",
