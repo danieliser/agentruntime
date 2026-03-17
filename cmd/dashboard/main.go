@@ -505,6 +505,7 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 func handleKillAll(w http.ResponseWriter, r *http.Request) {
 	agentFilter := r.URL.Query().Get("agent")
 
+	// Kill dashboard-tracked sessions
 	mu.Lock()
 	var toKill []*dashSession
 	var toKeep []*dashSession
@@ -750,6 +751,18 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Track in dashboard so kill-all can clean up
+		benchSess := &dashSession{
+			ID:        sessResp.SessionID,
+			Agent:     agent,
+			Mode:      "benchmark",
+			Status:    "benchmarking",
+			SpawnedAt: start,
+		}
+		mu.Lock()
+		sessions = append(sessions, benchSess)
+		mu.Unlock()
+
 		// Poll for first agent_message
 		ttftMs := int64(0)
 		deadline := time.Now().Add(60 * time.Second)
@@ -774,9 +787,16 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(200 * time.Millisecond)
 		}
 
-		// Kill session
-		req, _ := http.NewRequest(http.MethodDelete, daemonURL+"/sessions/"+sessResp.SessionID, nil)
-		http.DefaultClient.Do(req)
+		// Kill session and remove from dashboard tracking
+		killOnDaemon(sessResp.SessionID)
+		mu.Lock()
+		for j, s := range sessions {
+			if s.ID == sessResp.SessionID {
+				sessions = append(sessions[:j], sessions[j+1:]...)
+				break
+			}
+		}
+		mu.Unlock()
 
 		result := benchResult{Run: i + 1, CreateMs: createMs, TtftMs: ttftMs}
 		if ttftMs == 0 {
