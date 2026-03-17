@@ -91,11 +91,11 @@ func TestWSHandle_StdinRouting(t *testing.T) {
 
 	select {
 	case frame := <-received:
-		if frame.Type != "stdin" {
-			t.Fatalf("expected stdin frame type, got %q", frame.Type)
+		if frame.Type != "prompt" {
+			t.Fatalf("expected prompt frame type, got %q", frame.Type)
 		}
-		if got := wsClientFrameStringData(t, frame); got != "typed input" {
-			t.Fatalf("expected stdin payload %q, got %q", "typed input", got)
+		if got := wsClientFramePromptContent(t, frame); got != "typed input" {
+			t.Fatalf("expected prompt content %q, got %q", "typed input", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for stdin frame")
@@ -299,4 +299,19 @@ func wsClientFrameStringData(t *testing.T, frame wsClientFrame) string {
 		t.Fatalf("unmarshal frame data as string: %v", err)
 	}
 	return payload
+}
+
+func wsClientFramePromptContent(t *testing.T, frame wsClientFrame) string {
+	t.Helper()
+	data, err := json.Marshal(frame.Data)
+	if err != nil {
+		t.Fatalf("marshal frame data: %v", err)
+	}
+	var payload struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal prompt data: %v", err)
+	}
+	return payload.Content
 }

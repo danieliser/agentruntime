@@ -135,11 +135,13 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 		Mode:      "rw",
 	})
 
-	// Write .claude.json to the parent of the session dir and bind-mount it as a
+	// Write .claude.json inside the per-session dir and bind-mount it as a
 	// single file at /home/agent/.claude.json. The Dockerfile pre-creates this
 	// target with `touch` so Docker mounts it as a file, not a directory.
+	// Previously this was written to the parent (shared) dir, causing race
+	// conditions when multiple sessions spawn concurrently.
 	claudeStateBytes, _ := json.MarshalIndent(claudeState, "", "  ")
-	claudeStatePath := filepath.Join(claudeDir, "..", ".claude.json")
+	claudeStatePath := filepath.Join(claudeDir, ".claude.json")
 	if err := os.WriteFile(claudeStatePath, claudeStateBytes, 0o644); err == nil {
 		*mounts = append(*mounts, apischema.Mount{
 			Host:      claudeStatePath,

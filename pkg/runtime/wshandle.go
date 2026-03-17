@@ -134,9 +134,13 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 		for {
 			n, err := handle.stdinR.Read(buf)
 			if n > 0 {
+				// Send as a sidecar "prompt" command, not raw "stdin".
+				// The sidecar WS protocol expects typed commands:
+				// prompt, interrupt, steer, context, mention.
+				content := strings.TrimRight(string(buf[:n]), "\n\r")
 				writeErr := handle.writeJSON(wsClientFrame{
-					Type: "stdin",
-					Data: string(buf[:n]),
+					Type: "prompt",
+					Data: map[string]string{"content": content},
 				})
 				if writeErr != nil {
 					if ctx.Err() == nil {
