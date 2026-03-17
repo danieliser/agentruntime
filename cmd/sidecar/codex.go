@@ -352,8 +352,14 @@ func (b *codexBackend) ensureThread() (string, error) {
 
 	decoded := decodeMap(result)
 	threadID = stringField(decoded, "threadId", "thread_id", "id")
+	// Codex may nest the ID under a "thread" object: {"thread":{"id":"..."}}
 	if threadID == "" {
-		return "", errors.New("codex thread/start missing threadId")
+		if threadObj, ok := decoded["thread"].(map[string]any); ok {
+			threadID = stringField(threadObj, "id", "threadId", "thread_id")
+		}
+	}
+	if threadID == "" {
+		return "", fmt.Errorf("codex thread/start missing threadId in response: %v", decoded)
 	}
 
 	b.mu.Lock()
