@@ -89,6 +89,10 @@ type dockerRunSpec struct {
 
 func (r *DockerRuntime) Name() string { return "docker" }
 
+func (r *DockerRuntime) Cleanup(ctx context.Context) error {
+	return r.manager().Cleanup(ctx)
+}
+
 func (r *DockerRuntime) manager() *NetworkManager {
 	if r.networkManager == nil {
 		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network}

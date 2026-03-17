@@ -15,7 +15,8 @@ func NewLocalRuntime() *LocalRuntime {
 	return &LocalRuntime{}
 }
 
-func (r *LocalRuntime) Name() string { return "local" }
+func (r *LocalRuntime) Name() string    { return "local" }
+func (r *LocalRuntime) Cleanup(_ context.Context) error { return nil }
 
 // Spawn starts a local subprocess with the given configuration.
 func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandle, error) {

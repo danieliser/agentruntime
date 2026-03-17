@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
@@ -11,8 +12,8 @@ import (
 
 // Runtime is the core abstraction for agent process execution. Each runtime
 // implementation knows how to spawn processes in its environment (local OS,
-// Docker container, OpenSandbox, SSH host) and recover orphaned sessions
-// from a previous daemon run.
+// Docker container, SSH host) and recover orphaned sessions from a previous
+// daemon run.
 type Runtime interface {
 	// Spawn creates a new agent process with the given configuration.
 	// Returns a ProcessHandle for interacting with the process stdio.
@@ -23,8 +24,12 @@ type Runtime interface {
 	// across daemon restarts for runtimes that support it.
 	Recover(ctx context.Context) ([]ProcessHandle, error)
 
-	// Name returns the runtime identifier ("local", "docker", "opensandbox", "ssh").
+	// Name returns the runtime identifier ("local", "docker", "ssh").
 	Name() string
+
+	// Cleanup performs graceful teardown of runtime-managed infrastructure
+	// (e.g., proxy containers, networks). Safe to call even if nothing was started.
+	Cleanup(ctx context.Context) error
 }
 
 // SpawnConfig holds the parameters for spawning an agent process.
@@ -32,7 +37,7 @@ type SpawnConfig struct {
 	// SessionID identifies the owning session and is used for container naming/labels.
 	SessionID string
 
-	// AgentName identifies the agent type ("claude", "codex", "opencode").
+	// AgentName identifies the agent type ("claude", "codex").
 	AgentName string
 
 	// Cmd is the command and arguments to execute.
@@ -91,6 +96,33 @@ type ProcessHandle interface {
 	RecoveryInfo() *RecoveryInfo
 }
 
+// SteerableHandle extends ProcessHandle with sidecar command methods.
+// Handles that support the full sidecar command set (wsHandle) implement this.
+// Handles that don't (localHandle, dockerHandle) will not satisfy this interface
+// and callers should check with a type assertion before calling these methods.
+type SteerableHandle interface {
+	ProcessHandle
+
+	// SendPrompt sends a prompt command to the sidecar.
+	SendPrompt(content string) error
+
+	// SendInterrupt sends an interrupt command to the sidecar.
+	SendInterrupt() error
+
+	// SendSteer sends a steer command to the sidecar.
+	SendSteer(content string) error
+
+	// SendContext sends a context command with text and/or file path.
+	SendContext(text, filePath string) error
+
+	// SendMention sends a mention command referencing a file location.
+	SendMention(filePath string, lineStart, lineEnd int) error
+}
+
+// ErrNotSteerable is returned when a command method is called on a handle
+// that does not support the sidecar command protocol.
+var ErrNotSteerable = fmt.Errorf("handle does not support sidecar commands")
+
 // ExitResult holds the outcome of a process termination.
 type ExitResult struct {
 	// Code is the process exit code. 0 indicates success.
@@ -98,6 +130,9 @@ type ExitResult struct {
 
 	// Err is any error encountered waiting for the process, distinct from a non-zero exit code.
 	Err error
+
+	// ErrorDetail contains the error_detail field from the sidecar exit frame, if present.
+	ErrorDetail string
 }
 
 // RecoveryInfo carries stable identifiers for a recovered process handle.

@@ -193,6 +193,38 @@ func (b *Bridge) stdinPump(ctx context.Context) {
 					return
 				}
 			}
+		case "steer":
+			if err := b.sendSteerable(func(sh runtime.SteerableHandle) error {
+				return sh.SendSteer(frame.Data)
+			}); err != nil {
+				_ = b.writeJSON(ServerFrame{Type: "error", Error: err.Error()})
+			}
+		case "interrupt":
+			if err := b.sendSteerable(func(sh runtime.SteerableHandle) error {
+				return sh.SendInterrupt()
+			}); err != nil {
+				_ = b.writeJSON(ServerFrame{Type: "error", Error: err.Error()})
+			}
+		case "context":
+			if err := b.sendSteerable(func(sh runtime.SteerableHandle) error {
+				var text, filePath string
+				if frame.Context != nil {
+					text = frame.Context.Text
+					filePath = frame.Context.FilePath
+				}
+				return sh.SendContext(text, filePath)
+			}); err != nil {
+				_ = b.writeJSON(ServerFrame{Type: "error", Error: err.Error()})
+			}
+		case "mention":
+			if err := b.sendSteerable(func(sh runtime.SteerableHandle) error {
+				if frame.Mention == nil {
+					return sh.SendMention("", 0, 0)
+				}
+				return sh.SendMention(frame.Mention.FilePath, frame.Mention.LineStart, frame.Mention.LineEnd)
+			}); err != nil {
+				_ = b.writeJSON(ServerFrame{Type: "error", Error: err.Error()})
+			}
 		case "ping":
 			_ = b.writeJSON(ServerFrame{Type: "pong"})
 		case "resize":
@@ -225,6 +257,16 @@ func (b *Bridge) pingLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// sendSteerable checks if the handle supports SteerableHandle and calls fn.
+// Returns runtime.ErrNotSteerable if the handle doesn't support it.
+func (b *Bridge) sendSteerable(fn func(runtime.SteerableHandle) error) error {
+	sh, ok := b.handle.(runtime.SteerableHandle)
+	if !ok {
+		return runtime.ErrNotSteerable
+	}
+	return fn(sh)
 }
 
 // writeJSON serializes a frame to the WebSocket with write locking.

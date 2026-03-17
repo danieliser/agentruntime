@@ -12,7 +12,8 @@ type OpenSandboxRuntime struct {
 	BaseURL string
 }
 
-func (r *OpenSandboxRuntime) Name() string { return "opensandbox" }
+func (r *OpenSandboxRuntime) Name() string                    { return "opensandbox" }
+func (r *OpenSandboxRuntime) Cleanup(_ context.Context) error { return nil }
 
 func (r *OpenSandboxRuntime) Spawn(_ context.Context, _ SpawnConfig) (ProcessHandle, error) {
 	return nil, fmt.Errorf("opensandbox runtime not yet implemented")

@@ -60,6 +60,8 @@ func (f *fakeRuntime) Recover(_ context.Context) ([]runtime.ProcessHandle, error
 	return nil, nil
 }
 
+func (f *fakeRuntime) Cleanup(_ context.Context) error { return nil }
+
 // echoAgent wraps ClaudeAgent but overrides BuildCmd to use "/bin/echo" so tests
 // run without Claude CLI installed. Verifies the agent/runtime pipeline end-to-end.
 // Uses /bin/echo (not the shell builtin) so exec.Command can find it directly.
@@ -518,7 +520,7 @@ func TestGetSessionInfo_ReturnsAllFields(t *testing.T) {
 		t.Fatalf("expected session %q in manager", created.SessionID)
 	}
 	snap := sess.Snapshot()
-	expectedLogFile := filepath.Join(srv.logDir, created.SessionID+".jsonl")
+	expectedLogFile := session.LogFilePath(srv.logDir, created.SessionID)
 
 	if info.SessionID != created.SessionID {
 		t.Fatalf("expected session_id %q, got %q", created.SessionID, info.SessionID)

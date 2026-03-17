@@ -29,7 +29,8 @@ func NewLocalSidecarRuntime() *LocalSidecarRuntime {
 	return &LocalSidecarRuntime{}
 }
 
-func (r *LocalSidecarRuntime) Name() string { return "local" }
+func (r *LocalSidecarRuntime) Name() string                    { return "local" }
+func (r *LocalSidecarRuntime) Cleanup(_ context.Context) error { return nil }
 
 func (r *LocalSidecarRuntime) sidecarBinary() string {
 	if r.SidecarBin != "" {

@@ -121,7 +121,17 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 				if frame.ExitCode != nil {
 					code = *frame.ExitCode
 				}
-				finish(ExitResult{Code: code})
+				// Extract error_detail from exit frame data if present.
+				var errorDetail string
+				if len(frame.Data) > 0 {
+					var exitData struct {
+						ErrorDetail string `json:"error_detail"`
+					}
+					if json.Unmarshal(frame.Data, &exitData) == nil {
+						errorDetail = exitData.ErrorDetail
+					}
+				}
+				finish(ExitResult{Code: code, ErrorDetail: errorDetail})
 				return
 			case "connected", "pong":
 				continue
@@ -190,6 +200,54 @@ func (h *wsHandle) SendPrompt(content string) error {
 		Data: map[string]string{
 			"content": content,
 		},
+	})
+}
+
+func (h *wsHandle) SendInterrupt() error {
+	return h.writeJSON(wsClientFrame{
+		Type: "interrupt",
+	})
+}
+
+func (h *wsHandle) SendSteer(content string) error {
+	if content == "" {
+		return nil
+	}
+	return h.writeJSON(wsClientFrame{
+		Type: "steer",
+		Data: map[string]string{
+			"content": content,
+		},
+	})
+}
+
+func (h *wsHandle) SendContext(text, filePath string) error {
+	data := map[string]string{}
+	if text != "" {
+		data["text"] = text
+	}
+	if filePath != "" {
+		data["file_path"] = filePath
+	}
+	return h.writeJSON(wsClientFrame{
+		Type: "context",
+		Data: data,
+	})
+}
+
+func (h *wsHandle) SendMention(filePath string, lineStart, lineEnd int) error {
+	data := map[string]any{
+		"file_path": filePath,
+	}
+	if lineStart > 0 {
+		data["line_start"] = lineStart
+	}
+	if lineEnd > 0 {
+		data["line_end"] = lineEnd
+	}
+	return h.writeJSON(wsClientFrame{
+		Type:    "mention",
+		Data:    data,
 	})
 }
 

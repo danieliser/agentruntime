@@ -197,13 +197,11 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 		return "", err
 	}
 
-	// Copy Codex auth.json from host if it exists.
-	// Codex uses OAuth tokens stored in ~/.codex/auth.json.
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		hostAuth := filepath.Join(home, ".codex", "auth.json")
-		if data, err := os.ReadFile(hostAuth); err == nil {
-			_ = os.WriteFile(filepath.Join(codexDir, "auth.json"), data, 0o600)
+	// Copy Codex auth.json if not already placed by codexMountSource (persistent mode).
+	authDest := filepath.Join(codexDir, "auth.json")
+	if _, err := os.Stat(authDest); os.IsNotExist(err) {
+		if authData := discoverCodexAuth(dataDir); authData != nil {
+			_ = os.WriteFile(authDest, authData, 0o600)
 		}
 	}
 
@@ -267,7 +265,38 @@ func codexMountSource(tmpDir, dataDir, sessionID string) (string, error) {
 		return codexDir, nil
 	}
 
-	return agentsessions.InitCodexSessionDir(dataDir, sessionID)
+	codexDir, err := agentsessions.InitCodexSessionDir(dataDir, sessionID)
+	if err != nil {
+		return "", err
+	}
+
+	// Auto-discover Codex auth.json for persistent session dirs.
+	// Priority: 1) credential sync cache, 2) host ~/.codex/auth.json.
+	authData := discoverCodexAuth(dataDir)
+	if authData != nil {
+		_ = os.WriteFile(filepath.Join(codexDir, "auth.json"), authData, 0o600)
+	}
+
+	return codexDir, nil
+}
+
+// discoverCodexAuth returns the contents of the best available Codex auth.json,
+// checking the credential sync cache first, then the host's default location.
+func discoverCodexAuth(dataDir string) []byte {
+	// 1. Credential sync cache (populated by --credential-sync).
+	if dataDir != "" {
+		syncCache := filepath.Join(dataDir, "credentials", "codex-auth.json")
+		if data, err := os.ReadFile(syncCache); err == nil {
+			return data
+		}
+	}
+	// 2. Host ~/.codex/auth.json.
+	if home, err := os.UserHomeDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json")); err == nil {
+			return data
+		}
+	}
+	return nil
 }
 
 func claudeProjectPath() string {
