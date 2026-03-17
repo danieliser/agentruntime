@@ -74,7 +74,7 @@ func (a *echoAgent) BuildCmd(prompt string, _ agent.AgentConfig) ([]string, erro
 	// connect before the process exits. Without the sleep, echo exits in microseconds
 	// and the bridge completes before any WS client can dial.
 	// The prompt is passed via arg to avoid shell injection.
-	return []string{"/bin/sh", "-c", "/bin/echo \"$1\" && sleep 1", "--", prompt}, nil
+	return []string{"/bin/sh", "-c", "/bin/echo \"$1\" && sleep 2", "--", prompt}, nil
 }
 
 func (a *echoAgent) ParseOutput(output []byte) (*agent.AgentResult, bool) { return nil, false }

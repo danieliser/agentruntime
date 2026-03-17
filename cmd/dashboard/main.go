@@ -86,6 +86,7 @@ func main() {
 	http.HandleFunc("/api/retry", handleRetry)
 	http.HandleFunc("/api/resume", handleResume)
 	http.HandleFunc("/api/events", handleEvents)
+	http.HandleFunc("/api/benchmark", handleBenchmark)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
 
@@ -675,6 +676,116 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(buf)
+}
+
+// POST /api/benchmark?agent=claude&model=claude-haiku-4-5&runs=3
+func handleBenchmark(w http.ResponseWriter, r *http.Request) {
+	agent := r.URL.Query().Get("agent")
+	if agent == "" {
+		agent = "claude"
+	}
+	model := r.URL.Query().Get("model")
+	runsStr := r.URL.Query().Get("runs")
+	runs := 3
+	if runsStr != "" {
+		fmt.Sscanf(runsStr, "%d", &runs)
+	}
+	if runs < 1 {
+		runs = 1
+	}
+	if runs > 10 {
+		runs = 10
+	}
+
+	type benchResult struct {
+		Run      int   `json:"run"`
+		CreateMs int64 `json:"create_ms"`
+		TtftMs   int64 `json:"ttft_ms"`
+		Error    string `json:"error,omitempty"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	flusher, canFlush := w.(http.Flusher)
+
+	// Stream results as NDJSON so the UI can update per-run
+	for i := 0; i < runs; i++ {
+		start := time.Now()
+
+		body := map[string]any{
+			"agent":   agent,
+			"prompt":  "Reply with exactly: BENCHMARK_OK",
+			"work_dir": workDir,
+		}
+		if agent == "claude" {
+			claude := map[string]any{}
+			body["claude"] = claude
+		} else {
+			body["codex"] = map[string]any{}
+		}
+		if model != "" {
+			body["model"] = model
+		}
+
+		data, _ := json.Marshal(body)
+		resp, err := http.Post(daemonURL+"/sessions", "application/json", bytes.NewReader(data))
+		if err != nil {
+			line, _ := json.Marshal(benchResult{Run: i + 1, Error: err.Error()})
+			w.Write(append(line, '\n'))
+			if canFlush { flusher.Flush() }
+			continue
+		}
+
+		var sessResp struct {
+			SessionID string `json:"session_id"`
+		}
+		json.NewDecoder(resp.Body).Decode(&sessResp)
+		resp.Body.Close()
+
+		createMs := time.Since(start).Milliseconds()
+
+		if sessResp.SessionID == "" {
+			line, _ := json.Marshal(benchResult{Run: i + 1, CreateMs: createMs, Error: "no session_id"})
+			w.Write(append(line, '\n'))
+			if canFlush { flusher.Flush() }
+			continue
+		}
+
+		// Poll for first agent_message
+		ttftMs := int64(0)
+		deadline := time.Now().Add(60 * time.Second)
+		cursor := "0"
+		for time.Now().Before(deadline) {
+			logsResp, err := http.Get(daemonURL + "/sessions/" + sessResp.SessionID + "/logs?cursor=" + cursor)
+			if err != nil {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			body, _ := io.ReadAll(logsResp.Body)
+			logsResp.Body.Close()
+
+			if newCursor := logsResp.Header.Get("Agentruntime-Log-Cursor"); newCursor != "" {
+				cursor = newCursor
+			}
+
+			if strings.Contains(string(body), "\"type\":\"agent_message\"") {
+				ttftMs = time.Since(start).Milliseconds()
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		// Kill session
+		req, _ := http.NewRequest(http.MethodDelete, daemonURL+"/sessions/"+sessResp.SessionID, nil)
+		http.DefaultClient.Do(req)
+
+		result := benchResult{Run: i + 1, CreateMs: createMs, TtftMs: ttftMs}
+		if ttftMs == 0 {
+			result.Error = "timeout"
+		}
+		line, _ := json.Marshal(result)
+		w.Write(append(line, '\n'))
+		if canFlush { flusher.Flush() }
+	}
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {

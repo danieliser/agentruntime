@@ -80,6 +80,9 @@ func TestClaudeCredentials_FallbackToHostDotClaude(t *testing.T) {
 func TestClaudeCredentials_NoneExist_StillSucceeds(t *testing.T) {
 	dataDir := t.TempDir()
 
+	// Override HOME so host credential discovery finds nothing.
+	t.Setenv("HOME", t.TempDir())
+
 	// No sync cache, no host credentials — should not error.
 	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Claude: &api.ClaudeConfig{},
@@ -127,6 +130,9 @@ func TestCodexCredentials_AuthJSONCopied(t *testing.T) {
 
 func TestCodexCredentials_NoneExist_StillSucceeds(t *testing.T) {
 	dataDir := t.TempDir()
+
+	// Override HOME so host credential discovery finds nothing.
+	t.Setenv("HOME", t.TempDir())
 
 	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
 		Codex: &api.CodexConfig{},

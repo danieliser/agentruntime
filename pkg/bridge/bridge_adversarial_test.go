@@ -503,8 +503,8 @@ func TestBridge_InterruptNonSteerableHandle(t *testing.T) {
 	if f.Type != "error" {
 		t.Fatalf("expected error frame for interrupt on non-steerable, got %q", f.Type)
 	}
-	if !strings.Contains(f.Error, "steerable") {
-		t.Fatalf("expected steerable error, got %q", f.Error)
+	if !strings.Contains(f.Error, "sidecar commands") {
+		t.Fatalf("expected sidecar-commands error, got %q", f.Error)
 	}
 
 	// Bridge should still be alive.
@@ -798,8 +798,8 @@ func TestBridge_SteerOnNonSteerableSession(t *testing.T) {
 		if f.Type != "error" {
 			t.Fatalf("expected error for %s on non-steerable, got %q", cmd.Type, f.Type)
 		}
-		if !strings.Contains(f.Error, "steerable") {
-			t.Fatalf("expected steerable error for %s, got %q", cmd.Type, f.Error)
+		if !strings.Contains(f.Error, "sidecar commands") {
+			t.Fatalf("expected sidecar-commands error for %s, got %q", cmd.Type, f.Error)
 		}
 	}
 
