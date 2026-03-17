@@ -17,6 +17,7 @@ import (
 var errCodexNoActiveTurn = errors.New("codex backend has no active turn")
 
 type codexBackend struct {
+	binary    string
 	logger    *log.Logger
 	spawner   codexSpawner
 	sessionID string
@@ -73,18 +74,30 @@ type codexRPCResponse struct {
 }
 
 func newCodexBackend() *codexBackend {
-	return newCodexBackendWithSpawner(log.Default(), spawnCodexAppServer)
+	return newCodexBackendWithBinary("codex")
+}
+
+func newCodexBackendWithBinary(binary string) *codexBackend {
+	return newCodexBackendConfig(binary, log.Default(), spawnCodexAppServer)
 }
 
 func newCodexBackendWithSpawner(logger *log.Logger, spawner codexSpawner) *codexBackend {
+	return newCodexBackendConfig("codex", logger, spawner)
+}
+
+func newCodexBackendConfig(binary string, logger *log.Logger, spawner codexSpawner) *codexBackend {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
 	if spawner == nil {
 		spawner = spawnCodexAppServer
 	}
+	if binary == "" {
+		binary = "codex"
+	}
 
 	return &codexBackend{
+		binary:    binary,
 		logger:    logger,
 		spawner:   spawner,
 		sessionID: uuid.NewString(),
@@ -156,7 +169,7 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	b.ctx, b.cancel = context.WithCancel(ctx)
 	b.mu.Unlock()
 
-	transport, err := b.spawner(b.ctx, []string{"codex", "app-server", "--listen", "stdio://"})
+	transport, err := b.spawner(b.ctx, []string{b.binary, "app-server", "--listen", "stdio://"})
 	if err != nil {
 		b.setRunning(false)
 		return err

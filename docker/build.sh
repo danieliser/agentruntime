@@ -21,8 +21,8 @@ build_proxy() {
   echo "Building agentruntime-proxy:latest ..."
   docker build \
     -t agentruntime-proxy:latest \
-    -f "${SCRIPT_DIR}/Dockerfile.proxy" \
-    "${SCRIPT_DIR}"
+    -f "${REPO_ROOT}/docker/Dockerfile.proxy" \
+    "${REPO_ROOT}"
 }
 
 case "${TARGET}" in
