@@ -392,3 +392,216 @@ func TestDiscoverCodexAuth_EmptyDataDir(t *testing.T) {
 	// so we just verify it doesn't panic.
 	_ = got
 }
+
+// --- Host fallback tests with HOME override ---
+
+func TestDiscoverCodexAuth_HostFallback(t *testing.T) {
+	fakeHome := t.TempDir()
+	codexDir := filepath.Join(fakeHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostAuth := `{"api_key":"host-codex"}`
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(hostAuth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	got := discoverCodexAuth("") // no sync cache
+	if got == nil {
+		t.Fatal("expected host fallback, got nil")
+	}
+	if string(got) != hostAuth {
+		t.Fatalf("expected host auth, got %q", string(got))
+	}
+}
+
+func TestDiscoverCodexAuth_SyncCacheBeatsHost(t *testing.T) {
+	dataDir := t.TempDir()
+	syncDir := filepath.Join(dataDir, "credentials")
+	if err := os.MkdirAll(syncDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	syncAuth := `{"source":"sync-wins"}`
+	if err := os.WriteFile(filepath.Join(syncDir, "codex-auth.json"), []byte(syncAuth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeHome := t.TempDir()
+	codexDir := filepath.Join(fakeHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(`{"source":"host-loses"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	got := discoverCodexAuth(dataDir)
+	if string(got) != syncAuth {
+		t.Fatalf("expected sync cache to win, got %q", string(got))
+	}
+}
+
+func TestDiscoverCodexAuth_NothingAvailable(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	got := discoverCodexAuth("")
+	if got != nil {
+		t.Fatalf("expected nil when no credentials, got %q", string(got))
+	}
+}
+
+func TestClaudeCredentials_HostFallbackDotCredentials(t *testing.T) {
+	dataDir := t.TempDir()
+	fakeHome := t.TempDir()
+	claudeDir := filepath.Join(fakeHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	creds := `{"oauth_token":"host-dot-creds"}`
+	if err := os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	// No sync cache, no explicit path — should find ~/.claude/.credentials.json.
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Claude: &api.ClaudeConfig{},
+	}, "host-fallback-test", dataDir)
+	defer result.CleanupFn()
+
+	sessionDir := findMount(t, result.Mounts, "/home/agent/.claude").Host
+	for _, name := range []string{"credentials.json", ".credentials.json"} {
+		data, err := os.ReadFile(filepath.Join(sessionDir, name))
+		if err != nil {
+			t.Fatalf("expected %s: %v", name, err)
+		}
+		if string(data) != creds {
+			t.Fatalf("%s: expected %q, got %q", name, creds, string(data))
+		}
+	}
+}
+
+func TestClaudeCredentials_HostFallbackCredentialsJSON(t *testing.T) {
+	dataDir := t.TempDir()
+	fakeHome := t.TempDir()
+	claudeDir := filepath.Join(fakeHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Only credentials.json (without dot prefix) — should also be found.
+	creds := `{"oauth_token":"host-no-dot"}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "credentials.json"), []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Claude: &api.ClaudeConfig{},
+	}, "host-nodot-test", dataDir)
+	defer result.CleanupFn()
+
+	sessionDir := findMount(t, result.Mounts, "/home/agent/.claude").Host
+	data, err := os.ReadFile(filepath.Join(sessionDir, "credentials.json"))
+	if err != nil {
+		t.Fatalf("expected credentials.json: %v", err)
+	}
+	if string(data) != creds {
+		t.Fatalf("expected %q, got %q", creds, string(data))
+	}
+}
+
+func TestClaudeCredentials_ExplicitOverridesAutoDiscover(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Set up sync cache.
+	syncDir := filepath.Join(dataDir, "credentials")
+	if err := os.MkdirAll(syncDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(syncDir, "claude-credentials.json"), []byte(`{"source":"sync"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up explicit credentials.
+	explicitPath := filepath.Join(t.TempDir(), "explicit.json")
+	explicit := `{"source":"explicit"}`
+	if err := os.WriteFile(explicitPath, []byte(explicit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Claude: &api.ClaudeConfig{
+			CredentialsPath: explicitPath,
+		},
+	}, "explicit-override-test", dataDir)
+	defer result.CleanupFn()
+
+	sessionDir := findMount(t, result.Mounts, "/home/agent/.claude").Host
+	data, err := os.ReadFile(filepath.Join(sessionDir, "credentials.json"))
+	if err != nil {
+		t.Fatalf("read credentials.json: %v", err)
+	}
+	if string(data) != explicit {
+		t.Fatalf("expected explicit to override sync, got %q", string(data))
+	}
+}
+
+func TestCodexCredentials_TmpDirAutoDiscover(t *testing.T) {
+	fakeHome := t.TempDir()
+	codexDir := filepath.Join(fakeHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	auth := `{"api_key":"tmpdir-codex"}`
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(auth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	// tmpDir mode (dataDir="") — materializeCodex fallback should still discover.
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Codex: &api.CodexConfig{},
+	}, "codex-tmpdir-test", "")
+	defer result.CleanupFn()
+
+	codexMountDir := findMount(t, result.Mounts, "/home/agent/.codex").Host
+	data, err := os.ReadFile(filepath.Join(codexMountDir, "auth.json"))
+	if err != nil {
+		t.Fatalf("read auth.json in tmpdir: %v", err)
+	}
+	if string(data) != auth {
+		t.Fatalf("expected tmpdir codex auth, got %q", string(data))
+	}
+}
+
+func TestCodexCredentials_HostFallbackViaMaterialize(t *testing.T) {
+	dataDir := t.TempDir()
+	fakeHome := t.TempDir()
+	codexDir := filepath.Join(fakeHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	auth := `{"api_key":"host-codex-materialize"}`
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(auth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	// No sync cache in dataDir — should fallback to host ~/.codex/auth.json.
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Codex: &api.CodexConfig{},
+	}, "codex-host-test", dataDir)
+	defer result.CleanupFn()
+
+	codexMountDir := findMount(t, result.Mounts, "/home/agent/.codex").Host
+	data, err := os.ReadFile(filepath.Join(codexMountDir, "auth.json"))
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	if string(data) != auth {
+		t.Fatalf("expected host fallback auth, got %q", string(data))
+	}
+}
