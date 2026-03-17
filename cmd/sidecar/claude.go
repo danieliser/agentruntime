@@ -194,8 +194,13 @@ func (b *ClaudeBackend) SendPrompt(content string) error {
 		return errors.New("prompt content is required")
 	}
 	return b.writeInput(map[string]any{
-		"type":    "user",
-		"content": content,
+		"type": "user",
+		"message": map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "text", "text": content},
+			},
+		},
 	})
 }
 
