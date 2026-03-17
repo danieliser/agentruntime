@@ -173,8 +173,17 @@ func spawnOne(agent, mode string, interactive bool, prompt string, env map[strin
 	if len(mcpServers) > 0 {
 		body["mcp_servers"] = mcpServers
 	}
-	if claudeMD != "" {
-		body["claude"] = map[string]any{"claude_md": claudeMD}
+	// Always include the agent config block so materialization triggers
+	// (settings.json, .claude.json, credentials). Without this, the Docker
+	// runtime skips config materialization entirely.
+	if agent == "claude" {
+		claudeBlock := map[string]any{}
+		if claudeMD != "" {
+			claudeBlock["claude_md"] = claudeMD
+		}
+		body["claude"] = claudeBlock
+	} else if agent == "codex" {
+		body["codex"] = map[string]any{}
 	}
 	if len(container) > 0 {
 		body["container"] = container
