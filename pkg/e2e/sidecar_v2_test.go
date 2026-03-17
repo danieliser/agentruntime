@@ -214,6 +214,10 @@ func startSidecarLocal(t *testing.T, agentCmd, prompt string) (int, func()) {
 	var logs bytes.Buffer
 	cmd.Stdout = &logs
 	cmd.Stderr = &logs
+	// Clone credentials into the temp home so real agents can authenticate
+	// without exposing the full host HOME.
+	injectCredentials(t, homeDir, string(encodedCmd))
+
 	cmd.Env = append(os.Environ(),
 		"AGENT_CMD="+string(encodedCmd),
 		fmt.Sprintf("SIDECAR_PORT=%d", port),
@@ -490,6 +494,61 @@ func eventText(event map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// injectCredentials copies Claude and Codex credential files from the real
+// home into the temp home so the sidecar can authenticate without exposing
+// the full host HOME directory.
+func injectCredentials(t *testing.T, homeDir, encodedCmd string) {
+	t.Helper()
+
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		return // best-effort
+	}
+
+	if strings.Contains(encodedCmd, "claude") {
+		claudeDir := filepath.Join(homeDir, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o700); err != nil {
+			t.Logf("mkdir .claude: %v", err)
+			return
+		}
+		// Claude uses .credentials.json (hidden) as the primary credential file
+		copyFileIfExists(t, filepath.Join(realHome, ".claude", ".credentials.json"), filepath.Join(claudeDir, ".credentials.json"))
+		copyFileIfExists(t, filepath.Join(realHome, ".claude", "credentials.json"), filepath.Join(claudeDir, "credentials.json"))
+		// Trust bypass files
+		writeFileIfMissing(t, filepath.Join(homeDir, ".claude.json"), []byte(`{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true}`))
+	}
+
+	if strings.Contains(encodedCmd, "codex") {
+		codexDir := filepath.Join(homeDir, ".codex")
+		if err := os.MkdirAll(codexDir, 0o700); err != nil {
+			t.Logf("mkdir .codex: %v", err)
+			return
+		}
+		copyFileIfExists(t, filepath.Join(realHome, ".codex", "auth.json"), filepath.Join(codexDir, "auth.json"))
+	}
+}
+
+func copyFileIfExists(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return // file doesn't exist, skip
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		t.Logf("copy %s -> %s: %v", src, dst, err)
+	}
+}
+
+func writeFileIfMissing(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Logf("write %s: %v", path, err)
+	}
 }
 
 const mockPromptEchoScript = `#!/bin/sh
