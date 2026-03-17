@@ -174,7 +174,7 @@ func TestE2E_V2_ClaudePromptMode(t *testing.T) {
 	defer conn.Close()
 
 	events := readEvents(t, conn, 45*time.Second)
-	assertEventText(t, events, "agent_message", "SIDECAR_V2_CLAUDE_OK")
+	assertNormalizedAgentMessage(t, events, "SIDECAR_V2_CLAUDE_OK")
 	assertNormalizedResult(t, events)
 }
 
@@ -191,7 +191,7 @@ func TestE2E_V2_CodexPromptMode(t *testing.T) {
 	defer conn.Close()
 
 	events := readEvents(t, conn, 45*time.Second)
-	assertEventText(t, events, "agent_message", "SIDECAR_V2_CODEX_OK")
+	assertNormalizedAgentMessage(t, events, "SIDECAR_V2_CODEX_OK")
 	assertNormalizedResult(t, events)
 }
 
@@ -449,6 +449,29 @@ func assertNormalizedResult(t *testing.T, events []map[string]any) {
 	}
 
 	t.Fatalf("expected normalized result event with status in %#v", events)
+}
+
+func assertNormalizedAgentMessage(t *testing.T, events []map[string]any, needle string) {
+	t.Helper()
+
+	for _, event := range events {
+		if eventType(event) != "agent_message" {
+			continue
+		}
+
+		data, _ := event["data"].(map[string]any)
+		if data == nil {
+			continue
+		}
+
+		text, _ := data["text"].(string)
+		_, hasDelta := data["delta"].(bool)
+		if hasDelta && strings.Contains(text, needle) {
+			return
+		}
+	}
+
+	t.Fatalf("expected normalized agent_message containing %q in %#v", needle, events)
 }
 
 func eventType(event map[string]any) string {
