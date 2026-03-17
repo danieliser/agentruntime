@@ -87,6 +87,7 @@ func main() {
 	http.HandleFunc("/api/resume", handleResume)
 	http.HandleFunc("/api/events", handleEvents)
 	http.HandleFunc("/api/benchmark", handleBenchmark)
+	http.HandleFunc("/api/recover", handleRecover)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
 
@@ -808,6 +809,71 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// POST /api/recover — re-adopt sessions from localStorage after page refresh.
+// Accepts JSON array of session IDs. Checks agentd for each, reconnects WS
+// for any that are still alive.
+func handleRecover(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+
+	var recovered []string
+	for _, id := range ids {
+		// Check if already tracked
+		if findSession(id) != nil {
+			recovered = append(recovered, id)
+			continue
+		}
+
+		// Check if agentd still has it
+		resp, err := http.Get(daemonURL + "/sessions/" + id)
+		if err != nil || resp.StatusCode != 200 {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
+		}
+
+		var info struct {
+			AgentName   string `json:"agent_name"`
+			RuntimeName string `json:"runtime_name"`
+			State       string `json:"state"`
+		}
+		json.NewDecoder(resp.Body).Decode(&info)
+		resp.Body.Close()
+
+		if info.State == "" {
+			continue
+		}
+
+		gen := int(sessionGen.Add(1))
+		sess := &dashSession{
+			ID:         id,
+			Agent:      info.AgentName,
+			Mode:       "recovered",
+			Status:     info.State,
+			SpawnedAt:  time.Now(),
+			generation: gen,
+		}
+
+		mu.Lock()
+		sessions = append(sessions, sess)
+		mu.Unlock()
+
+		// If still running, reconnect WS
+		if info.State == "running" || info.State == "pending" {
+			go connectWS(sess, false, "", gen)
+		}
+
+		recovered = append(recovered, id)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"recovered": len(recovered), "ids": recovered})
+}
+
 func handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	io.WriteString(w, dashboardHTML)
@@ -1229,6 +1295,7 @@ function resumeSession(id, ev) {
 function killAll() {
   if (!confirm('Kill all sessions?')) return;
   fetch('/api/kill-all', {method: 'DELETE'});
+  localStorage.removeItem(LS_KEY);
 }
 
 function toggleConfig() {
@@ -1477,8 +1544,42 @@ function downloadLog() {
   window.open('/api/events?id=' + modalSessionId, '_blank');
 }
 
+// --- localStorage persistence ---
+var LS_KEY = 'agentruntime_sessions';
+
+function saveSessionIds(sessions) {
+  if (!sessions || !sessions.length) {
+    localStorage.removeItem(LS_KEY);
+    return;
+  }
+  var ids = sessions.map(function(s) { return s.id; }).filter(Boolean);
+  localStorage.setItem(LS_KEY, JSON.stringify(ids));
+}
+
+function recoverSessions() {
+  var raw = localStorage.getItem(LS_KEY);
+  if (!raw) return;
+  try {
+    var ids = JSON.parse(raw);
+    if (!ids || !ids.length) return;
+    fetch('/api/recover', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(ids)
+    });
+  } catch(e) {
+    localStorage.removeItem(LS_KEY);
+  }
+}
+
+// On page load, try to recover sessions from localStorage
+recoverSessions();
+
 setInterval(function() {
-  fetch('/api/sessions').then(function(r) { return r.json(); }).then(render);
+  fetch('/api/sessions').then(function(r) { return r.json(); }).then(function(sessions) {
+    saveSessionIds(sessions);
+    render(sessions);
+  });
 }, 500);
 render([]);
 </script>
