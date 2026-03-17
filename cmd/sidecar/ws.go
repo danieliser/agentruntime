@@ -237,9 +237,49 @@ func (s *ExternalWSServer) eventLoop() {
 			if event.Type == "" {
 				continue
 			}
+			event = s.normalizeEvent(event)
 			_ = s.recordAndBroadcast(event)
 		}
 	}
+}
+
+// normalizeEvent maps agent-specific data shapes to the standard schema.
+// The raw agent data is preserved in a "meta" field for consumers that need it.
+func (s *ExternalWSServer) normalizeEvent(event Event) Event {
+	raw, _ := event.Data.(map[string]any)
+	if raw == nil {
+		return event
+	}
+
+	switch event.Type {
+	case "agent_message":
+		switch s.agentType {
+		case "claude":
+			event.Data = normalizeClaudeAgentMessage(raw)
+		case "codex":
+			event.Data = normalizeCodexAgentMessage(raw)
+		}
+	case "tool_use":
+		switch s.agentType {
+		case "claude":
+			event.Data = normalizeClaudeToolUse(raw)
+		case "codex":
+			event.Data = normalizeCodexToolUse(raw)
+		}
+	case "tool_result":
+		switch s.agentType {
+		case "codex":
+			event.Data = normalizeCodexToolResult(raw)
+		}
+	case "result":
+		switch s.agentType {
+		case "claude":
+			event.Data = normalizeClaudeResult(raw)
+		case "codex":
+			event.Data = normalizeCodexResult(raw)
+		}
+	}
+	return event
 }
 
 func (s *ExternalWSServer) exitLoop() {
