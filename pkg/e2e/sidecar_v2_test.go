@@ -76,7 +76,7 @@ func TestE2E_V2_EchoAgent(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, `["echo","hello"]`, "")
 	defer cleanup()
 
-	conn := dialWS(t, port)
+	conn := dialSidecarWS(t, port)
 	defer conn.Close()
 
 	events := readEvents(t, conn, 3*time.Second)
@@ -88,7 +88,7 @@ func TestE2E_V2_Replay(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	conn := dialWS(t, port)
+	conn := dialSidecarWS(t, port)
 	sendCommand(t, conn, map[string]any{
 		"type": "prompt",
 		"data": map[string]any{"content": "replay marker"},
@@ -101,7 +101,7 @@ func TestE2E_V2_Replay(t *testing.T) {
 
 	assertEventText(t, firstPass, "stdout", "replay marker")
 
-	replayConn := dialWSPath(t, port, "/ws?since=0")
+	replayConn := dialSidecarWSPath(t, port, "/ws?since=0")
 	defer replayConn.Close()
 
 	replayed := readEvents(t, replayConn, 1500*time.Millisecond)
@@ -112,9 +112,9 @@ func TestE2E_V2_MultipleClients(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	connA := dialWS(t, port)
+	connA := dialSidecarWS(t, port)
 	defer connA.Close()
-	connB := dialWS(t, port)
+	connB := dialSidecarWS(t, port)
 	defer connB.Close()
 
 	sendCommand(t, connA, map[string]any{
@@ -133,7 +133,7 @@ func TestE2E_V2_PromptCommand(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	conn := dialWS(t, port)
+	conn := dialSidecarWS(t, port)
 	defer conn.Close()
 
 	sendCommand(t, conn, map[string]any{
@@ -149,7 +149,7 @@ func TestE2E_V2_UnknownCommand(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	conn := dialWS(t, port)
+	conn := dialSidecarWS(t, port)
 	defer conn.Close()
 
 	sendCommand(t, conn, map[string]any{
@@ -170,7 +170,7 @@ func TestE2E_V2_ClaudePromptMode(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, commandSpec(t, claudePath), "Reply with exactly SIDECAR_V2_CLAUDE_OK and no other text.")
 	defer cleanup()
 
-	conn := dialWS(t, port)
+	conn := dialSidecarWS(t, port)
 	defer conn.Close()
 
 	events := readEvents(t, conn, 45*time.Second)
@@ -187,7 +187,7 @@ func TestE2E_V2_CodexPromptMode(t *testing.T) {
 	port, cleanup := startSidecarLocal(t, commandSpec(t, codexPath), "Reply with exactly SIDECAR_V2_CODEX_OK and no other text.")
 	defer cleanup()
 
-	conn := dialWS(t, port)
+	conn := dialSidecarWS(t, port)
 	defer conn.Close()
 
 	events := readEvents(t, conn, 45*time.Second)
@@ -256,12 +256,12 @@ func startSidecarLocal(t *testing.T, agentCmd, prompt string) (int, func()) {
 	return port, cleanup
 }
 
-func dialWS(t *testing.T, port int) *websocket.Conn {
+func dialSidecarWS(t *testing.T, port int) *websocket.Conn {
 	t.Helper()
-	return dialWSPath(t, port, "/ws?since=0")
+	return dialSidecarWSPath(t, port, "/ws?since=0")
 }
 
-func dialWSPath(t *testing.T, port int, path string) *websocket.Conn {
+func dialSidecarWSPath(t *testing.T, port int, path string) *websocket.Conn {
 	t.Helper()
 
 	url := fmt.Sprintf("ws://127.0.0.1:%d%s", port, path)
