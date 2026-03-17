@@ -30,13 +30,14 @@ func main() {
 	dataDir := flag.String("data-dir", defaultDataDir(), "Data directory for sessions, logs, credentials")
 	credSync := flag.Bool("credential-sync", false, "Enable background credential sync from Keychain")
 	maxSessions := flag.Int("max-sessions", 0, "Maximum concurrent sessions (0 = unlimited)")
+	dockerHost := flag.String("docker-host", "", "Remote Docker daemon (e.g., ssh://deploy@host, tcp://host:2376)")
 	flag.Parse()
 
 	log.Printf("data dir: %s", *dataDir)
 	logDir := filepath.Join(*dataDir, "logs")
 
 	// Initialize runtime.
-	rt, err := newRuntime(*rtName, *dataDir)
+	rt, err := newRuntime(*rtName, *dataDir, *dockerHost)
 	if err != nil {
 		log.Fatalf("failed to initialize runtime: %v", err)
 	}
@@ -134,7 +135,7 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".local", "share", "agentruntime")
 }
 
-func newRuntime(name, dataDir string) (runtime.Runtime, error) {
+func newRuntime(name, dataDir, dockerHost string) (runtime.Runtime, error) {
 	switch name {
 	case "local":
 		return runtime.NewLocalSidecarRuntime(), nil
@@ -144,6 +145,7 @@ func newRuntime(name, dataDir string) (runtime.Runtime, error) {
 	case "docker":
 		return runtime.NewDockerRuntime(runtime.DockerConfig{
 			DataDir: dataDir,
+			Host:    dockerHost,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown runtime: %s", name)

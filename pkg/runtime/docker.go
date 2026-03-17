@@ -39,6 +39,12 @@ type DockerConfig struct {
 	// DataDir is the persistent agentruntime data directory for session homes.
 	DataDir string
 
+	// Host is the Docker daemon address. When set, all docker CLI commands
+	// run with DOCKER_HOST=<value>. Supports ssh:// and tcp:// schemes.
+	// Examples: "ssh://deploy@prod-1", "tcp://192.168.1.10:2376".
+	// Empty means use the local Docker daemon (default).
+	Host string
+
 	// ExtraArgs are additional arguments passed to docker run.
 	ExtraArgs []string
 }
@@ -63,6 +69,7 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 		}),
 		networkManager: &NetworkManager{
 			NetworkName: cfg.Network,
+			DockerHost:  cfg.Host,
 		},
 	}
 }
@@ -88,6 +95,15 @@ type dockerRunSpec struct {
 }
 
 func (r *DockerRuntime) Name() string { return "docker" }
+
+// dockerCmd returns an exec.Cmd for "docker <args>" with DOCKER_HOST set if configured.
+func (r *DockerRuntime) dockerCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	if r.cfg.Host != "" {
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+r.cfg.Host)
+	}
+	return cmd
+}
 
 func (r *DockerRuntime) Cleanup(ctx context.Context) error {
 	return r.manager().Cleanup(ctx)
@@ -117,7 +133,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		return nil, &SpawnError{Reason: "docker run args", Err: err}
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", spec.args...)
+	cmd := r.dockerCmd(ctx, spec.args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -138,7 +154,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		return nil, &SpawnError{Reason: "docker run", Err: fmt.Errorf("missing container ID")}
 	}
 
-	hostPort, err := dockerContainerPort(ctx, containerID, dockerSidecarContainerPort)
+	hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, containerID, dockerSidecarContainerPort)
 	if err != nil {
 		stopDockerContainer(containerID)
 		if spec.cleanup != nil {
@@ -428,9 +444,10 @@ func sessionIDPrefix(sessionID string) string {
 // handles to them. This enables session recovery after daemon restarts.
 func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 	// List running containers with our label.
-	out, err := exec.CommandContext(ctx, "docker", "ps", "-q",
+	psCmd := r.dockerCmd(ctx, "ps", "-q",
 		"--filter", fmt.Sprintf("label=%s", dockerSessionLabelKey),
-	).Output()
+	)
+	out, err := psCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps: %w", err)
 	}
@@ -449,7 +466,7 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		sessionID := strings.TrimSpace(labels[dockerSessionLabelKey])
 		taskID := strings.TrimSpace(labels[dockerTaskLabelKey])
 
-		if hostPort, err := dockerContainerPort(ctx, id, dockerSidecarContainerPort); err == nil {
+		if hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, id, dockerSidecarContainerPort); err == nil {
 			handle, err := dialSidecar(id, hostPort, 0, "")
 			if err == nil {
 				handle.setRecoveryInfo(&RecoveryInfo{
@@ -479,7 +496,15 @@ func dockerCommandError(err error, stderr string) error {
 }
 
 func dockerContainerPort(ctx context.Context, containerID, containerPort string) (string, error) {
-	out, err := exec.CommandContext(ctx, "docker", "port", containerID, containerPort).Output()
+	return dockerContainerPortHost(ctx, "", containerID, containerPort)
+}
+
+func dockerContainerPortHost(ctx context.Context, host, containerID, containerPort string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "port", containerID, containerPort)
+	if host != "" {
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}

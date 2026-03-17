@@ -66,8 +66,14 @@
 | Docker managed network | Done | `agentruntime-agents` |
 | Docker managed proxy | Done | `agentruntime-proxy` Squid sidecar |
 | Docker live-tested flow | Done | Claude and Codex authenticated and exercised in containerized sessions |
-| SSH runtime | Stub | Not implemented yet |
-| OpenSandbox runtime | Deferred | Interface exists, active implementation is deferred |
+| Remote Docker (`--docker-host`) | Done | `DOCKER_HOST=ssh://` or `tcp://` on all docker CLI commands |
+| SSH bare metal runtime | Planned | Upload sidecar, port forward, WS dial — next major runtime |
+| SSH + Docker runtime | Planned | SSH into remote host, run Docker there — flag on SSH runtime |
+| WSL runtime | Deferred | Windows Subsystem for Linux — niche but real |
+| Fly.io / cloud VM runtime | Deferred | Spin up Fly machines or EC2 instances per agent |
+| Anthropic sandbox-runtime (SRT) | Deferred | Purpose-built agent isolation from Anthropic |
+| macOS native VM (Virtualization.framework) | Deferred | Lightweight VMs on Apple Silicon |
+| Kubernetes (k8s) | Deferred | Pod-per-agent — premature until scale demands it |
 
 ## Session Preservation
 
@@ -125,15 +131,21 @@ These counts are source-counted from the repository on 2026-03-17 (post-hardenin
 
 ### Highest Priority
 
-1. SSH runtime: still not implemented for either remote process execution or remote Docker execution.
-2. CLI version pinning: the bundled Docker image installs the latest `claude` and `codex` CLIs at build time; there is no explicit version pinning yet.
-3. OpenCode: still a stub at the agent layer and not part of the v2 sidecar path.
-4. Comparative review against other toolchains: agentruntime has not yet been systematically reviewed against adjacent tools and runtimes to close remaining ergonomic or architecture gaps.
+1. SSH runtime: bare metal sidecar on remote hosts via SSH (upload, port forward, WS dial)
+2. SSH + Docker: run Docker commands over SSH connection (flag on SSH runtime)
+3. CLI version pinning: the bundled Docker image installs the latest `claude` and `codex` CLIs at build time
+4. Local mode materialization: settings.json, credentials, MCP config not written for local runtime
 
-### Deferred Or Secondary
+### Planned Runtimes
 
-- OpenSandbox runtime implementation
+- WSL (Windows Subsystem for Linux)
+- Fly.io / cloud VMs (per-agent machines)
+- Anthropic sandbox-runtime (SRT)
+- macOS Virtualization.framework (lightweight Apple Silicon VMs)
+- Kubernetes (pod-per-agent, when scale demands)
+
+### Deferred
+
 - PTY-first terminal sessions as a first-class API mode
 - Generated OpenAPI spec
-- Web UI / dashboard
 - Multi-tenant auth and access controls

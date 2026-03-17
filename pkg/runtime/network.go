@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ const (
 type NetworkManager struct {
 	NetworkName string
 	ProxyImage  string
+	DockerHost  string // DOCKER_HOST for remote Docker daemon
 
 	ensureOnce sync.Once
 	ensureErr  error
@@ -31,6 +33,13 @@ func (m *NetworkManager) networkName() string {
 		return m.NetworkName
 	}
 	return defaultDockerNetworkName
+}
+
+func (m *NetworkManager) dockerHost() string {
+	if m != nil {
+		return m.DockerHost
+	}
+	return ""
 }
 
 func (m *NetworkManager) proxyImage() string {
@@ -47,10 +56,10 @@ func (m *NetworkManager) proxyURL() string {
 // EnsureNetwork creates the agent bridge network if it does not already exist.
 // Safe for concurrent callers — "already exists" is treated as success.
 func (m *NetworkManager) EnsureNetwork(ctx context.Context) error {
-	if dockerNetworkExists(ctx, m.networkName()) {
+	if dockerNetworkExists(ctx, m.dockerHost(), m.networkName()) {
 		return nil
 	}
-	if _, err := dockerOutput(ctx, "network", "create", m.networkName()); err != nil {
+	if _, err := dockerOutputHost(ctx, m.dockerHost(), "network", "create", m.networkName()); err != nil {
 		// Race: another goroutine (or prior daemon) already created it.
 		if strings.Contains(err.Error(), "already exists") {
 			return nil
@@ -74,20 +83,22 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 		return err
 	}
 
-	state, err := dockerInspectRunning(ctx, dockerProxyContainerName)
+	host := m.dockerHost()
+	state, err := dockerInspectRunningHost(ctx, host, dockerProxyContainerName)
 	if err == nil {
 		if state {
 			return nil
 		}
-		if err := dockerRemoveContainer(ctx, dockerProxyContainerName); err != nil {
+		if err := dockerRemoveContainerHost(ctx, host, dockerProxyContainerName); err != nil {
 			return err
 		}
 	} else if !dockerObjectMissing(err) {
 		return fmt.Errorf("inspect docker proxy %q: %w", dockerProxyContainerName, err)
 	}
 
-	if _, err := dockerOutput(
+	if _, err := dockerOutputHost(
 		ctx,
+		host,
 		"run",
 		"-d",
 		"--name", dockerProxyContainerName,
@@ -121,17 +132,18 @@ func (m *NetworkManager) Cleanup(ctx context.Context) error {
 	m.ensureErr = nil
 	var errs []error
 
-	if exists, _ := dockerContainerExists(ctx, dockerProxyContainerName); exists {
-		if _, err := dockerOutput(ctx, "stop", dockerProxyContainerName); err != nil && !dockerObjectMissing(err) {
+	host := m.dockerHost()
+	if exists, _ := dockerContainerExistsHost(ctx, host, dockerProxyContainerName); exists {
+		if _, err := dockerOutputHost(ctx, host, "stop", dockerProxyContainerName); err != nil && !dockerObjectMissing(err) {
 			errs = append(errs, fmt.Errorf("stop docker proxy %q: %w", dockerProxyContainerName, err))
 		}
-		if err := dockerRemoveContainer(ctx, dockerProxyContainerName); err != nil && !dockerObjectMissing(err) {
+		if err := dockerRemoveContainerHost(ctx, host, dockerProxyContainerName); err != nil && !dockerObjectMissing(err) {
 			errs = append(errs, err)
 		}
 	}
 
-	if dockerNetworkExists(ctx, m.networkName()) {
-		if _, err := dockerOutput(ctx, "network", "rm", m.networkName()); err != nil && !dockerObjectMissing(err) {
+	if dockerNetworkExists(ctx, host, m.networkName()) {
+		if _, err := dockerOutputHost(ctx, host, "network", "rm", m.networkName()); err != nil && !dockerObjectMissing(err) {
 			errs = append(errs, fmt.Errorf("remove docker network %q: %w", m.networkName(), err))
 		}
 	}
@@ -139,13 +151,16 @@ func (m *NetworkManager) Cleanup(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func dockerNetworkExists(ctx context.Context, name string) bool {
+func dockerNetworkExists(ctx context.Context, host, name string) bool {
 	cmd := exec.CommandContext(ctx, "docker", "network", "inspect", name)
+	if host != "" {
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	}
 	return cmd.Run() == nil
 }
 
-func dockerContainerExists(ctx context.Context, name string) (bool, error) {
-	if _, err := dockerOutput(ctx, "inspect", "--type", "container", name); err != nil {
+func dockerContainerExistsHost(ctx context.Context, host, name string) (bool, error) {
+	if _, err := dockerOutputHost(ctx, host, "inspect", "--type", "container", name); err != nil {
 		if dockerObjectMissing(err) {
 			return false, nil
 		}
@@ -154,23 +169,42 @@ func dockerContainerExists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-func dockerInspectRunning(ctx context.Context, name string) (bool, error) {
-	out, err := dockerOutput(ctx, "inspect", "--type", "container", "--format", "{{.State.Running}}", name)
+func dockerContainerExists(ctx context.Context, name string) (bool, error) {
+	return dockerContainerExistsHost(ctx, "", name)
+}
+
+func dockerInspectRunningHost(ctx context.Context, host, name string) (bool, error) {
+	out, err := dockerOutputHost(ctx, host, "inspect", "--type", "container", "--format", "{{.State.Running}}", name)
 	if err != nil {
 		return false, err
 	}
 	return strings.TrimSpace(out) == "true", nil
 }
 
-func dockerRemoveContainer(ctx context.Context, name string) error {
-	if _, err := dockerOutput(ctx, "rm", "-f", name); err != nil {
+func dockerRemoveContainerHost(ctx context.Context, host, name string) error {
+	if _, err := dockerOutputHost(ctx, host, "rm", "-f", name); err != nil {
 		return fmt.Errorf("remove docker container %q: %w", name, err)
 	}
 	return nil
 }
 
+func dockerRemoveContainer(ctx context.Context, name string) error {
+	return dockerRemoveContainerHost(ctx, "", name)
+}
+
+func dockerInspectRunning(ctx context.Context, name string) (bool, error) {
+	return dockerInspectRunningHost(ctx, "", name)
+}
+
 func dockerOutput(ctx context.Context, args ...string) (string, error) {
+	return dockerOutputHost(ctx, "", args...)
+}
+
+func dockerOutputHost(ctx context.Context, host string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	if host != "" {
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", dockerCommandError(err, string(out))
