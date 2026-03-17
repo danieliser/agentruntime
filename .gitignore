@@ -1,5 +1,7 @@
 # Binaries
 /agentd
+/sidecar
+/agentruntime-sidecar
 *.exe
 *.dll
 *.so

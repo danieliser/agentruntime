@@ -149,11 +149,23 @@ func TestErrorPropagation_WSDisconnect(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("write error frame: %v", err)
 		}
+		// Small delay to ensure the client reads the error frame before the close
+		time.Sleep(50 * time.Millisecond)
 		_ = conn.Close()
 	}))
 	defer server.Close()
 
 	handle := dialWSHandle(t, server, "container-disconnect", -1)
+
+	// Drain stdout so writeEvent doesn't block on the pipe
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := handle.Stdout().Read(buf); err != nil {
+				return
+			}
+		}
+	}()
 
 	select {
 	case result := <-handle.Wait():

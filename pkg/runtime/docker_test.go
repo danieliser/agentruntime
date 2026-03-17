@@ -576,8 +576,8 @@ func TestDockerSpawn_ResourceLimits(t *testing.T) {
 	if !hasFlagValue(spec.args, "--cpus", "2.5") {
 		t.Fatalf("expected cpu limit in args, got %v", spec.args)
 	}
-	if !hasFlagValue(spec.args, "--network", defaultDockerNetworkName) {
-		t.Fatalf("expected managed network in args, got %v", spec.args)
+	if !hasFlagValue(spec.args, "--network", "bridge") {
+		t.Fatalf("expected configured network in args, got %v", spec.args)
 	}
 	if spec.args[len(spec.args)-1] != "custom:latest" {
 		t.Fatalf("expected resource image override in args, got %v", spec.args)
