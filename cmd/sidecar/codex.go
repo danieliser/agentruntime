@@ -18,6 +18,7 @@ var errCodexNoActiveTurn = errors.New("codex backend has no active turn")
 
 type codexBackend struct {
 	binary    string
+	prompt    string // if set, fire-and-forget exec mode
 	logger    *log.Logger
 	spawner   codexSpawner
 	sessionID string
@@ -78,14 +79,20 @@ func newCodexBackend() *codexBackend {
 }
 
 func newCodexBackendWithBinary(binary string) *codexBackend {
-	return newCodexBackendConfig(binary, log.Default(), spawnCodexAppServer)
+	return newCodexBackendConfig(binary, "", log.Default(), spawnCodexAppServer)
+}
+
+// newCodexBackendPromptMode creates a fire-and-forget backend using codex exec.
+func newCodexBackendPromptMode(binary, prompt string) *codexBackend {
+	b := newCodexBackendConfig(binary, prompt, log.Default(), spawnCodexAppServer)
+	return b
 }
 
 func newCodexBackendWithSpawner(logger *log.Logger, spawner codexSpawner) *codexBackend {
-	return newCodexBackendConfig("codex", logger, spawner)
+	return newCodexBackendConfig("codex", "", logger, spawner)
 }
 
-func newCodexBackendConfig(binary string, logger *log.Logger, spawner codexSpawner) *codexBackend {
+func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner codexSpawner) *codexBackend {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
@@ -98,6 +105,7 @@ func newCodexBackendConfig(binary string, logger *log.Logger, spawner codexSpawn
 
 	return &codexBackend{
 		binary:    binary,
+		prompt:    prompt,
 		logger:    logger,
 		spawner:   spawner,
 		sessionID: uuid.NewString(),
@@ -155,7 +163,50 @@ func spawnCodexAppServer(ctx context.Context, cmdArgs []string) (*codexTransport
 }
 
 func (b *codexBackend) Start(ctx context.Context) error {
+	if b.prompt != "" {
+		return b.startPromptMode(ctx)
+	}
 	return b.Spawn(ctx)
+}
+
+// startPromptMode runs codex exec --json for fire-and-forget tasks.
+// Output is JSONL on stdout (same event types as app-server notifications).
+// No JSON-RPC handshake, no stdin input, no steering.
+func (b *codexBackend) startPromptMode(ctx context.Context) error {
+	b.mu.Lock()
+	if b.started {
+		b.mu.Unlock()
+		return nil
+	}
+	b.started = true
+	b.running = true
+	b.ctx, b.cancel = context.WithCancel(ctx)
+	b.mu.Unlock()
+
+	cmd := []string{b.binary, "exec", "--json", "--full-auto", "--skip-git-repo-check", b.prompt}
+	transport, err := b.spawner(b.ctx, cmd)
+	if err != nil {
+		b.setRunning(false)
+		return err
+	}
+
+	b.mu.Lock()
+	b.stdin = transport.stdin
+	b.stdout = transport.stdout
+	b.closeFn = transport.closeFn
+	b.mu.Unlock()
+
+	// Close stdin — exec mode doesn't need it
+	if transport.stdin != nil {
+		transport.stdin.Close()
+	}
+
+	go b.readLoop()
+	if transport.wait != nil {
+		go b.waitLoop(transport.wait)
+	}
+
+	return nil
 }
 
 func (b *codexBackend) Spawn(ctx context.Context) error {

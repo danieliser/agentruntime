@@ -207,12 +207,20 @@ func interruptServer(server sidecarServer) error {
 }
 
 func newBackend(agentType string, cmd []string) (AgentBackend, error) {
+	// AGENT_PROMPT triggers fire-and-forget (-p) mode.
+	// If empty, the sidecar runs in interactive mode (default).
+	prompt := os.Getenv("AGENT_PROMPT")
+
 	switch agentType {
 	case "claude":
 		return NewClaudeBackend(ClaudeBackendConfig{
 			Binary: cmd[0],
+			Prompt: prompt,
 		}), nil
 	case "codex":
+		if prompt != "" {
+			return newCodexBackendPromptMode(cmd[0], prompt), nil
+		}
 		return newCodexBackendWithBinary(cmd[0]), nil
 	default:
 		return newUnsupportedBackend(agentType), nil

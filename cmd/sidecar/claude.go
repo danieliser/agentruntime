@@ -19,6 +19,9 @@ type ClaudeBackendConfig struct {
 	SessionID        string
 	WorkspaceFolders []string
 	StartProcess     ClaudeProcessStarter
+	// Prompt mode: if set, runs claude -p "prompt" (fire-and-forget).
+	// If empty, runs interactive mode with --input-format stream-json.
+	Prompt string
 }
 
 type ClaudeSpawnSpec struct {
@@ -42,6 +45,7 @@ type ClaudeBackend struct {
 	binary    string
 	sessionID string
 	workspace []string
+	prompt    string // if set, fire-and-forget -p mode
 
 	startProcess ClaudeProcessStarter
 
@@ -121,6 +125,7 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 		binary:       binary,
 		sessionID:    sessionID,
 		workspace:    workspace,
+		prompt:       cfg.Prompt,
 		startProcess: startProcess,
 		events:       make(chan Event, 64),
 		done:         make(chan struct{}),
@@ -135,29 +140,50 @@ func (b *ClaudeBackend) Start(ctx context.Context) error {
 func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 	var spawnErr error
 	b.once.Do(func() {
-		server, err := NewMCPServer(MCPServerConfig{
-			WorkspaceFolders: b.workspace,
-		})
-		if err != nil {
-			spawnErr = err
-			return
-		}
-		if err := server.Start(); err != nil {
-			spawnErr = err
-			return
-		}
+		var args []string
+		var envExtra []string
 
-		spec := ClaudeSpawnSpec{
-			Command: b.binary,
-			Args: []string{
+		if b.prompt != "" {
+			// Fire-and-forget: claude -p "prompt" — no MCP server needed
+			args = []string{
+				"-p", b.prompt,
+				"--output-format", "stream-json",
+				"--verbose",
+				"--dangerously-skip-permissions",
+				"--session-id", b.sessionID,
+			}
+		} else {
+			// Interactive: start MCP server for tool support + context injection
+			server, err := NewMCPServer(MCPServerConfig{
+				WorkspaceFolders: b.workspace,
+			})
+			if err != nil {
+				spawnErr = err
+				return
+			}
+			if err := server.Start(); err != nil {
+				spawnErr = err
+				return
+			}
+			b.mu.Lock()
+			b.mcp = server
+			b.mu.Unlock()
+
+			envExtra = server.EnvVars()
+			args = []string{
 				"--output-format", "stream-json",
 				"--input-format", "stream-json",
 				"--verbose",
 				"--dangerously-skip-permissions",
 				"--ide",
 				"--session-id", b.sessionID,
-			},
-			Env: append(os.Environ(), server.EnvVars()...),
+			}
+		}
+
+		spec := ClaudeSpawnSpec{
+			Command: b.binary,
+			Args:    args,
+			Env:     append(os.Environ(), envExtra...),
 		}
 		if len(b.workspace) > 0 {
 			spec.Dir = b.workspace[0]
@@ -165,13 +191,17 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 
 		process, err := b.startProcess(ctx, spec)
 		if err != nil {
-			_ = server.Stop()
+			b.mu.RLock()
+			mcp := b.mcp
+			b.mu.RUnlock()
+			if mcp != nil {
+				_ = mcp.Stop()
+			}
 			spawnErr = err
 			return
 		}
 
 		b.mu.Lock()
-		b.mcp = server
 		b.process = process
 		b.stdin = process.Stdin()
 		b.running = true
