@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ type wsHandle struct {
 	containerID string
 	hostPort    string
 	cancel      context.CancelFunc
+	writeMu     sync.Mutex
 	metaMu      sync.RWMutex
 	cleanup     func()
 	finished    bool
@@ -33,14 +35,14 @@ type wsHandle struct {
 }
 
 type wsServerFrame struct {
-	Type     string `json:"type"`
-	Data     string `json:"data,omitempty"`
-	ExitCode *int   `json:"exit_code,omitempty"`
+	Type     string          `json:"type"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	ExitCode *int            `json:"exit_code,omitempty"`
 }
 
 type wsClientFrame struct {
 	Type string `json:"type"`
-	Data string `json:"data,omitempty"`
+	Data any    `json:"data,omitempty"`
 }
 
 func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
@@ -61,7 +63,6 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 	}
 
 	var finishOnce sync.Once
-	var writeMu sync.Mutex
 	finish := func(result ExitResult) {
 		finishOnce.Do(func() {
 			handle.done <- result
@@ -87,7 +88,23 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 
 			switch frame.Type {
 			case "stdout", "replay":
-				if _, err := handle.stdoutW.Write([]byte(frame.Data)); err != nil {
+				if payload, ok := wsFrameStringData(frame.Data); ok {
+					if _, err := handle.stdoutW.Write([]byte(payload)); err != nil {
+						if ctx.Err() == nil {
+							finish(ExitResult{Err: err})
+						}
+						return
+					}
+					continue
+				}
+				if err := handle.writeEvent(frame); err != nil {
+					if ctx.Err() == nil {
+						finish(ExitResult{Err: err})
+					}
+					return
+				}
+			case "agent_message", "tool_use", "tool_result", "result", "progress", "system", "error":
+				if err := handle.writeEvent(frame); err != nil {
 					if ctx.Err() == nil {
 						finish(ExitResult{Err: err})
 					}
@@ -111,12 +128,10 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 		for {
 			n, err := handle.stdinR.Read(buf)
 			if n > 0 {
-				writeMu.Lock()
-				writeErr := handle.conn.WriteJSON(wsClientFrame{
+				writeErr := handle.writeJSON(wsClientFrame{
 					Type: "stdin",
 					Data: string(buf[:n]),
 				})
-				writeMu.Unlock()
 				if writeErr != nil {
 					if ctx.Err() == nil {
 						finish(ExitResult{Err: writeErr})
@@ -142,9 +157,7 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				writeMu.Lock()
-				err := handle.conn.WriteMessage(websocket.PingMessage, nil)
-				writeMu.Unlock()
+				err := handle.writeMessage(websocket.PingMessage, nil)
 				if err != nil {
 					if ctx.Err() == nil {
 						finish(ExitResult{Err: err})
@@ -156,6 +169,18 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 	}()
 
 	return handle
+}
+
+func (h *wsHandle) SendPrompt(content string) error {
+	if content == "" {
+		return nil
+	}
+	return h.writeJSON(wsClientFrame{
+		Type: "prompt",
+		Data: map[string]string{
+			"content": content,
+		},
+	})
 }
 
 func (h *wsHandle) setCleanup(cleanup func()) {
@@ -192,7 +217,7 @@ func (h *wsHandle) runCleanup() {
 	}
 }
 
-func dialSidecar(containerID, hostPort string, sinceOffset int64) (*wsHandle, error) {
+func dialSidecar(containerID, hostPort string, sinceOffset int64, prompt string) (*wsHandle, error) {
 	u := url.URL{
 		Scheme: "ws",
 		Host:   "localhost:" + hostPort,
@@ -207,7 +232,15 @@ func dialSidecar(containerID, hostPort string, sinceOffset int64) (*wsHandle, er
 		return nil, err
 	}
 
-	return newWSHandle(conn, containerID, hostPort), nil
+	handle := newWSHandle(conn, containerID, hostPort)
+	if err := handle.SendPrompt(prompt); err != nil {
+		if handle.cancel != nil {
+			handle.cancel()
+		}
+		_ = handle.conn.Close()
+		return nil, err
+	}
+	return handle, nil
 }
 
 func (h *wsHandle) Stdin() io.WriteCloser   { return h.stdinW }
@@ -239,4 +272,37 @@ func (h *wsHandle) RecoveryInfo() *RecoveryInfo {
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
 	return h.recovery
+}
+
+func (h *wsHandle) writeEvent(frame wsServerFrame) error {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	_, err = h.stdoutW.Write(payload)
+	return err
+}
+
+func (h *wsHandle) writeJSON(v any) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+	return h.conn.WriteJSON(v)
+}
+
+func (h *wsHandle) writeMessage(messageType int, data []byte) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+	return h.conn.WriteMessage(messageType, data)
+}
+
+func wsFrameStringData(data json.RawMessage) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	var payload string
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", false
+	}
+	return payload, true
 }

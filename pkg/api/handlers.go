@@ -87,6 +87,11 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		return
 	}
 
+	spawnCmd := cmd
+	if s.runtime.Name() == "docker" && len(cmd) > 0 {
+		spawnCmd = []string{cmd[0]}
+	}
+
 	// Create the session.
 	sess := session.NewSession(req.TaskID, req.Agent, s.runtime.Name(), req.Tags)
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
@@ -103,7 +108,8 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	handle, err := s.runtime.Spawn(ctx, runtime.SpawnConfig{
 		SessionID:  sess.ID,
 		AgentName:  req.Agent,
-		Cmd:        cmd,
+		Cmd:        spawnCmd,
+		Prompt:     req.Prompt,
 		Env:        req.Env,
 		WorkDir:    workDir,
 		TaskID:     req.TaskID,

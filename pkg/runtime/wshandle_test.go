@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func TestWSHandle_StdoutRouting(t *testing.T) {
 		if err := conn.WriteJSON(wsServerFrame{Type: "connected"}); err != nil {
 			t.Fatalf("write connected: %v", err)
 		}
-		if err := conn.WriteJSON(wsServerFrame{Type: "stdout", Data: "hello from sidecar"}); err != nil {
+		if err := conn.WriteJSON(wsServerFrame{Type: "stdout", Data: json.RawMessage(`"hello from sidecar"`)}); err != nil {
 			t.Fatalf("write stdout: %v", err)
 		}
 		code := 0
@@ -93,8 +94,8 @@ func TestWSHandle_StdinRouting(t *testing.T) {
 		if frame.Type != "stdin" {
 			t.Fatalf("expected stdin frame type, got %q", frame.Type)
 		}
-		if frame.Data != "typed input" {
-			t.Fatalf("expected stdin payload %q, got %q", "typed input", frame.Data)
+		if got := wsClientFrameStringData(t, frame); got != "typed input" {
+			t.Fatalf("expected stdin payload %q, got %q", "typed input", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for stdin frame")
@@ -181,7 +182,7 @@ func dialWSHandle(t *testing.T, server *httptest.Server, containerID string, sin
 	}
 
 	hostPort := u.Port()
-	handle, err := dialSidecar(containerID, hostPort, sinceOffset)
+	handle, err := dialSidecar(containerID, hostPort, sinceOffset, "")
 	if err != nil {
 		t.Fatalf("dial sidecar: %v", err)
 	}
@@ -194,4 +195,17 @@ func dialWSHandle(t *testing.T, server *httptest.Server, containerID string, sin
 		}
 	})
 	return handle
+}
+
+func wsClientFrameStringData(t *testing.T, frame wsClientFrame) string {
+	t.Helper()
+	data, err := json.Marshal(frame.Data)
+	if err != nil {
+		t.Fatalf("marshal frame data: %v", err)
+	}
+	var payload string
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal frame data as string: %v", err)
+	}
+	return payload
 }

@@ -38,6 +38,10 @@ type SpawnConfig struct {
 	// Cmd is the command and arguments to execute.
 	Cmd []string
 
+	// Prompt is the initial user prompt for runtimes that deliver turns over a
+	// control channel instead of embedding them in Cmd.
+	Prompt string
+
 	// Env is additional environment variables for the process.
 	Env map[string]string
 
