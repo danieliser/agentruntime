@@ -1,151 +1,139 @@
 # Feature Inventory
 
 ## Status Key
-- **Done** — implemented, tested, live tested
-- **Done (unit)** — implemented, unit tested, not live tested
-- **Partial** — partially implemented, gaps noted
-- **Stub** — interface defined, no implementation
-- **Deferred** — not planned for near term
+
+- **Done**: implemented in the main code path
+- **Done (unit)**: implemented and covered in unit-style tests, but not called out as separately live-verified here
+- **Partial**: usable, but with clear agent/runtime-specific gaps
+- **Stub**: schema or interface exists, but the behavior is not implemented yet
+- **Deferred**: intentionally not in the active delivery path right now
 
 ## Core Architecture
 
 | Feature | Status | Notes |
-|---------|--------|-------|
-| Runtime interface (Spawn/Recover/Name) | Done | |
-| Agent interface (BuildCmd/Name/ParseOutput) | Done | |
-| ProcessHandle (Stdin/Stdout/Stderr/Wait/Kill/PID) | Done | |
-| Session Manager (CRUD, lifecycle, thread-safe) | Done | |
-| ReplayBuffer (ring buffer, WaitFor subscription) | Done | |
-| WS Bridge (replay-based streaming) | Done | |
-| HTTP API (Gin, session CRUD, WS upgrade) | Done | |
-| SessionRequest types (grouped, typed agent configs) | Done | |
-| Config materializer (file placement, mounts) | Done | |
-| Go client SDK (pkg/client/) | Done (unit) | |
-| CLI dispatch (agentd dispatch --config) | Done (unit) | |
-| XDG data dir (~/.local/share/agentruntime/) | Done | |
-| NDJSON log persistence (tee to replay + file) | Done | Live tested |
-| Structured logging (session lifecycle events) | Done | |
+| --- | --- | --- |
+| Runtime interface (`Spawn` / `Recover` / `Name`) | Done | Shared contract for local, Docker, and future runtimes |
+| Agent interface (`BuildCmd` / `Name` / `ParseOutput`) | Done | Claude, Codex, OpenCode stub |
+| ProcessHandle abstraction | Done | StdIO, lifecycle, recovery metadata |
+| Session manager + replay buffer | Done | Session lifecycle, replay, cursor-based reconnect |
+| Persistent NDJSON session logs | Done | Replay buffer is mirrored to on-disk logs |
+| HTTP API | Done | Session CRUD, logs, info, health |
+| Daemon WebSocket bridge | Done | `/ws/sessions/:id` for replay plus stdin |
+| Sidecar v2 WebSocket server (`cmd/sidecar/`) | Done | `/ws` plus `/health` |
+| Normalized event schema | Done | `agent_message`, `tool_use`, `tool_result`, `result`, `progress`, `system`, `error`, `exit` |
+| Structured output normalization | Done | Claude and Codex mapped into one schema |
+| Streaming deltas | Done | Claude partial text events are emitted as `agent_message` with `delta: true` |
+| Steering and interrupt control | Done | Sidecar routes `prompt`, `interrupt`, and `steer` |
+| Context injection | Done | Claude via embedded MCP IDE bridge; Codex currently no-ops with a warning |
+| Mention injection | Done | Same behavior as context injection |
+| Unified `SessionRequest` schema | Done | Shared by HTTP, Go client, and `agentd dispatch` |
+| Config materializer | Done | Writes per-session Claude/Codex homes and MCP config |
+| Go client SDK (`pkg/client`) | Done (unit) | HTTP client plus log streaming helper |
+| CLI dispatch (`agentd dispatch --config`) | Done (unit) | YAML in, HTTP session dispatch out |
+| XDG data dir (`~/.local/share/agentruntime`) | Done | Override with `AGENTRUNTIME_DATA_DIR` |
+| Local sidecar runtime | Done | Default `local` runtime path |
+| Legacy local pipe runtime | Done | `local-pipe` retained for backwards compatibility |
 
 ## Agents
 
 | Feature | Status | Notes |
-|---------|--------|-------|
-| Claude Code — BuildCmd | Done | -p, --output-format stream-json, --verbose, --resume |
-| Claude Code — ParseOutput (NDJSON) | Done | Extracts result line, cost, subtype |
-| Claude Code — Live tested (OAuth) | Done | |
-| Claude Code — Live tested (API key) | Done | Hit usage limit, auth worked |
-| Codex — BuildCmd | Done | exec --json --full-auto --skip-git-repo-check |
-| Codex — ParseOutput (JSONL events) | Done | message.completed, response.completed |
-| Codex — Live tested (OAuth) | Done | |
-| Codex — Live tested (API key) | Done | |
-| OpenCode — BuildCmd | Stub | TODO: verify CLI flags |
-| OpenCode — ParseOutput | Stub | |
+| --- | --- | --- |
+| Claude Code prompt mode | Done | `claude -p ... --output-format stream-json --verbose` |
+| Claude Code interactive sidecar mode | Done | `--input-format stream-json` plus embedded MCP server |
+| Claude structured output | Done | Assistant, result, progress, and streaming delta mapping |
+| Claude tool events | Partial | `tool_use` is normalized; no separate `tool_result` event today |
+| Claude resume session lookup | Done | Reads Claude session metadata on disk |
+| Codex prompt mode | Done | `codex exec --json --full-auto --skip-git-repo-check` |
+| Codex interactive sidecar mode | Done | `codex app-server --listen stdio://` |
+| Codex structured output | Done | Notifications normalized into shared event types |
+| Codex tool events | Done | `tool_use` and `tool_result` normalized |
+| Codex resume session lookup | Done | Reads local Codex session history |
+| OpenCode agent implementation | Stub | Interface exists, CLI flags and parsing still not verified |
 
 ## Runtimes
 
 | Feature | Status | Notes |
-|---------|--------|-------|
-| Local — Spawn (os/exec) | Done | Live tested |
-| Local — Process group kill | Done | Unix-only, tested |
-| Local — Env inheritance | Done | Parent env + extra vars |
-| Docker — Spawn (docker run CLI) | Done | Labels, security flags, mounts |
-| Docker — Env-file (clean-room) | Done | Only explicit vars, 0600 perms |
-| Docker — Security hardening | Done | cap-drop ALL, no-new-privileges, --init |
-| Docker — Resource limits | Done (unit) | --memory, --cpus |
-| Docker — Container recovery (labels) | Done (unit) | docker ps --filter label= |
-| Docker — Live test with real agent | **Not done** | Needs agent Docker image |
-| SSH — Remote Docker over SSH | **Not done** | ~400 LOC, nice to have |
-| SSH — Remote process over SSH | **Not done** | ~300 LOC, nice to have |
-| OpenSandbox — WebSocket runtime | Deferred | |
+| --- | --- | --- |
+| Local host execution | Done | Default runtime is sidecar-backed local execution |
+| Local runtime recovery | Partial | Local sidecar processes do not survive daemon restart |
+| Docker sidecar execution | Done | Containerized sidecar with health check and WS dial |
+| Docker config materialization | Done | Claude/Codex homes mounted per session |
+| Docker clean-room env-file | Done | Only explicit env vars plus managed proxy vars are injected |
+| Docker security hardening | Done | `--init`, `--cap-drop ALL`, `--cap-add DAC_OVERRIDE`, `no-new-privileges` |
+| Docker resource limits | Done (unit) | `memory`, `cpus` |
+| Docker orphan recovery | Done | Surviving containers are rediscovered on daemon restart |
+| Docker stdio reattach after recovery | Done | Recovered sessions reattach logs/stdout into replay |
+| Docker managed network | Done | `agentruntime-agents` |
+| Docker managed proxy | Done | `agentruntime-proxy` Squid sidecar |
+| Docker live-tested flow | Done | Claude and Codex authenticated and exercised in containerized sessions |
+| SSH runtime | Stub | Not implemented yet |
+| OpenSandbox runtime | Deferred | Interface exists, active implementation is deferred |
 
 ## Session Preservation
 
 | Feature | Status | Notes |
-|---------|--------|-------|
-| Isolated agent home per session | Done | claude-sessions/{id}/, codex-sessions/{id}/ |
-| Claude session dir structure | Done | projects/{mangled-path}/, sessions/ |
-| Credentials copy into session dir | Done | .credentials.json + credentials.json |
-| Resume args (--resume --session-id) | Done | Reads from sessions/*.json or .jsonl mtime |
-| Codex session dir | Done | |
-| Session pruning (retention window) | Done | |
-| GET /sessions/:id/info (host paths) | Done | session_dir, log_file, ws_url, log_url |
-| GET /sessions/:id/log (NDJSON file) | Done | application/x-ndjson |
+| --- | --- | --- |
+| Isolated Claude session homes | Done | Per-session directories under the daemon data dir |
+| Isolated Codex session homes | Done | Per-session directories under the daemon data dir |
+| Credentials copy/materialization | Done | Claude credentials and Codex auth are materialized when available |
+| Resume session handoff | Done | `resume_session` maps to Claude/Codex native session IDs |
+| Session pruning helpers | Done | Agent-specific session housekeeping exists |
+| Session info endpoint | Done | `/sessions/:id/info` exposes host paths and convenience URLs |
+| Incremental replay polling | Done | `/sessions/:id/logs?cursor=N` |
+| Full log download | Done | `/sessions/:id/log` returns the persisted NDJSON log |
 
-## Credentials
+## Credentials And Config
 
 | Feature | Status | Notes |
-|---------|--------|-------|
-| Claude OAuth — Keychain extraction (macOS) | Done | security find-generic-password |
-| Claude OAuth — Cache with 30s throttle | Done | |
-| Claude OAuth — Watch mode (background refresh) | Done | |
-| Codex OAuth — ~/.codex/auth.json detection | Done | |
-| API key passthrough (env) | Done | ANTHROPIC_API_KEY, OPENAI_API_KEY |
-| Linux fallback (manual file placement) | Done | |
-| --credential-sync daemon flag | Done | |
+| --- | --- | --- |
+| Claude OAuth sync from host | Done | Keychain on macOS plus file-based fallbacks |
+| Codex auth discovery | Done | Reads `~/.codex/auth.json` when present |
+| Background credential sync | Done | `--credential-sync` daemon flag |
+| Claude `CLAUDE.md` materialization | Done | Written into the session home |
+| Claude `settings.json` materialization | Done | Includes skip-dangerous-mode prompt default |
+| Claude MCP merge + sanitization | Done | Merges explicit `mcp_json` plus `mcp_servers` |
+| Codex `config.toml` materialization | Done | Plus trusted `/workspace` defaults |
+| Codex `instructions.md` materialization | Done | Written into session home |
 
-## API Endpoints
+## API Surface
 
 | Endpoint | Status | Notes |
-|----------|--------|-------|
-| GET /health | Done | |
-| POST /sessions | Done | Full SessionRequest shape |
-| GET /sessions | Done | List all sessions |
-| GET /sessions/:id | Done | Session status |
-| GET /sessions/:id/info | Done | Host paths, URLs |
-| GET /sessions/:id/logs?cursor=N | Done | Polling with cursor advancement |
-| GET /sessions/:id/log | Done | Full NDJSON file download |
-| DELETE /sessions/:id | Done | Kill + state update |
-| GET /ws/sessions/:id | Done | WebSocket streaming |
+| --- | --- | --- |
+| `GET /health` | Done | Status plus selected runtime |
+| `POST /sessions` | Done | Creates session from `SessionRequest` |
+| `GET /sessions` | Done | Lists sessions |
+| `GET /sessions/:id` | Done | Raw session snapshot |
+| `GET /sessions/:id/info` | Done | Session details plus host paths |
+| `GET /sessions/:id/logs` | Done | Incremental log/replay fetch |
+| `GET /sessions/:id/log` | Done | Full log download |
+| `DELETE /sessions/:id` | Done | Kill session |
+| `GET /ws/sessions/:id` | Done | Daemon bridge |
 
 ## Testing
 
+These counts are source-counted from the repository on 2026-03-17. They were not executed as part of this documentation update.
+
 | Category | Count | Notes |
-|----------|-------|-------|
-| Unit tests | ~200 | All packages |
-| Adversarial tests | ~50 | Edge cases, malformed input |
-| Security tests | ~30 | Env isolation, injection, resource exhaustion |
-| Fuzz targets | 6 | ParseOutput, ReplayBuffer, materializer, client, API |
-| Integration tests | ~20 | Full WS lifecycle, API CRUD |
-| Live tests | 4 | Claude OAuth, Claude API key, Codex OAuth, Codex API key |
-| Total | 299 | All passing with -race |
+| --- | --- | --- |
+| Test functions (`func Test...`) | 362 | Across the repo |
+| Fuzz targets (`func Fuzz...`) | 9 | API, client, bridge, materializer, session, agent parsing |
+| Adversarial test functions | 73 | Files named `*adversarial*_test.go` |
+| E2E test functions | 18 | `pkg/e2e` |
+| Go packages | 12 | `go list ./...` |
 
-## Gaps — Priority Order
+## Remaining Gaps
 
-### P0: Required for production use
+### Highest Priority
 
-1. **Interactive/steering mode** — stdin kept open, WS stdin frames routed to process.
-   Currently stdin is closed at spawn. The bridge infrastructure supports it (stdinPump
-   exists) — need to remove the close, add a session mode flag, update tests.
-   ~100 LOC + test updates.
+1. SSH runtime: still not implemented for either remote process execution or remote Docker execution.
+2. CLI version pinning: the bundled Docker image installs the latest `claude` and `codex` CLIs at build time; there is no explicit version pinning yet.
+3. OpenCode: still a stub at the agent layer and not part of the v2 sidecar path.
+4. Comparative review against other toolchains: agentruntime has not yet been systematically reviewed against adjacent tools and runtimes to close remaining ergonomic or architecture gaps.
 
-2. **Orphan recovery stdio reattach** — after daemon restart, recovered Docker containers
-   are in the session registry but their stdout isn't being streamed. Need to reattach
-   via `docker logs --follow` and pipe to replay buffer.
-   ~150 LOC.
+### Deferred Or Secondary
 
-3. **Agent Docker image** — port Dockerfile.agent from PAOP (node:22-slim, claude + codex
-   installed, tini, UID matching). Also port Dockerfile.proxy (squid + domain allowlist).
-   Copy + adapt.
-
-4. **E2E test suite** — automated tests that start the daemon, create sessions with real
-   agents (or lightweight mocks), verify WS streaming, log persistence, kill, resume.
-   Currently live tests are manual Python scripts.
-
-### P1: Nice to have
-
-5. **SSH runtime — remote Docker** — SSHRuntime.Spawn() dials SSH, runs docker run on
-   remote host. For Proxmox/VM isolation. golang.org/x/crypto/ssh. ~400 LOC.
-
-6. **SSH runtime — remote process** — same SSH connection, runs agent directly without
-   Docker on remote host. Lighter. ~300 LOC.
-
-### Deferred
-
-- OpenSandbox runtime (WebSocket to execd)
-- OpenCode agent implementation
-- PTY support (interactive terminal sessions)
+- OpenSandbox runtime implementation
+- PTY-first terminal sessions as a first-class API mode
+- Generated OpenAPI spec
 - Web UI / dashboard
-- OpenAPI spec generation
-- Multi-tenant access controls
-- Rate limiting on API
-- Container snapshot/restore
+- Multi-tenant auth and access controls
