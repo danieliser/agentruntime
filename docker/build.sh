@@ -22,7 +22,7 @@ build_proxy() {
   docker build \
     -t agentruntime-proxy:latest \
     -f "${REPO_ROOT}/docker/Dockerfile.proxy" \
-    "${REPO_ROOT}"
+    "${REPO_ROOT}/docker"
 }
 
 case "${TARGET}" in

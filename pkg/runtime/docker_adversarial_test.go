@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -104,26 +105,50 @@ func TestDockerAdversarial_ImageMetacharactersPassedLiterally(t *testing.T) {
 func TestDockerAdversarial_InvalidMemoryFailsGracefully(t *testing.T) {
 	installFakeDocker(t, `#!/bin/sh
 set -eu
-if [ "$1" != "run" ]; then
-  echo "unexpected docker command: $1" >&2
-  exit 2
-fi
-shift
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --memory)
-      if [ "$2" = "lots" ]; then
-        echo "docker: invalid memory value: lots" >&2
-        exit 125
-      fi
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-exit 0
+case "$1" in
+  network)
+    if [ "$2" = "inspect" ]; then
+      echo "Error: No such network: agentruntime-agents" >&2
+      exit 1
+    fi
+    if [ "$2" = "create" ]; then
+      exit 0
+    fi
+    ;;
+  inspect)
+    if [ "$2" = "--format" ]; then
+      echo "Error: No such object: agentruntime-proxy" >&2
+      exit 1
+    fi
+    ;;
+  run)
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name)
+          if [ "$2" = "agentruntime-proxy" ]; then
+            printf '%s\n' "proxy-container"
+            exit 0
+          fi
+          shift 2
+          ;;
+        --memory)
+          if [ "$2" = "lots" ]; then
+            echo "docker: invalid memory value: lots" >&2
+            exit 125
+          fi
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    exit 0
+    ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
 `)
 
 	rt := NewDockerRuntime(DockerConfig{Image: "alpine:latest"})
@@ -261,6 +286,31 @@ set -eu
 state_dir=%q
 sidecar_port=%q
 case "$1" in
+  network)
+    case "$2" in
+      inspect)
+        if [ -e "$state_dir/.network" ]; then
+          exit 0
+        fi
+        echo "Error: No such network: agentruntime-agents" >&2
+        exit 1
+        ;;
+      create)
+        : >"$state_dir/.network"
+        exit 0
+        ;;
+    esac
+    ;;
+  inspect)
+    if [ "$2" = "--format" ]; then
+      if [ -e "$state_dir/.proxy" ]; then
+        printf 'true\n'
+        exit 0
+      fi
+      echo "Error: No such object: agentruntime-proxy" >&2
+      exit 1
+    fi
+    ;;
   run)
     shift
     name=""
@@ -278,6 +328,11 @@ case "$1" in
     if [ -z "$name" ]; then
       echo "missing container name" >&2
       exit 2
+    fi
+    if [ "$name" = "agentruntime-proxy" ]; then
+      : >"$state_dir/.proxy"
+      printf 'proxy-container\n'
+      exit 0
     fi
     marker="$state_dir/$name"
     if [ -e "$marker" ]; then
@@ -426,7 +481,20 @@ func TestDockerAdversarial_NilRequestFallsBackToSpawnConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env file: %v", err)
 	}
-	if string(data) != "AGENT_CMD=[\"env\"]\nVISIBLE_VAR=from-spawn-config\n" {
+	contents := string(data)
+	if !strings.Contains(contents, "AGENT_CMD=[\"env\"]\n") {
+		t.Fatalf("expected AGENT_CMD in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "VISIBLE_VAR=from-spawn-config\n") {
+		t.Fatalf("expected spawn config env in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "HTTP_PROXY=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("expected proxy env in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "HTTPS_PROXY=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("expected proxy env in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "NO_PROXY=localhost,127.0.0.1,host.docker.internal\n") {
 		t.Fatalf("expected spawn config env in env file, got %q", string(data))
 	}
 }
@@ -503,7 +571,11 @@ func startFakeDockerSidecar(t *testing.T) string {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case dockerSidecarHealthPath:
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":     "ok",
+				"agent_type": "claude",
+			})
 		case "/ws":
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			conn, err := upgrader.Upgrade(w, r, nil)

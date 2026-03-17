@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/gorilla/websocket"
 )
 
 func TestDockerRuntime_Name(t *testing.T) {
@@ -265,12 +270,123 @@ func TestDockerSpawn_WSBased_AgentCmdEnv(t *testing.T) {
 		t.Fatalf("read env file: %v", err)
 	}
 
-	encodedCmd, err := json.Marshal(cmd)
+	encodedCmd, err := json.Marshal([]string{cmd[0]})
 	if err != nil {
 		t.Fatalf("marshal command: %v", err)
 	}
 	if !strings.Contains(string(data), "AGENT_CMD="+string(encodedCmd)+"\n") {
 		t.Fatalf("expected AGENT_CMD in env file, got %q", string(data))
+	}
+	if !strings.Contains(string(data), "HTTP_PROXY=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("expected HTTP_PROXY in env file, got %q", string(data))
+	}
+	if !strings.Contains(string(data), "HTTPS_PROXY=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("expected HTTPS_PROXY in env file, got %q", string(data))
+	}
+	if !strings.Contains(string(data), "NO_PROXY=localhost,127.0.0.1,host.docker.internal\n") {
+		t.Fatalf("expected NO_PROXY in env file, got %q", string(data))
+	}
+}
+
+func TestDockerSpawn_V2_AgentCmdIsBinaryOnly(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"claude", "--dangerously-skip-permissions", "-p", "fix the bug", "--output-format", "stream-json"},
+		Prompt:    "fix the bug",
+		SessionID: "v2-agent-cmd-binary-only",
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	envFile := flagValue(spec.args, "--env-file")
+	if envFile == "" {
+		t.Fatalf("expected --env-file in args, got %v", spec.args)
+	}
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	if !strings.Contains(string(data), "AGENT_CMD=[\"claude\"]\n") {
+		t.Fatalf("expected binary-only AGENT_CMD, got %q", string(data))
+	}
+	if strings.Contains(string(data), "fix the bug") {
+		t.Fatalf("did not expect prompt embedded in AGENT_CMD env, got %q", string(data))
+	}
+}
+
+func TestDockerSpawn_V2_PromptSentViaWS(t *testing.T) {
+	received := make(chan wsClientFrame, 1)
+	sidecarPort := startFakeDockerV2Sidecar(t, received)
+
+	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
+set -eu
+case "$1" in
+  run)
+    printf '%%s\n' 'container-v2-prompt'
+    ;;
+  port)
+    printf '0.0.0.0:%s\n'
+    ;;
+  stop|rm)
+    exit 0
+    ;;
+  *)
+    echo "unexpected docker command: $1" >&2
+    exit 2
+    ;;
+esac
+`, sidecarPort))
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	handle, err := rt.Spawn(testContext(t), SpawnConfig{
+		Cmd:       []string{"claude"},
+		Prompt:    "fix the auth bug",
+		SessionID: "v2-prompt-over-ws",
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = handle.Kill()
+	})
+
+	select {
+	case frame := <-received:
+		if frame.Type != "prompt" {
+			t.Fatalf("expected prompt frame type, got %q", frame.Type)
+		}
+		data, ok := frame.Data.(map[string]any)
+		if !ok {
+			t.Fatalf("expected prompt data object, got %T", frame.Data)
+		}
+		if got := data["content"]; got != "fix the auth bug" {
+			t.Fatalf("expected prompt content %q, got %v", "fix the auth bug", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for prompt frame")
+	}
+}
+
+func TestDockerSpawn_V2_LocalUnchanged(t *testing.T) {
+	rt := NewLocalRuntime()
+	handle, err := rt.Spawn(testContext(t), SpawnConfig{
+		Cmd:    []string{"/bin/echo", "prompt from cmd"},
+		Prompt: "prompt from field",
+	})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+
+	got, err := io.ReadAll(handle.Stdout())
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if string(got) != "prompt from cmd\n" {
+		t.Fatalf("expected local runtime to execute full Cmd unchanged, got %q", string(got))
 	}
 }
 
@@ -356,7 +472,20 @@ func TestDockerSpawn_EnvFileCreatedAndDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env file: %v", err)
 	}
-	if string(data) != "AGENT_CMD=[\"env\"]\nVISIBLE_VAR=docker-value\n" {
+	contents := string(data)
+	if !strings.Contains(contents, "AGENT_CMD=[\"env\"]\n") {
+		t.Fatalf("expected AGENT_CMD in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "VISIBLE_VAR=docker-value\n") {
+		t.Fatalf("expected VISIBLE_VAR in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "HTTP_PROXY=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("expected HTTP_PROXY in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "HTTPS_PROXY=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("expected HTTPS_PROXY in env file, got %q", contents)
+	}
+	if !strings.Contains(contents, "NO_PROXY=localhost,127.0.0.1,host.docker.internal\n") {
 		t.Fatalf("unexpected env file contents %q", string(data))
 	}
 
@@ -413,8 +542,8 @@ func TestDockerSpawn_ResourceLimits(t *testing.T) {
 	if !hasFlagValue(spec.args, "--cpus", "2.5") {
 		t.Fatalf("expected cpu limit in args, got %v", spec.args)
 	}
-	if !hasFlagValue(spec.args, "--network", "none") {
-		t.Fatalf("expected network override in args, got %v", spec.args)
+	if !hasFlagValue(spec.args, "--network", defaultDockerNetworkName) {
+		t.Fatalf("expected managed network in args, got %v", spec.args)
 	}
 	if spec.args[len(spec.args)-1] != "custom:latest" {
 		t.Fatalf("expected resource image override in args, got %v", spec.args)
@@ -428,4 +557,50 @@ func flagValue(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+func startFakeDockerV2Sidecar(t *testing.T, received chan<- wsClientFrame) string {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case dockerSidecarHealthPath:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":     "ok",
+				"agent_type": "claude",
+			})
+		case "/ws":
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Fatalf("upgrade websocket: %v", err)
+			}
+			defer conn.Close()
+
+			if err := conn.WriteJSON(wsServerFrame{Type: "connected"}); err != nil {
+				t.Fatalf("write connected: %v", err)
+			}
+
+			var frame wsClientFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				t.Fatalf("read prompt frame: %v", err)
+			}
+			received <- frame
+
+			code := 0
+			if err := conn.WriteJSON(wsServerFrame{Type: "exit", ExitCode: &code}); err != nil {
+				t.Fatalf("write exit: %v", err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	return u.Port()
 }

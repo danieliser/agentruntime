@@ -46,8 +46,9 @@ type DockerConfig struct {
 // DockerRuntime spawns agent processes inside Docker containers using the
 // docker CLI. Containers are labeled with task/session identifiers for recovery.
 type DockerRuntime struct {
-	cfg          DockerConfig
-	materializer dockerMaterializer
+	cfg            DockerConfig
+	materializer   dockerMaterializer
+	networkManager *NetworkManager
 }
 
 // NewDockerRuntime creates a new Docker runtime with the given configuration.
@@ -60,6 +61,9 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 		materializer: dockerMaterializerFunc(func(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error) {
 			return materialize.Materialize(req, sessionID, cfg.DataDir)
 		}),
+		networkManager: &NetworkManager{
+			NetworkName: cfg.Network,
+		},
 	}
 }
 
@@ -85,11 +89,24 @@ type dockerRunSpec struct {
 
 func (r *DockerRuntime) Name() string { return "docker" }
 
+func (r *DockerRuntime) manager() *NetworkManager {
+	if r.networkManager == nil {
+		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network}
+	}
+	return r.networkManager
+}
+
 // Spawn runs a command inside a Docker container sidecar and connects to it
 // over the in-container WebSocket bridge.
 func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandle, error) {
 	if len(cfg.Cmd) == 0 {
 		return nil, &SpawnError{Reason: "cmd is empty"}
+	}
+	if err := r.manager().EnsureNetwork(ctx); err != nil {
+		return nil, &SpawnError{Reason: "docker network", Err: err}
+	}
+	if err := r.manager().EnsureProxy(ctx); err != nil {
+		return nil, &SpawnError{Reason: "docker proxy", Err: err}
 	}
 	spec, err := r.prepareRun(cfg)
 	if err != nil {
@@ -134,7 +151,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		return nil, &SpawnError{Reason: "sidecar health", Err: err}
 	}
 
-	handle, err := dialSidecar(containerID, hostPort, 0)
+	handle, err := dialSidecar(containerID, hostPort, 0, dockerPrompt(cfg))
 	if err != nil {
 		stopDockerContainer(containerID)
 		if spec.cleanup != nil {
@@ -189,7 +206,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		mounts = append(mounts, result.Mounts...)
 	}
 
-	agentCmd, err := json.Marshal(cfg.Cmd)
+	agentCmd, err := json.Marshal([]string{cfg.Cmd[0]})
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -197,6 +214,9 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 
 	envValues := make(map[string]string, len(requestEnv(cfg))+1)
 	for key, value := range requestEnv(cfg) {
+		envValues[key] = value
+	}
+	for key, value := range r.manager().ProxyEnv() {
 		envValues[key] = value
 	}
 	envValues["AGENT_CMD"] = string(agentCmd)
@@ -232,16 +252,13 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		args = append(args, "-v", formatDockerMount(mount))
 	}
 
-	network := r.cfg.Network
+	network := r.manager().networkName()
 	if req != nil && req.Container != nil {
 		if req.Container.Memory != "" {
 			args = append(args, "--memory", req.Container.Memory)
 		}
 		if req.Container.CPUs > 0 {
 			args = append(args, "--cpus", strconv.FormatFloat(req.Container.CPUs, 'f', -1, 64))
-		}
-		if req.Container.Network != "" {
-			network = req.Container.Network
 		}
 		for _, opt := range req.Container.SecurityOpt {
 			args = append(args, "--security-opt", opt)
@@ -426,7 +443,7 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		taskID := strings.TrimSpace(labels[dockerTaskLabelKey])
 
 		if hostPort, err := dockerContainerPort(ctx, id, dockerSidecarContainerPort); err == nil {
-			handle, err := dialSidecar(id, hostPort, 0)
+			handle, err := dialSidecar(id, hostPort, 0, "")
 			if err == nil {
 				handle.setRecoveryInfo(&RecoveryInfo{
 					SessionID: sessionID,
@@ -494,6 +511,10 @@ func waitForDockerSidecarHealth(ctx context.Context, hostPort string) error {
 	ticker := time.NewTicker(dockerSidecarHealthPoll)
 	defer ticker.Stop()
 
+	type sidecarHealthResponse struct {
+		AgentType string `json:"agent_type"`
+	}
+
 	for {
 		req, err := http.NewRequestWithContext(deadlineCtx, http.MethodGet, url, nil)
 		if err != nil {
@@ -502,9 +523,15 @@ func waitForDockerSidecarHealth(ctx context.Context, hostPort string) error {
 
 		resp, err := client.Do(req)
 		if err == nil {
-			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return nil
+				var health sidecarHealthResponse
+				decodeErr := json.NewDecoder(resp.Body).Decode(&health)
+				_ = resp.Body.Close()
+				if decodeErr == nil && strings.TrimSpace(health.AgentType) != "" {
+					return nil
+				}
+			} else {
+				_ = resp.Body.Close()
 			}
 		}
 
@@ -514,6 +541,16 @@ func waitForDockerSidecarHealth(ctx context.Context, hostPort string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func dockerPrompt(cfg SpawnConfig) string {
+	if cfg.Prompt != "" {
+		return cfg.Prompt
+	}
+	if len(cfg.Cmd) > 1 {
+		return cfg.Cmd[len(cfg.Cmd)-1]
+	}
+	return ""
 }
 
 func stopDockerContainer(containerID string) {
