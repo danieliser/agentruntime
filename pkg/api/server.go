@@ -77,8 +77,9 @@ func (s *Server) Start(addr string) error {
 	return s.srv.ListenAndServe()
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server, killing all active sessions first.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.sessions.ShutdownAll()
 	if s.srv != nil {
 		return s.srv.Shutdown(ctx)
 	}

@@ -26,9 +26,10 @@ func main() {
 	}
 
 	port := flag.Int("port", 8090, "HTTP server port")
-	rtName := flag.String("runtime", "local", "Execution runtime (local, docker, opensandbox)")
+	rtName := flag.String("runtime", "local", "Execution runtime (local, docker)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "Data directory for sessions, logs, credentials")
 	credSync := flag.Bool("credential-sync", false, "Enable background credential sync from Keychain")
+	maxSessions := flag.Int("max-sessions", 0, "Maximum concurrent sessions (0 = unlimited)")
 	flag.Parse()
 
 	log.Printf("data dir: %s", *dataDir)
@@ -42,6 +43,10 @@ func main() {
 
 	// Initialize session manager and recover orphaned sessions.
 	sessions := session.NewManager()
+	if *maxSessions > 0 {
+		sessions.SetMaxSessions(*maxSessions)
+		log.Printf("max sessions: %d", *maxSessions)
+	}
 	recovered, err := rt.Recover(context.Background())
 	if err != nil {
 		log.Printf("warning: runtime recovery failed: %v", err)
@@ -81,6 +86,10 @@ func main() {
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("shutdown error: %v", err)
+		}
+		// Tear down runtime infrastructure (proxy container, network).
+		if err := rt.Cleanup(ctx); err != nil {
+			log.Printf("runtime cleanup error: %v", err)
 		}
 	}()
 
@@ -136,8 +145,6 @@ func newRuntime(name, dataDir string) (runtime.Runtime, error) {
 		return runtime.NewDockerRuntime(runtime.DockerConfig{
 			DataDir: dataDir,
 		}), nil
-	case "opensandbox":
-		return &runtime.OpenSandboxRuntime{}, nil
 	default:
 		return nil, fmt.Errorf("unknown runtime: %s", name)
 	}

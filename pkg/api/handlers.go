@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -99,7 +100,11 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		return
 	}
 	if err := s.sessions.Add(sess); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if errors.Is(err, session.ErrMaxSessions) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 
@@ -203,7 +208,7 @@ func (s *Server) handleGetSessionInfo(c *gin.Context) {
 		EndedAt:    snap.EndedAt,
 		ExitCode:   snap.ExitCode,
 		SessionDir: snap.SessionDir,
-		LogFile:    filepath.Join(s.logDir, snap.ID+".jsonl"),
+		LogFile:    session.LogFilePath(s.logDir, snap.ID),
 		WSURL:      sessionWSURL(c, snap.ID),
 		LogURL:     sessionLogURL(c, snap.ID),
 	})
@@ -217,6 +222,7 @@ func (s *Server) handleDeleteSession(c *gin.Context) {
 	}
 	_ = sess.Kill()
 	sess.SetCompleted(-1)
+	s.sessions.Remove(sess.ID)
 	snap := sess.Snapshot()
 	c.JSON(http.StatusOK, gin.H{"id": snap.ID, "state": snap.State})
 }

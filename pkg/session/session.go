@@ -122,10 +122,14 @@ func cloneTags(tags map[string]string) map[string]string {
 	return cloned
 }
 
+// ErrMaxSessions is returned by Manager.Add when the session limit is reached.
+var ErrMaxSessions = fmt.Errorf("max sessions limit reached")
+
 // Manager is a thread-safe registry of active sessions.
 type Manager struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	mu          sync.RWMutex
+	sessions    map[string]*Session
+	maxSessions int // 0 = unlimited
 }
 
 // NewManager creates an empty session manager.
@@ -133,10 +137,22 @@ func NewManager() *Manager {
 	return &Manager{sessions: make(map[string]*Session)}
 }
 
-// Add registers a session. Returns error if the ID already exists.
+// SetMaxSessions configures the maximum number of concurrent sessions.
+// 0 means unlimited (the default).
+func (m *Manager) SetMaxSessions(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxSessions = n
+}
+
+// Add registers a session. Returns error if the ID already exists or the
+// max sessions limit has been reached.
 func (m *Manager) Add(s *Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.maxSessions > 0 && len(m.sessions) >= m.maxSessions {
+		return ErrMaxSessions
+	}
 	if _, exists := m.sessions[s.ID]; exists {
 		return fmt.Errorf("session %s already exists", s.ID)
 	}
@@ -167,6 +183,27 @@ func (m *Manager) List() []*Session {
 		out = append(out, s)
 	}
 	return out
+}
+
+// ShutdownAll kills all active sessions, closes their replay buffers, and
+// removes them from the registry. Used during graceful daemon shutdown.
+func (m *Manager) ShutdownAll() {
+	m.mu.Lock()
+	all := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		all = append(all, s)
+	}
+	m.mu.Unlock()
+
+	for _, s := range all {
+		_ = s.Kill()
+		s.Replay.Close()
+		s.SetCompleted(-1)
+	}
+
+	m.mu.Lock()
+	m.sessions = make(map[string]*Session)
+	m.mu.Unlock()
 }
 
 // Recover re-registers sessions recovered by a runtime (e.g., Docker containers
