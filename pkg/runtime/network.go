@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 const (
@@ -20,6 +21,9 @@ const (
 type NetworkManager struct {
 	NetworkName string
 	ProxyImage  string
+
+	ensureOnce sync.Once
+	ensureErr  error
 }
 
 func (m *NetworkManager) networkName() string {
@@ -41,18 +45,31 @@ func (m *NetworkManager) proxyURL() string {
 }
 
 // EnsureNetwork creates the agent bridge network if it does not already exist.
+// Safe for concurrent callers — "already exists" is treated as success.
 func (m *NetworkManager) EnsureNetwork(ctx context.Context) error {
 	if dockerNetworkExists(ctx, m.networkName()) {
 		return nil
 	}
 	if _, err := dockerOutput(ctx, "network", "create", m.networkName()); err != nil {
+		// Race: another goroutine (or prior daemon) already created it.
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
 		return fmt.Errorf("create docker network %q: %w", m.networkName(), err)
 	}
 	return nil
 }
 
 // EnsureProxy starts the proxy sidecar if it is not already running.
+// Uses sync.Once to prevent concurrent callers from racing on container creation.
 func (m *NetworkManager) EnsureProxy(ctx context.Context) error {
+	m.ensureOnce.Do(func() {
+		m.ensureErr = m.ensureProxyOnce(ctx)
+	})
+	return m.ensureErr
+}
+
+func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	if err := m.EnsureNetwork(ctx); err != nil {
 		return err
 	}
@@ -77,6 +94,10 @@ func (m *NetworkManager) EnsureProxy(ctx context.Context) error {
 		"--network", m.networkName(),
 		m.proxyImage(),
 	); err != nil {
+		// Race: proxy already started by another process.
+		if strings.Contains(err.Error(), "already in use") {
+			return nil
+		}
 		return fmt.Errorf("start docker proxy %q: %w", dockerProxyContainerName, err)
 	}
 
@@ -94,7 +115,10 @@ func (m *NetworkManager) ProxyEnv() map[string]string {
 }
 
 // Cleanup stops the proxy sidecar and removes the managed network.
+// Resets the ensure-once gate so EnsureProxy can be called again after cleanup.
 func (m *NetworkManager) Cleanup(ctx context.Context) error {
+	m.ensureOnce = sync.Once{}
+	m.ensureErr = nil
 	var errs []error
 
 	if exists, _ := dockerContainerExists(ctx, dockerProxyContainerName); exists {
@@ -121,7 +145,7 @@ func dockerNetworkExists(ctx context.Context, name string) bool {
 }
 
 func dockerContainerExists(ctx context.Context, name string) (bool, error) {
-	if _, err := dockerOutput(ctx, "inspect", name); err != nil {
+	if _, err := dockerOutput(ctx, "inspect", "--type", "container", name); err != nil {
 		if dockerObjectMissing(err) {
 			return false, nil
 		}
@@ -131,7 +155,7 @@ func dockerContainerExists(ctx context.Context, name string) (bool, error) {
 }
 
 func dockerInspectRunning(ctx context.Context, name string) (bool, error) {
-	out, err := dockerOutput(ctx, "inspect", "--format", "{{.State.Running}}", name)
+	out, err := dockerOutput(ctx, "inspect", "--type", "container", "--format", "{{.State.Running}}", name)
 	if err != nil {
 		return false, err
 	}

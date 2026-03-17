@@ -78,7 +78,7 @@ case "$1 $2" in
     printf 'network-created\n'
     exit 0
     ;;
-  "inspect --format")
+  "inspect --type")
     if [ -f "$PROXY_STATE" ]; then
       printf 'true\n'
       exit 0

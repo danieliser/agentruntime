@@ -116,7 +116,7 @@ case "$1" in
     fi
     ;;
   inspect)
-    if [ "$2" = "--format" ]; then
+    if [ "$2" = "--type" ]; then
       echo "Error: No such object: agentruntime-proxy" >&2
       exit 1
     fi
