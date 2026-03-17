@@ -140,7 +140,7 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 				})
 				if writeErr != nil {
 					if ctx.Err() == nil {
-						finish(ExitResult{Err: writeErr})
+						finish(ExitResult{Err: handle.wsDisconnectError(writeErr)})
 					}
 					return
 				}
@@ -166,7 +166,7 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 				err := handle.writeMessage(websocket.PingMessage, nil)
 				if err != nil {
 					if ctx.Err() == nil {
-						finish(ExitResult{Err: err})
+						finish(ExitResult{Err: handle.wsDisconnectError(err)})
 					}
 					return
 				}
@@ -264,7 +264,7 @@ func dialSidecar(containerID, hostPort string, sinceOffset int64, prompt string)
 			handle.cancel()
 		}
 		_ = handle.conn.Close()
-		return nil, err
+		return nil, handle.wsDisconnectError(err)
 	}
 	return handle, nil
 }
