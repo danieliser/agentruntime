@@ -128,6 +128,16 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 			},
 		},
 	}
+	// Session dir mount FIRST — tests and consumers expect Mounts[0] to be the .claude dir.
+	*mounts = append(*mounts, apischema.Mount{
+		Host:      claudeDir,
+		Container: "/home/agent/.claude",
+		Mode:      "rw",
+	})
+
+	// Write .claude.json to the parent of the session dir and bind-mount it as a
+	// single file at /home/agent/.claude.json. The Dockerfile pre-creates this
+	// target with `touch` so Docker mounts it as a file, not a directory.
 	claudeStateBytes, _ := json.MarshalIndent(claudeState, "", "  ")
 	claudeStatePath := filepath.Join(claudeDir, "..", ".claude.json")
 	if err := os.WriteFile(claudeStatePath, claudeStateBytes, 0o644); err == nil {
@@ -137,12 +147,6 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 			Mode:      "rw",
 		})
 	}
-
-	*mounts = append(*mounts, apischema.Mount{
-		Host:      claudeDir,
-		Container: "/home/agent/.claude",
-		Mode:      "rw",
-	})
 
 	if req.Claude.MemoryPath != "" {
 		hostPath, err := expandPath(req.Claude.MemoryPath)

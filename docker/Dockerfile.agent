@@ -57,6 +57,7 @@ RUN if getent group "${HOST_GID}" > /dev/null; then \
     fi
 
 RUN mkdir -p /home/agent/.claude /home/agent/.codex /workspace \
+    && touch /home/agent/.claude.json \
     && chown -R agent:agent /home/agent /workspace \
     && git init /workspace
 

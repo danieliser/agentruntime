@@ -338,8 +338,13 @@ func TestMaterialize_EmptySettingsJSONWritesEmptyObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read settings.json: %v", err)
 	}
-	if string(data) != "{}" {
-		t.Fatalf("expected empty object JSON, got %q", string(data))
+	// Empty settings still gets skipDangerousModePermissionPrompt injected
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("settings.json is not valid JSON: %v", err)
+	}
+	if _, ok := parsed["skipDangerousModePermissionPrompt"]; !ok {
+		t.Fatal("expected skipDangerousModePermissionPrompt in settings.json")
 	}
 }
 
