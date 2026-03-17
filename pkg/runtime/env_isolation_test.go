@@ -196,60 +196,37 @@ func TestLocalRuntime_ExtraEnvMergedOntoParent(t *testing.T) {
 }
 
 func TestDockerRuntime_DoesNotInheritDaemonSecrets(t *testing.T) {
-	requireDocker(t)
 	t.Setenv("SECRET_KEY", "daemon-secret")
-
-	rt := dockerRuntimeForEnvTests()
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd:    []string{"sh", "-c", "printf %s \"${SECRET_KEY-}\""},
-		TaskID: "docker-env-secret",
+	contents, _ := dockerPreparedEnvFileContents(t, SpawnConfig{
+		Cmd:       []string{"sh", "-c", "printf %s \"${SECRET_KEY-}\""},
+		SessionID: "docker-env-secret",
+		TaskID:    "docker-env-secret",
 	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-	defer handle.Kill()
 
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
+	if strings.Contains(contents, "SECRET_KEY=") {
+		t.Fatalf("expected SECRET_KEY to be absent from env file, got %q", contents)
 	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("expected SECRET_KEY to be absent, got %q", stdout)
+	if !strings.Contains(contents, "AGENT_CMD=[\"sh\"]\n") {
+		t.Fatalf("expected binary-only AGENT_CMD in env file, got %q", contents)
 	}
 }
 
 func TestDockerRuntime_ExplicitEnvIsAvailable(t *testing.T) {
-	requireDocker(t)
-
-	rt := dockerRuntimeForEnvTests()
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd:    []string{"sh", "-c", "printf %s \"$VISIBLE_VAR\""},
-		Env:    map[string]string{"VISIBLE_VAR": "hello-docker"},
-		TaskID: "docker-env-visible",
+	contents, _ := dockerPreparedEnvFileContents(t, SpawnConfig{
+		Cmd:       []string{"sh", "-c", "printf %s \"$VISIBLE_VAR\""},
+		Env:       map[string]string{"VISIBLE_VAR": "hello-docker"},
+		SessionID: "docker-env-visible",
+		TaskID:    "docker-env-visible",
 	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-	defer handle.Kill()
 
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
-	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != "hello-docker" {
-		t.Fatalf("expected explicit env value, got %q", stdout)
+	if !strings.Contains(contents, "VISIBLE_VAR=hello-docker\n") {
+		t.Fatalf("expected explicit env value in env file, got %q", contents)
 	}
 }
 
 func TestDockerRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
-	_, err := rt.Spawn(testContext(t), SpawnConfig{
+	_, err := rt.prepareRun(SpawnConfig{
 		Cmd: []string{"echo", "ignored"},
 		Env: map[string]string{"PATH": "/tmp/malicious"},
 	})
@@ -262,29 +239,19 @@ func TestDockerRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 }
 
 func TestDockerRuntime_PassesMetacharactersLiterally(t *testing.T) {
-	requireDocker(t)
-
-	rt := dockerRuntimeForEnvTests()
 	want := "`uname` $(whoami) ${HOME} && echo literal"
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd:    []string{"sh", "-c", "printf %s \"$TEST_VALUE\""},
-		Env:    map[string]string{"TEST_VALUE": want},
-		TaskID: "docker-env-literal",
+	contents, args := dockerPreparedEnvFileContents(t, SpawnConfig{
+		Cmd:       []string{"sh", "-c", "printf %s \"$TEST_VALUE\""},
+		Env:       map[string]string{"TEST_VALUE": want},
+		SessionID: "docker-env-literal",
+		TaskID:    "docker-env-literal",
 	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-	defer handle.Kill()
 
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
+	if !strings.Contains(contents, "TEST_VALUE="+want+"\n") {
+		t.Fatalf("expected literal TEST_VALUE in env file, got %q", contents)
 	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != want {
-		t.Fatalf("expected literal value %q, got %q", want, stdout)
+	if containsArg(args, "--privileged") {
+		t.Fatalf("unexpected injected docker flag in args: %v", args)
 	}
 }
 
@@ -302,7 +269,7 @@ func TestDockerRuntime_InvalidEnvKeysError(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := rt.Spawn(testContext(t), SpawnConfig{
+			_, err := rt.prepareRun(SpawnConfig{
 				Cmd: []string{"echo", "ignored"},
 				Env: map[string]string{tc.key: "value"},
 			})
@@ -317,28 +284,18 @@ func TestDockerRuntime_InvalidEnvKeysError(t *testing.T) {
 }
 
 func TestDockerRuntime_EmptyEnvMapDoesNotPanic(t *testing.T) {
-	requireDocker(t)
-
-	rt := dockerRuntimeForEnvTests()
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd:    []string{"sh", "-c", "printf ok"},
-		Env:    map[string]string{},
-		TaskID: "docker-env-empty",
+	contents, _ := dockerPreparedEnvFileContents(t, SpawnConfig{
+		Cmd:       []string{"sh", "-c", "printf ok"},
+		Env:       map[string]string{},
+		SessionID: "docker-env-empty",
+		TaskID:    "docker-env-empty",
 	})
-	if err != nil {
-		t.Fatalf("spawn failed with empty env: %v", err)
-	}
-	defer handle.Kill()
 
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
+	if !strings.Contains(contents, "AGENT_CMD=[\"sh\"]\n") {
+		t.Fatalf("expected AGENT_CMD in env file, got %q", contents)
 	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != "ok" {
-		t.Fatalf("expected output %q, got %q", "ok", stdout)
+	if strings.Contains(contents, "HOME=") {
+		t.Fatalf("expected empty env map to keep docker clean-room env, got %q", contents)
 	}
 }
 
@@ -389,37 +346,48 @@ func TestDockerRuntime_BuildRunArgsKeepEnvFlagsAtomic(t *testing.T) {
 }
 
 func TestDockerRuntime_FullEnvExcludesDaemonInternalVars(t *testing.T) {
-	requireDocker(t)
 	t.Setenv("PERSIST_AUTH_TOKEN", "daemon-token")
 	t.Setenv("SECRET_KEY", "daemon-secret")
 
-	rt := dockerRuntimeForEnvTests()
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd:    []string{"env"},
-		Env:    map[string]string{"VISIBLE_VAR": "kept-docker"},
-		TaskID: "docker-env-full",
+	contents, _ := dockerPreparedEnvFileContents(t, SpawnConfig{
+		Cmd:       []string{"env"},
+		Env:       map[string]string{"VISIBLE_VAR": "kept-docker"},
+		SessionID: "docker-env-full",
+		TaskID:    "docker-env-full",
 	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-	defer handle.Kill()
 
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
+	if strings.Contains(contents, "PERSIST_AUTH_TOKEN=") {
+		t.Fatalf("expected PERSIST_AUTH_TOKEN to be absent from env file, got %q", contents)
 	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
+	if strings.Contains(contents, "SECRET_KEY=") {
+		t.Fatalf("expected SECRET_KEY to be absent from env file, got %q", contents)
 	}
-	if strings.Contains(stdout, "PERSIST_AUTH_TOKEN=") {
-		t.Fatalf("expected PERSIST_AUTH_TOKEN to be absent, got %q", stdout)
+	if !strings.Contains(contents, "VISIBLE_VAR=kept-docker\n") {
+		t.Fatalf("expected explicit env to remain visible, got %q", contents)
 	}
-	if strings.Contains(stdout, "SECRET_KEY=") {
-		t.Fatalf("expected SECRET_KEY to be absent, got %q", stdout)
+}
+
+func dockerPreparedEnvFileContents(t *testing.T, cfg SpawnConfig) (string, []string) {
+	t.Helper()
+
+	rt := dockerRuntimeForEnvTests()
+	spec, err := rt.prepareRun(cfg)
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
 	}
-	if !strings.Contains(stdout, "VISIBLE_VAR=kept-docker") {
-		t.Fatalf("expected explicit env to remain visible, got %q", stdout)
+	t.Cleanup(spec.cleanup)
+
+	envFile := flagValue(spec.args, "--env-file")
+	if envFile == "" {
+		t.Fatalf("expected --env-file arg, got %v", spec.args)
 	}
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+
+	return string(data), spec.args
 }
 
 func testContext(t *testing.T) context.Context {

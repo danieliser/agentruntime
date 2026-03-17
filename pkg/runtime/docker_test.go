@@ -325,7 +325,41 @@ func TestDockerSpawn_V2_PromptSentViaWS(t *testing.T) {
 	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
 set -eu
 case "$1" in
+  network)
+    case "$2" in
+      inspect)
+        echo "Error: No such network: agentruntime-agents" >&2
+        exit 1
+        ;;
+      create)
+        exit 0
+        ;;
+    esac
+    ;;
+  inspect)
+    if [ "$2" = "--format" ]; then
+      echo "Error: No such object: agentruntime-proxy" >&2
+      exit 1
+    fi
+    ;;
   run)
+    shift
+    name=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name)
+          name=$2
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    if [ "$name" = "agentruntime-proxy" ]; then
+      printf '%%s\n' 'proxy-container'
+      exit 0
+    fi
     printf '%%s\n' 'container-v2-prompt'
     ;;
   port)

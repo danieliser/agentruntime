@@ -1046,42 +1046,89 @@ func TestConcurrentSessions(t *testing.T) {
 
 	type result struct {
 		id     string
+		prompt string
 		output string
+		err    error
 	}
 	results := make(chan result, 3)
 
 	prompts := []string{"session-A-output", "session-B-output", "session-C-output"}
+	sessionIDs := make(map[string]string, len(prompts))
+	for _, prompt := range prompts {
+		created := mustCreateSession(t, ts, SessionRequest{
+			Agent:       "cat-test",
+			Interactive: true,
+		})
+		sessionIDs[prompt] = created.SessionID
+		t.Cleanup(func() { mustDeleteSession(t, ts, created.SessionID) })
+	}
+
 	for _, prompt := range prompts {
 		prompt := prompt
+		id := sessionIDs[prompt]
 		go func() {
-			// Create.
-			created := mustCreateSession(t, ts, SessionRequest{Agent: "echo-test", Prompt: prompt})
-			id := created.SessionID
-
-			// Connect WS and collect stdout.
 			wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
-			conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 			if err != nil {
-				results <- result{id: id}
+				results <- result{id: id, prompt: prompt, err: err}
 				return
 			}
 			defer conn.Close()
 			conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
+			var connected bridge.ServerFrame
+			if err := conn.ReadJSON(&connected); err != nil {
+				results <- result{id: id, prompt: prompt, err: err}
+				return
+			}
+			if connected.Type != "connected" {
+				results <- result{id: id, prompt: prompt, err: io.ErrUnexpectedEOF}
+				return
+			}
+
+			if err := conn.WriteJSON(bridge.ClientFrame{Type: "stdin", Data: prompt + "\n"}); err != nil {
+				results <- result{id: id, prompt: prompt, err: err}
+				return
+			}
+
 			var combined strings.Builder
-			for {
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 				var f bridge.ServerFrame
 				if err := conn.ReadJSON(&f); err != nil {
-					break
+					if websocket.IsUnexpectedCloseError(err) {
+						results <- result{id: id, prompt: prompt, err: err}
+						return
+					}
+					if strings.Contains(err.Error(), "i/o timeout") {
+						continue
+					}
+					results <- result{id: id, prompt: prompt, err: err}
+					return
 				}
 				if f.Type == "stdout" {
 					combined.WriteString(f.Data)
+					if strings.Contains(combined.String(), prompt) {
+						results <- result{id: id, prompt: prompt, output: combined.String()}
+						return
+					}
 				}
-				if f.Type == "exit" {
-					break
+				if f.Type == "error" {
+					results <- result{id: id, prompt: prompt, err: io.ErrUnexpectedEOF}
+					return
 				}
 			}
-			results <- result{id: id, output: combined.String()}
+
+			results <- result{
+				id:     id,
+				prompt: prompt,
+				output: combined.String(),
+				err:    context.DeadlineExceeded,
+			}
 		}()
 	}
 
@@ -1089,6 +1136,9 @@ func TestConcurrentSessions(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < len(prompts); i++ {
 		r := <-results
+		if r.err != nil {
+			t.Fatalf("session %s (%s) failed: %v", r.id, r.prompt, r.err)
+		}
 		for _, p := range prompts {
 			if strings.Contains(r.output, p) {
 				if seen[p] {
