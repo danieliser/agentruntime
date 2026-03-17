@@ -11,13 +11,12 @@ graph TB
     Sidecar[Sidecar v2 :9090]
 
     Client -->|HTTP/WS| AgentD
-    AgentD -->|docker run -d -p 0:9090| DockerRT
-    DockerRT -->|WS dial| Container
-    Container --- Sidecar
+    AgentD -->|"docker run -d -p 0:9090<br/>(ephemeral host port)"| DockerRT
+    DockerRT -->|"docker port → host:N<br/>WS dial localhost:N"| Sidecar
 
     subgraph Container
         Sidecar -->|spawn + stdio| Agent[Agent Process]
-        MCP[IDE MCP WS :random] -.->|tools/context| Agent
+        MCP["IDE MCP WS :random<br/>(localhost only)"] -.->|tools/context| Agent
     end
 ```
 
@@ -33,15 +32,16 @@ sequenceDiagram
 
     C->>H: POST /sessions {agent:"claude", prompt:"fix the bug"}
     H->>H: docker run -d -p 0:9090 agentruntime-agent
-    H->>S: WS connect ws://container:9090/ws
+    H->>S: docker port → host:N, WS dial localhost:N/ws
 
-    Note over S: Start MCP server on random port
-    S->>MCP: Listen on :N, write lock file
+    Note over S: Start MCP server on random port (localhost only)
+    S->>MCP: Listen on 127.0.0.1:0, write lock file
 
-    Note over S: Spawn Claude with dual channels
-    S->>CL: claude --output-format stream-json<br/>--input-format stream-json<br/>--verbose --dangerously-skip-permissions<br/>--ide --session-id {uuid}
+    Note over S: Spawn Claude with dual simultaneous channels
+    S->>CL: claude --output-format stream-json<br/>--input-format stream-json<br/>--verbose --include-partial-messages<br/>--dangerously-skip-permissions<br/>--ide --session-id {uuid}
+    Note right of CL: Channel A: MCP WS on localhost:N<br/>(tools, context injection, selection_changed)<br/>Channel B: stdio JSONL<br/>(all input/output, prompts, results)
 
-    CL->>MCP: WS connect (Channel A: tools)
+    CL->>MCP: WS connect (Channel A: tools + context)
     MCP->>CL: initialize response + tools list
 
     C->>H: WS: {type:"prompt", data:{content:"fix the bug"}}
@@ -61,6 +61,11 @@ sequenceDiagram
 
     CL->>MCP: tools/call: getDiagnostics
     MCP->>CL: {content:[{type:"text",text:"0 errors"}]}
+
+    Note over S: Auto-approve tool permission requests
+    CL->>S: stdout: {type:"control_request",<br/>request:{subtype:"can_use_tool", request_id:"..."}}
+    S->>CL: stdin: {type:"control_response",<br/>response:{request_id:"...", behavior:"allow"}}
+    Note right of S: Sidecar auto-approves all can_use_tool<br/>requests — never forwarded to client
 
     CL->>S: stdout: {type:"result", subtype:"success",<br/>cost_usd:0.02, session_id:"..."}
     S->>H: {type:"result", data:{cost_usd:0.02, session_id:"..."}}
@@ -87,10 +92,11 @@ sequenceDiagram
 
     C->>H: POST /sessions {agent:"codex", prompt:"fix the bug"}
     H->>H: docker run -d -p 0:9090 agentruntime-agent
-    H->>S: WS connect ws://container:9090/ws
+    H->>S: docker port → host:N, WS dial localhost:N/ws
 
-    Note over S: Spawn Codex app-server
-    S->>CX: codex app-server --listen stdio://
+    Note over S: Spawn Codex (app-server or exec mode)
+    alt Interactive mode (no prompt in request)
+    S->>CX: codex app-server --listen stdio:// [--model M]
     S->>CX: {method:"initialize", id:0, params:{clientInfo:{name:"agentruntime"}}}
     CX->>S: {id:0, result:{userAgent:"codex-cli/0.115.0"}}
     S->>CX: {method:"initialized"}
@@ -127,7 +133,21 @@ sequenceDiagram
     C->>H: WS: {type:"steer", data:{content:"focus on DB"}}
     H->>S: forward steer
     S->>CX: {method:"turn/steer", id:3, params:{<br/>threadId:"tid-123",<br/>expectedTurnId:"turn-456",<br/>input:[{type:"text",text:"focus on DB"}]}}
+
+    else Prompt mode (fire-and-forget)
+    Note over S: codex exec --json --full-auto [--model M]<br/>--skip-git-repo-check "fix the bug"
+    S->>CX: spawn process, close stdin
+    CX->>S: JSONL: {type:"thread.started",...}
+    CX->>S: JSONL: {type:"item.started",...}
+    CX->>S: JSONL: {type:"item.completed",...}
+    CX->>S: JSONL: {type:"turn.completed",...}
+    Note right of S: No JSON-RPC handshake, no steering,<br/>no stdin input. Flat JSONL events only.
+    end
 ```
+
+## Event Normalization
+
+All agent events pass through per-agent normalization (`cmd/sidecar/normalize.go`) before reaching the external WS endpoint. Both Claude and Codex backends emit raw, agent-specific events; the sidecar's `normalizeEvent()` maps them to the standard `NormalizedAgentMessage`, `NormalizedToolUse`, `NormalizedToolResult`, and `NormalizedResult` shapes. Clients always receive the unified schema regardless of which agent produced the event.
 
 ## Unified External WS Protocol
 
@@ -191,14 +211,15 @@ graph TD
 
 ## Data Flow Summary
 
-| Layer | Claude | Codex |
-|-------|--------|-------|
-| **Spawn** | `claude --output-format stream-json --input-format stream-json --ide` | `codex app-server --listen stdio://` |
-| **Output channel** | JSONL on stdout (Channel B) | JSON-RPC notifications on stdout |
-| **Input channel** | JSONL on stdin | JSON-RPC requests on stdin |
-| **Tool channel** | IDE MCP WebSocket (Channel A) | Same JSON-RPC channel |
-| **Steering** | interrupt control_request + new user message | `turn/steer` (native) |
-| **Context injection** | `selection_changed` via MCP WS | Not supported natively |
-| **Session resume** | `--session-id` + `--resume` | `thread/resume` JSON-RPC |
-| **Auth** | OAuth via credentials.json mount | OAuth via auth.json mount |
-| **Output format** | Anthropic API message objects | Codex item events with deltas |
+| Layer | Claude | Codex (app-server) | Codex (exec) |
+|-------|--------|-------|------|
+| **Spawn** | `claude --output-format stream-json --input-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --ide --session-id {uuid}` | `codex app-server --listen stdio:// [--model M]` | `codex exec --json --full-auto --skip-git-repo-check [--model M] "prompt"` |
+| **Output channel** | JSONL on stdout (Channel B — simultaneous with MCP WS) | JSON-RPC notifications on stdout | Flat JSONL on stdout |
+| **Input channel** | JSONL on stdin (Channel B) | JSON-RPC requests on stdin | None (stdin closed) |
+| **Tool channel** | IDE MCP WebSocket on localhost:random (Channel A — simultaneous with stdio) | Same JSON-RPC channel | N/A |
+| **Steering** | interrupt control_request + new user message | `turn/steer` (native) | Not supported |
+| **Tool approval** | `control_request` with `can_use_tool` auto-approved by sidecar | `requestApproval` auto-accepted by sidecar | N/A (`--full-auto`) |
+| **Context injection** | `selection_changed` via MCP WS | Not supported natively | Not supported |
+| **Session resume** | `--session-id` + `--resume` | `thread/resume` JSON-RPC | N/A (one-shot) |
+| **Auth** | OAuth via credentials.json mount | OAuth via auth.json mount | OAuth via auth.json mount |
+| **Output format** | Anthropic API message objects | Codex item events with deltas | Codex flat JSONL events |
