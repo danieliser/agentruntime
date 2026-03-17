@@ -274,7 +274,7 @@ type fakeCodexSpawner struct {
 	proc *fakeCodexProcess
 }
 
-func (s *fakeCodexSpawner) spawn(_ context.Context, cmd []string) (*codexTransport, error) {
+func (s *fakeCodexSpawner) spawn(_ context.Context, cmd []string, _ []string) (*codexTransport, error) {
 	s.mu.Lock()
 	s.cmd = append([]string(nil), cmd...)
 	s.mu.Unlock()

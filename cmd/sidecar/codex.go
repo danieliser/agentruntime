@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -54,7 +55,7 @@ type codexBackend struct {
 	stderrBuf strings.Builder
 }
 
-type codexSpawner func(ctx context.Context, cmd []string) (*codexTransport, error)
+type codexSpawner func(ctx context.Context, cmd []string, env []string) (*codexTransport, error)
 
 type codexTransport struct {
 	stdin   io.WriteCloser
@@ -133,12 +134,15 @@ func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner co
 	}
 }
 
-func spawnCodexAppServer(ctx context.Context, cmdArgs []string) (*codexTransport, error) {
+func spawnCodexAppServer(ctx context.Context, cmdArgs []string, env []string) (*codexTransport, error) {
 	if len(cmdArgs) == 0 {
 		return nil, errors.New("missing codex command")
 	}
 
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)
@@ -205,7 +209,7 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 		cmd = append(cmd, "--model", b.model)
 	}
 	cmd = append(cmd, b.prompt)
-	transport, err := b.spawner(b.ctx, cmd)
+	transport, err := b.spawner(b.ctx, cmd, b.envSlice())
 	if err != nil {
 		b.setRunning(false)
 		b.emitError(err.Error())
@@ -306,7 +310,7 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	if b.model != "" {
 		spawnCmd = append(spawnCmd, "--model", b.model)
 	}
-	transport, err := b.spawner(b.ctx, spawnCmd)
+	transport, err := b.spawner(b.ctx, spawnCmd, b.envSlice())
 	if err != nil {
 		b.setRunning(false)
 		b.emitError(err.Error())
@@ -885,6 +889,17 @@ func (b *codexBackend) setRunning(v bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.running = v
+}
+
+func (b *codexBackend) envSlice() []string {
+	if len(b.extraEnv) == 0 {
+		return nil
+	}
+	env := make([]string, 0, len(b.extraEnv))
+	for k, v := range b.extraEnv {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 func rpcIDKey(id any) string {

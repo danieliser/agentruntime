@@ -30,8 +30,14 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 			hasContent = true
 		}
 		if cfg.Request.Claude != nil {
-			// MaxTurns and AllowedTools are Claude-specific — no schema field
-			// yet; they pass through the agent config struct if set.
+			if cfg.Request.Claude.MaxTurns > 0 {
+				ac.MaxTurns = cfg.Request.Claude.MaxTurns
+				hasContent = true
+			}
+			if len(cfg.Request.Claude.AllowedTools) > 0 {
+				ac.AllowedTools = cfg.Request.Claude.AllowedTools
+				hasContent = true
+			}
 		}
 		if cfg.Request.Codex != nil && cfg.Request.Codex.ApprovalMode != "" {
 			ac.ApprovalMode = cfg.Request.Codex.ApprovalMode

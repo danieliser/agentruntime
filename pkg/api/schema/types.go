@@ -73,6 +73,12 @@ type ClaudeConfig struct {
 	CredentialsPath string `json:"credentials_path,omitempty" yaml:"credentials_path,omitempty"` // → ~/.claude/credentials.json
 	MemoryPath      string `json:"memory_path,omitempty"      yaml:"memory_path,omitempty"`      // → ~/.claude/projects/{hash}/
 
+	// MaxTurns limits the number of agentic turns (Claude --max-turns).
+	MaxTurns int `json:"max_turns,omitempty" yaml:"max_turns,omitempty"`
+
+	// AllowedTools restricts which tools the agent can use (Claude --allowedTools).
+	AllowedTools []string `json:"allowed_tools,omitempty" yaml:"allowed_tools,omitempty"`
+
 	// OutputFormat is not user-configurable — the sidecar always uses
 	// "stream-json" for structured event streaming. Retained in the schema
 	// for backward compatibility with existing request payloads but ignored.
