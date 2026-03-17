@@ -26,6 +26,7 @@ type wsHandle struct {
 	containerID string
 	hostPort    string
 	cancel      context.CancelFunc
+	killFn      func() error // override for non-Docker runtimes
 	writeMu     sync.Mutex
 	metaMu      sync.RWMutex
 	cleanup     func()
@@ -249,8 +250,19 @@ func (h *wsHandle) Stderr() io.ReadCloser   { return nil }
 func (h *wsHandle) Wait() <-chan ExitResult { return h.done }
 
 func (h *wsHandle) Kill() error {
-	stopErr := exec.Command("docker", "stop", h.containerID).Run()
-	rmErr := exec.Command("docker", "rm", h.containerID).Run()
+	var killErr error
+	if h.killFn != nil {
+		killErr = h.killFn()
+	} else {
+		// Default: Docker container stop + remove
+		stopErr := exec.Command("docker", "stop", h.containerID).Run()
+		rmErr := exec.Command("docker", "rm", h.containerID).Run()
+		if stopErr != nil {
+			killErr = stopErr
+		} else {
+			killErr = rmErr
+		}
+	}
 
 	if h.cancel != nil {
 		h.cancel()
@@ -263,7 +275,7 @@ func (h *wsHandle) Kill() error {
 	}
 	h.runCleanup()
 
-	return errors.Join(stopErr, rmErr)
+	return killErr
 }
 
 func (h *wsHandle) PID() int { return 0 }

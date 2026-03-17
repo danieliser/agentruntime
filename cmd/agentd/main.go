@@ -128,6 +128,9 @@ func defaultDataDir() string {
 func newRuntime(name, dataDir string) (runtime.Runtime, error) {
 	switch name {
 	case "local":
+		return runtime.NewLocalSidecarRuntime(), nil
+	case "local-pipe":
+		// Legacy pipe-based local runtime (no sidecar, no structured events)
 		return runtime.NewLocalRuntime(), nil
 	case "docker":
 		return runtime.NewDockerRuntime(runtime.DockerConfig{
