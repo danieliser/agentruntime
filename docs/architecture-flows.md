@@ -157,12 +157,12 @@ graph LR
 
 ```mermaid
 graph TD
-    subgraph "Host (agentd)"
-        HD[~/.local/share/agentruntime/]
-        CS[claude-sessions/{session-id}/]
-        CXS[codex-sessions/{session-id}/]
-        LOGS[logs/{session-id}.ndjson]
-        CREDS[credentials/claude-credentials.json]
+    subgraph "Host agentd"
+        HD["~/.local/share/agentruntime/"]
+        CS["claude-sessions/session-id/"]
+        CXS["codex-sessions/session-id/"]
+        LOGS["logs/session-id.ndjson"]
+        CREDS["credentials/claude-credentials.json"]
     end
 
     subgraph "Container (/home/agent)"
@@ -171,7 +171,7 @@ graph TD
         CSet[.claude/settings.json]
         CMD[.claude/CLAUDE.md]
         CMcp[.claude/.mcp.json]
-        CProj[.claude/projects/{hash}/]
+        CProj[.claude/projects/hash/]
         CState[.claude.json → account state ro]
 
         CXC[.codex/ → session dir mount rw]
