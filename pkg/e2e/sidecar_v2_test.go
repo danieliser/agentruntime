@@ -28,18 +28,6 @@ var (
 	sidecarBuildErr  error
 )
 
-type Event struct {
-	Type      string         `json:"type"`
-	Data      map[string]any `json:"data,omitempty"`
-	Offset    int64          `json:"offset,omitempty"`
-	Timestamp int64          `json:"timestamp,omitempty"`
-}
-
-type Command struct {
-	Type string         `json:"type"`
-	Data map[string]any `json:"data,omitempty"`
-}
-
 type sidecarHealthResponse struct {
 	Status       string `json:"status"`
 	AgentRunning bool   `json:"agent_running"`
@@ -47,13 +35,13 @@ type sidecarHealthResponse struct {
 	SessionID    string `json:"session_id"`
 }
 
-func TestE2E_Sidecar_Health(t *testing.T) {
-	ctx := sidecarTestContext(t)
+func TestE2E_V2_Health(t *testing.T) {
+	t.Helper()
 
-	port, cleanup := startSidecarProcess(t, "/bin/echo")
+	port, cleanup := startSidecarLocal(t, `["echo","hello"]`, "")
 	defer cleanup()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", port), nil)
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", port), nil)
 	if err != nil {
 		t.Fatalf("create health request: %v", err)
 	}
@@ -84,233 +72,133 @@ func TestE2E_Sidecar_Health(t *testing.T) {
 	}
 }
 
-func TestE2E_Sidecar_ClaudeStructuredOutput(t *testing.T) {
-	if !agentAvailable("claude") {
-		t.Skip("claude not in PATH")
-	}
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, "claude")
+func TestE2E_V2_EchoAgent(t *testing.T) {
+	port, cleanup := startSidecarLocal(t, `["echo","hello"]`, "")
 	defer cleanup()
 
-	conn := dialSidecarWS(t, port)
+	conn := dialWS(t, port)
 	defer conn.Close()
 
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "Reply with exactly SIDECAR_CLAUDE_OK and no other text.",
-	})
-
-	events := collectEvents(t, conn, 45*time.Second)
-	assertHasAgentMessageWithText(t, events, "SIDECAR_CLAUDE_OK")
-	assertHasAgentMessageUsage(t, events)
-	assertHasEventType(t, events, "result")
+	events := readEvents(t, conn, 3*time.Second)
+	assertEventText(t, events, "stdout", "hello")
+	assertEventType(t, events, "exit")
 }
 
-func TestE2E_Sidecar_CodexStructuredOutput(t *testing.T) {
-	if !agentAvailable("codex") {
-		t.Skip("codex not in PATH")
-	}
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, "codex")
+func TestE2E_V2_Replay(t *testing.T) {
+	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	conn := dialSidecarWS(t, port)
-	defer conn.Close()
-
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "Reply with exactly SIDECAR_CODEX_OK and no other text.",
+	conn := dialWS(t, port)
+	sendCommand(t, conn, map[string]any{
+		"type": "prompt",
+		"data": map[string]any{"content": "replay marker"},
 	})
 
-	events := collectEvents(t, conn, 45*time.Second)
-	assertHasAgentMessageWithText(t, events, "SIDECAR_CODEX_OK")
-	assertHasEventType(t, events, "result")
-}
-
-func TestE2E_Sidecar_CodexToolCall(t *testing.T) {
-	if !agentAvailable("codex") {
-		t.Skip("codex not in PATH")
-	}
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, "codex")
-	defer cleanup()
-
-	conn := dialSidecarWS(t, port)
-	defer conn.Close()
-
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "Use a tool to run `printf SIDECAR_TOOL_OK` and then tell me the result.",
-	})
-
-	events := collectEvents(t, conn, 45*time.Second)
-	assertHasEventType(t, events, "tool_use")
-	assertHasEventType(t, events, "tool_result")
-}
-
-func TestE2E_Sidecar_ClaudeInterrupt(t *testing.T) {
-	if !agentAvailable("claude") {
-		t.Skip("claude not in PATH")
-	}
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, "claude")
-	defer cleanup()
-
-	conn := dialSidecarWS(t, port)
-	defer conn.Close()
-
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "Count from 1 to 400 slowly, one number per line, and do not summarize.",
-	})
-
-	initial, ok := waitForEventType(t, conn, 25*time.Second, "agent_message")
-	if !ok {
-		t.Fatal("timed out waiting for initial Claude response")
-	}
-	if text := eventText(initial); strings.Contains(text, "SIDECAR_INTERRUPT_OK") {
-		t.Fatalf("unexpected interrupt marker in initial response: %q", text)
-	}
-
-	sendCommand(t, conn, "interrupt", nil)
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "Reply with exactly SIDECAR_INTERRUPT_OK and no other text.",
-	})
-
-	deadline := time.Now().Add(30 * time.Second)
-	var followup []Event
-	for time.Now().Before(deadline) {
-		batch := collectEvents(t, conn, time.Until(deadline))
-		followup = append(followup, batch...)
-		if hasAgentMessageWithText(followup, "SIDECAR_INTERRUPT_OK") {
-			assertHasEventType(t, followup, "result")
-			return
-		}
-		if hasEventType(followup, "exit") {
-			break
-		}
-	}
-
-	t.Fatalf("expected interrupted Claude response to change course, got events: %#v", followup)
-}
-
-func TestE2E_Sidecar_ReplayOnReconnect(t *testing.T) {
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, fakeClaudeBinary(t))
-	defer cleanup()
-
-	conn := dialSidecarWS(t, port)
-
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "replay marker",
-	})
-
-	firstPass := collectEvents(t, conn, 10*time.Second)
+	firstPass := readEvents(t, conn, 1500*time.Millisecond)
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close initial websocket: %v", err)
 	}
 
-	assertHasAgentMessageWithText(t, firstPass, "replay marker")
-	assertHasEventType(t, firstPass, "result")
+	assertEventText(t, firstPass, "stdout", "replay marker")
 
-	replayConn := dialSidecarWSPath(t, port, "/ws?since=0")
+	replayConn := dialWSPath(t, port, "/ws?since=0")
 	defer replayConn.Close()
 
-	replayed := collectEvents(t, replayConn, 5*time.Second)
-	assertHasAgentMessageWithText(t, replayed, "replay marker")
-	assertHasEventType(t, replayed, "result")
+	replayed := readEvents(t, replayConn, 1500*time.Millisecond)
+	assertEventText(t, replayed, "stdout", "replay marker")
 }
 
-func TestE2E_Sidecar_MultipleClients(t *testing.T) {
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, fakeClaudeBinary(t))
+func TestE2E_V2_MultipleClients(t *testing.T) {
+	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	connA := dialSidecarWS(t, port)
+	connA := dialWS(t, port)
 	defer connA.Close()
-
-	connB := dialSidecarWS(t, port)
+	connB := dialWS(t, port)
 	defer connB.Close()
 
-	sendCommand(t, connA, "prompt", map[string]any{
-		"content": "broadcast marker",
+	sendCommand(t, connA, map[string]any{
+		"type": "prompt",
+		"data": map[string]any{"content": "broadcast marker"},
 	})
 
-	type eventResult struct {
-		events []Event
-		err    error
-	}
+	first := readEvents(t, connA, 1500*time.Millisecond)
+	second := readEvents(t, connB, 1500*time.Millisecond)
 
-	results := make(chan eventResult, 2)
-	go func() {
-		events, err := collectEventsWithError(connA, 10*time.Second)
-		results <- eventResult{events: events, err: err}
-	}()
-	go func() {
-		events, err := collectEventsWithError(connB, 10*time.Second)
-		results <- eventResult{events: events, err: err}
-	}()
-
-	first := <-results
-	second := <-results
-	if first.err != nil {
-		t.Fatalf("collect events from first client: %v", first.err)
-	}
-	if second.err != nil {
-		t.Fatalf("collect events from second client: %v", second.err)
-	}
-
-	assertHasAgentMessageWithText(t, first.events, "broadcast marker")
-	assertHasEventType(t, first.events, "result")
-	assertHasAgentMessageWithText(t, second.events, "broadcast marker")
-	assertHasEventType(t, second.events, "result")
+	assertEventText(t, first, "stdout", "broadcast marker")
+	assertEventText(t, second, "stdout", "broadcast marker")
 }
 
-func TestE2E_Sidecar_PromptCommand(t *testing.T) {
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, fakeClaudeBinary(t))
+func TestE2E_V2_PromptCommand(t *testing.T) {
+	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	conn := dialSidecarWS(t, port)
+	conn := dialWS(t, port)
 	defer conn.Close()
 
-	sendCommand(t, conn, "prompt", map[string]any{
-		"content": "prompt passthrough marker",
+	sendCommand(t, conn, map[string]any{
+		"type": "prompt",
+		"data": map[string]any{"content": "prompt passthrough marker"},
 	})
 
-	events := collectEvents(t, conn, 10*time.Second)
-	assertHasAgentMessageWithText(t, events, "prompt passthrough marker")
-	assertHasEventType(t, events, "result")
+	events := readEvents(t, conn, 1500*time.Millisecond)
+	assertEventText(t, events, "stdout", "prompt passthrough marker")
 }
 
-func TestE2E_Sidecar_UnknownCommand(t *testing.T) {
-	sidecarTestContext(t)
-
-	port, cleanup := startSidecarProcess(t, fakeClaudeBinary(t))
+func TestE2E_V2_UnknownCommand(t *testing.T) {
+	port, cleanup := startSidecarLocal(t, commandSpec(t, writeMockAgent(t, mockPromptEchoScript)), "")
 	defer cleanup()
 
-	conn := dialSidecarWS(t, port)
+	conn := dialWS(t, port)
 	defer conn.Close()
 
-	sendCommand(t, conn, "totally_unknown", map[string]any{
-		"content": "ignored",
+	sendCommand(t, conn, map[string]any{
+		"type": "totally_unknown",
+		"data": map[string]any{"content": "ignored"},
 	})
 
-	events := collectEvents(t, conn, 2*time.Second)
-	assertHasErrorContaining(t, events, "unknown command type")
+	events := readEvents(t, conn, 1500*time.Millisecond)
+	assertEventText(t, events, "error", "unknown command type")
 }
 
-func startSidecarProcess(t *testing.T, agentCmd string) (int, func()) {
+func TestE2E_V2_ClaudePromptMode(t *testing.T) {
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skip("claude not in PATH")
+	}
+
+	port, cleanup := startSidecarLocal(t, commandSpec(t, claudePath), "Reply with exactly SIDECAR_V2_CLAUDE_OK and no other text.")
+	defer cleanup()
+
+	conn := dialWS(t, port)
+	defer conn.Close()
+
+	events := readEvents(t, conn, 45*time.Second)
+	assertEventText(t, events, "agent_message", "SIDECAR_V2_CLAUDE_OK")
+	assertNormalizedResult(t, events)
+}
+
+func TestE2E_V2_CodexPromptMode(t *testing.T) {
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex not in PATH")
+	}
+
+	port, cleanup := startSidecarLocal(t, commandSpec(t, codexPath), "Reply with exactly SIDECAR_V2_CODEX_OK and no other text.")
+	defer cleanup()
+
+	conn := dialWS(t, port)
+	defer conn.Close()
+
+	events := readEvents(t, conn, 45*time.Second)
+	assertEventText(t, events, "agent_message", "SIDECAR_V2_CODEX_OK")
+	assertNormalizedResult(t, events)
+}
+
+func startSidecarLocal(t *testing.T, agentCmd, prompt string) (int, func()) {
 	t.Helper()
 
-	cmdArgs := strings.Fields(strings.TrimSpace(agentCmd))
-	if len(cmdArgs) == 0 {
-		t.Fatal("agentCmd is required")
-	}
-
+	cmdArgs := parseCommandSpec(t, agentCmd)
 	encodedCmd, err := json.Marshal(cmdArgs)
 	if err != nil {
 		t.Fatalf("marshal AGENT_CMD: %v", err)
@@ -331,6 +219,9 @@ func startSidecarProcess(t *testing.T, agentCmd string) (int, func()) {
 		fmt.Sprintf("SIDECAR_PORT=%d", port),
 		"HOME="+homeDir,
 	)
+	if prompt != "" {
+		cmd.Env = append(cmd.Env, "AGENT_PROMPT="+prompt)
+	}
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sidecar: %v", err)
@@ -354,7 +245,7 @@ func startSidecarProcess(t *testing.T, agentCmd string) (int, func()) {
 				t.Logf("sidecar exit error: %v", err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Logf("timed out waiting for sidecar to exit")
+			t.Log("timed out waiting for sidecar to exit")
 		}
 
 		if t.Failed() && logs.Len() > 0 {
@@ -365,12 +256,12 @@ func startSidecarProcess(t *testing.T, agentCmd string) (int, func()) {
 	return port, cleanup
 }
 
-func dialSidecarWS(t *testing.T, port int) *websocket.Conn {
+func dialWS(t *testing.T, port int) *websocket.Conn {
 	t.Helper()
-	return dialSidecarWSPath(t, port, "/ws")
+	return dialWSPath(t, port, "/ws?since=0")
 }
 
-func dialSidecarWSPath(t *testing.T, port int, path string) *websocket.Conn {
+func dialWSPath(t *testing.T, port int, path string) *websocket.Conn {
 	t.Helper()
 
 	url := fmt.Sprintf("ws://127.0.0.1:%d%s", port, path)
@@ -386,53 +277,37 @@ func dialSidecarWSPath(t *testing.T, port int, path string) *websocket.Conn {
 	return conn
 }
 
-func sendCommand(t *testing.T, conn *websocket.Conn, cmdType string, data map[string]any) {
+func sendCommand(t *testing.T, conn *websocket.Conn, cmd map[string]any) {
 	t.Helper()
-
-	if err := conn.WriteJSON(Command{
-		Type: cmdType,
-		Data: data,
-	}); err != nil {
-		t.Fatalf("write command %q: %v", cmdType, err)
+	if err := conn.WriteJSON(cmd); err != nil {
+		t.Fatalf("write command: %v", err)
 	}
 }
 
-func collectEvents(t *testing.T, conn *websocket.Conn, timeout time.Duration) []Event {
+func readEvents(t *testing.T, conn *websocket.Conn, timeout time.Duration) []map[string]any {
 	t.Helper()
 
-	events, err := collectEventsWithError(conn, timeout)
-	if err != nil {
-		t.Fatalf("read events: %v", err)
-	}
-	return events
-}
-
-func collectEventsWithError(conn *websocket.Conn, timeout time.Duration) ([]Event, error) {
-	deadline := time.Now().Add(timeout)
-	var events []Event
-
+	var events []map[string]any
 	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return events, nil
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
 		}
 
-		if err := conn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
-			return nil, err
-		}
-
-		var event Event
+		var event map[string]any
 		if err := conn.ReadJSON(&event); err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return events, nil
+				return events
 			}
-			return nil, err
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				return events
+			}
+			t.Fatalf("read event: %v", err)
 		}
 
 		events = append(events, event)
-		if event.Type == "result" || event.Type == "exit" {
-			return events, nil
+		if eventType(event) == "result" || eventType(event) == "exit" {
+			return events
 		}
 	}
 }
@@ -465,15 +340,6 @@ func buildSidecarBinary(t *testing.T) string {
 	return sidecarBinary
 }
 
-func fakeClaudeBinary(t *testing.T) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fake-claude")
-	writeExecutable(t, path, fakeClaudeSidecarScript)
-	return path
-}
-
 func waitForSidecarHealth(t *testing.T, port int) {
 	t.Helper()
 
@@ -494,7 +360,7 @@ func waitForSidecarHealth(t *testing.T, port int) {
 	t.Fatalf("timed out waiting for sidecar health on port %d", port)
 }
 
-func sidecarTestContext(t *testing.T) context.Context {
+func testContext(t *testing.T) context.Context {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), perTestTimeout)
@@ -502,156 +368,111 @@ func sidecarTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
-func waitForEventType(t *testing.T, conn *websocket.Conn, timeout time.Duration, wantType string) (Event, bool) {
+func parseCommandSpec(t *testing.T, spec string) []string {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if err := conn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
-			t.Fatalf("set read deadline: %v", err)
-		}
-
-		var event Event
-		if err := conn.ReadJSON(&event); err != nil {
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				return Event{}, false
-			}
-			t.Fatalf("read event: %v", err)
-		}
-
-		if event.Type == wantType {
-			return event, true
-		}
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		t.Fatal("agentCmd is required")
 	}
 
-	return Event{}, false
-}
-
-func assertHasEventType(t *testing.T, events []Event, want string) {
-	t.Helper()
-
-	if !hasEventType(events, want) {
-		t.Fatalf("expected event type %q in %#v", want, events)
+	var cmd []string
+	if strings.HasPrefix(spec, "[") {
+		if err := json.Unmarshal([]byte(spec), &cmd); err != nil {
+			t.Fatalf("parse AGENT_CMD JSON: %v", err)
+		}
+	} else {
+		cmd = strings.Fields(spec)
 	}
-}
-
-func assertHasAgentMessageWithText(t *testing.T, events []Event, needle string) {
-	t.Helper()
-
-	if !hasAgentMessageWithText(events, needle) {
-		t.Fatalf("expected agent_message containing %q in %#v", needle, events)
+	if len(cmd) == 0 || strings.TrimSpace(cmd[0]) == "" {
+		t.Fatal("agentCmd must contain a command")
 	}
+	return cmd
 }
 
-func assertHasAgentMessageUsage(t *testing.T, events []Event) {
+func commandSpec(t *testing.T, binary string, args ...string) string {
 	t.Helper()
 
+	cmd := append([]string{binary}, args...)
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal command spec: %v", err)
+	}
+	return string(data)
+}
+
+func writeMockAgent(t *testing.T, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "mock-agent")
+	writeExecutable(t, path, content)
+	return path
+}
+
+func assertEventType(t *testing.T, events []map[string]any, want string) {
+	t.Helper()
 	for _, event := range events {
-		if event.Type != "agent_message" {
-			continue
-		}
-		if usage, ok := event.Data["usage"].(map[string]any); ok && len(usage) > 0 {
+		if eventType(event) == want {
 			return
 		}
 	}
-
-	t.Fatalf("expected agent_message usage in %#v", events)
+	t.Fatalf("expected event type %q in %#v", want, events)
 }
 
-func assertHasErrorContaining(t *testing.T, events []Event, needle string) {
+func assertEventText(t *testing.T, events []map[string]any, wantType, needle string) {
 	t.Helper()
-
 	for _, event := range events {
-		if event.Type != "error" {
+		if eventType(event) != wantType {
 			continue
 		}
 		if strings.Contains(eventText(event), needle) {
 			return
 		}
 	}
-
-	t.Fatalf("expected error containing %q in %#v", needle, events)
+	t.Fatalf("expected %s event containing %q in %#v", wantType, needle, events)
 }
 
-func hasEventType(events []Event, want string) bool {
-	for _, event := range events {
-		if event.Type == want {
-			return true
-		}
-	}
-	return false
-}
+func assertNormalizedResult(t *testing.T, events []map[string]any) {
+	t.Helper()
 
-func hasAgentMessageWithText(events []Event, needle string) bool {
 	for _, event := range events {
-		if event.Type != "agent_message" {
+		if eventType(event) != "result" {
 			continue
 		}
-		if strings.Contains(eventText(event), needle) {
-			return true
+		data, _ := event["data"].(map[string]any)
+		if data == nil {
+			continue
+		}
+		if _, ok := data["status"].(string); ok {
+			return
 		}
 	}
-	return false
+
+	t.Fatalf("expected normalized result event with status in %#v", events)
 }
 
-func eventText(event Event) string {
-	if event.Data == nil {
+func eventType(event map[string]any) string {
+	value, _ := event["type"].(string)
+	return value
+}
+
+func eventText(event map[string]any) string {
+	data, _ := event["data"].(map[string]any)
+	if data == nil {
 		return ""
 	}
 	for _, key := range []string{"text", "message"} {
-		if value, ok := event.Data[key].(string); ok {
+		if value, ok := data[key].(string); ok {
 			return value
 		}
 	}
 	return ""
 }
 
-const fakeClaudeSidecarScript = `#!/bin/sh
-
-session_id=""
-
-while [ $# -gt 0 ]; do
-	case "$1" in
-		--session-id)
-			session_id="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-json_escape() {
-	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-extract_prompt() {
-	printf '%s\n' "$1" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p'
-}
+const mockPromptEchoScript = `#!/bin/sh
+set -eu
 
 while IFS= read -r line; do
-	case "$line" in
-		*"\"type\":\"control_request\""*)
-			continue
-			;;
-	esac
-
-	prompt=$(extract_prompt "$line")
-	if [ -z "$prompt" ]; then
-		continue
-	fi
-
-	escaped=$(json_escape "$prompt")
-
-	if printf '%s' "$prompt" | grep -qi 'tool'; then
-		printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$escaped\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"cmd\":\"printf SIDE_CAR_TOOL\"}}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}"
-	else
-		printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$escaped\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}"
-	fi
-
-	printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"$session_id\",\"duration_ms\":5,\"num_turns\":1}"
+	printf '%s\n' "$line"
 done
 `

@@ -47,6 +47,38 @@ func TestExternalWS_HealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestExternalWS_HealthEndpointReportsStartError(t *testing.T) {
+	backend := newMockBackend("sess-health-error")
+	backend.startErr = errors.New("spawn failed")
+	server, ts := newTestExternalWSServer(t, "claude", backend)
+	defer server.Close()
+
+	conn := mustDialWS(t, ts, "")
+	event := readEvent(t, conn)
+	_ = conn.Close()
+
+	if event.Type != "error" {
+		t.Fatalf("expected error event, got %q", event.Type)
+	}
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var payload healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if payload.Status != "error" {
+		t.Fatalf("expected status error, got %q", payload.Status)
+	}
+	if payload.ErrorDetail != "spawn failed" {
+		t.Fatalf("expected error_detail spawn failed, got %q", payload.ErrorDetail)
+	}
+}
+
 func TestExternalWS_EventBroadcast(t *testing.T) {
 	backend := newMockBackend("sess-broadcast")
 	server, ts := newTestExternalWSServer(t, "claude", backend)
@@ -142,6 +174,67 @@ func TestExternalWS_ReplayOnReconnect(t *testing.T) {
 	}
 	if got, _ := data["text"].(string); got != "second" {
 		t.Fatalf("expected replay text second, got %q", got)
+	}
+}
+
+func TestErrorPropagation_SpawnFailure(t *testing.T) {
+	backend := newMockBackend("sess-spawn-failure")
+	backend.startErr = errors.New("failed to start agent: permission denied")
+	server, ts := newTestExternalWSServer(t, "claude", backend)
+	defer server.Close()
+
+	conn := mustDialWS(t, ts, "")
+	defer conn.Close()
+
+	event := readEvent(t, conn)
+	if event.Type != "error" {
+		t.Fatalf("expected error event, got %q", event.Type)
+	}
+
+	data, ok := event.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload map, got %T", event.Data)
+	}
+	if got, _ := data["message"].(string); got != "failed to start agent: permission denied" {
+		t.Fatalf("expected error message, got %q", got)
+	}
+}
+
+func TestErrorPropagation_AgentCrash(t *testing.T) {
+	backend := newMockBackend("sess-agent-crash")
+	server, ts := newTestExternalWSServer(t, "claude", backend)
+	defer server.Close()
+
+	conn := mustDialWS(t, ts, "")
+	defer conn.Close()
+
+	backend.waitCh <- backendExit{Code: 1, ErrorDetail: "panic: boom\nstderr line"}
+
+	systemEvent := readEvent(t, conn)
+	if systemEvent.Type != "system" {
+		t.Fatalf("expected system event, got %q", systemEvent.Type)
+	}
+	systemData, ok := systemEvent.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected system payload map, got %T", systemEvent.Data)
+	}
+	if got, _ := systemData["subtype"].(string); got != "agent_error" {
+		t.Fatalf("expected subtype agent_error, got %q", got)
+	}
+
+	exitEvent := readEvent(t, conn)
+	if exitEvent.Type != "exit" {
+		t.Fatalf("expected exit event, got %q", exitEvent.Type)
+	}
+	if exitEvent.ExitCode == nil || *exitEvent.ExitCode != 1 {
+		t.Fatalf("expected exit_code 1, got %v", exitEvent.ExitCode)
+	}
+	exitPayload, ok := exitEvent.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected exit payload map, got %T", exitEvent.Data)
+	}
+	if got, _ := exitPayload["error_detail"].(string); got != "panic: boom\nstderr line" {
+		t.Fatalf("expected error_detail in exit payload, got %q", got)
 	}
 }
 
@@ -280,6 +373,7 @@ type mockBackend struct {
 	sessionID string
 	events    chan Event
 	waitCh    chan backendExit
+	startErr  error
 
 	mu        sync.RWMutex
 	running   bool
@@ -296,6 +390,10 @@ func newMockBackend(sessionID string) *mockBackend {
 }
 
 func (b *mockBackend) Start(ctx context.Context) error {
+	if b.startErr != nil {
+		return b.startErr
+	}
+
 	b.mu.Lock()
 	b.running = true
 	b.mu.Unlock()

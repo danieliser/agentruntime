@@ -136,6 +136,85 @@ func TestWSHandle_ExitCode(t *testing.T) {
 	}
 }
 
+func TestErrorPropagation_WSDisconnect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		if err := conn.WriteJSON(wsServerFrame{
+			Type: "error",
+			Data: json.RawMessage(`{"message":"sidecar lost upstream connection"}`),
+		}); err != nil {
+			t.Fatalf("write error frame: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	handle := dialWSHandle(t, server, "container-disconnect", -1)
+
+	select {
+	case result := <-handle.Wait():
+		if result.Err == nil {
+			t.Fatal("expected wait error on websocket disconnect")
+		}
+		if !strings.Contains(result.Err.Error(), "sidecar lost upstream connection") {
+			t.Fatalf("expected disconnect error to include sidecar detail, got %v", result.Err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for disconnect result")
+	}
+}
+
+func TestWSHandle_RecoveredUnexpectedCloseCompletes(t *testing.T) {
+	connected := make(chan struct{}, 1)
+	closeConn := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+
+		if err := conn.WriteJSON(wsServerFrame{Type: "connected"}); err != nil {
+			t.Fatalf("write connected: %v", err)
+		}
+		connected <- struct{}{}
+		<-closeConn
+	}))
+	defer server.Close()
+
+	handle := dialWSHandle(t, server, "container-recovered", -1)
+	handle.setRecoveryInfo(&RecoveryInfo{
+		SessionID: "sess-recovered",
+		TaskID:    "task-recovered",
+	})
+
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for websocket connect")
+	}
+
+	close(closeConn)
+
+	select {
+	case result := <-handle.Wait():
+		if result.Err != nil {
+			t.Fatalf("wait returned error: %v", result.Err)
+		}
+		if result.Code != 0 {
+			t.Fatalf("expected zero exit code on recovered disconnect, got %d", result.Code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for recovered disconnect result")
+	}
+}
+
 func TestWSHandle_Kill(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "docker.log")
 	t.Setenv("WSHANDLE_DOCKER_LOG", logFile)
