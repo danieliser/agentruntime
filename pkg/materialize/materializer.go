@@ -174,6 +174,15 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 	if err != nil {
 		return "", err
 	}
+	// Append workspace trust and sensible defaults that the flat TOML
+	// marshaler can't represent (nested table sections).
+	tomlData = append(tomlData, []byte("\n"+
+		"# agentruntime defaults\n"+
+		"model_reasoning_effort = \"high\"\n"+
+		"\n"+
+		"[projects.\"/workspace\"]\n"+
+		"trust_level = \"trusted\"\n",
+	)...)
 	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), tomlData, 0o644); err != nil {
 		return "", err
 	}

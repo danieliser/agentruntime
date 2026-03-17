@@ -18,7 +18,10 @@ func (a *CodexAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) 
 	}
 
 	cmd := []string{"codex"}
-	if !cfg.Interactive {
+	if cfg.Interactive {
+		// Interactive REPL mode: disable alternate screen so PTY captures output
+		cmd = append(cmd, "--no-alt-screen")
+	} else {
 		cmd = append(cmd, "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt)
 	}
 

@@ -249,7 +249,12 @@ func (s *sidecar) startProcess() error {
 			}
 		}
 
-		ptmx, err := pty.Start(cmd)
+		ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
+			Rows: 50,
+			Cols: 200,
+			X:    0,
+			Y:    0,
+		})
 		if err != nil {
 			return err
 		}
