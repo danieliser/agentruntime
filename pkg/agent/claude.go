@@ -17,7 +17,7 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	cmd := []string{"claude"}
+	cmd := []string{"claude", "--dangerously-skip-permissions"}
 	if !cfg.Interactive {
 		cmd = append(cmd, "-p", prompt)
 	}

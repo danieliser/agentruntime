@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/creack/pty"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
@@ -189,30 +191,8 @@ func (s *sidecar) ensureStarted() (bool, error) {
 func (s *sidecar) startProcess() error {
 	cmd := exec.Command(s.cmd[0], s.cmd[1:]...)
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	replay := session.NewReplayBuffer(replayBufferSize)
-	exitDone := make(chan struct{})
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	// Close stdin for prompt-mode agents (claude -p). They wait for EOF
-	// before processing. Interactive agents get stdin kept open — the WS
-	// readLoop routes stdin frames to the process.
-	// Heuristic: if the command contains "-p", it's prompt mode.
+	// Detect prompt mode: if command contains -p or --print, it's a
+	// one-shot prompt, not an interactive session.
 	isPromptMode := false
 	for _, arg := range s.cmd {
 		if arg == "-p" || arg == "--print" {
@@ -220,9 +200,63 @@ func (s *sidecar) startProcess() error {
 			break
 		}
 	}
+
+	replay := session.NewReplayBuffer(replayBufferSize)
+	exitDone := make(chan struct{})
+
+	var stdin io.WriteCloser
+	var drainWg sync.WaitGroup
+
 	if isPromptMode {
+		// Prompt mode: use pipes, close stdin after start.
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return err
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
 		stdin.Close()
 		stdin = nil
+		drainToReplay(stdout, replay, &drainWg)
+		drainToReplay(stderr, replay, &drainWg)
+	} else {
+		// Interactive mode: allocate a PTY so the agent thinks it's on a
+		// real terminal. This is required for Claude and Codex REPL modes.
+		//
+		// Ensure the working directory has a .git folder — Claude's trust
+		// prompt only appears in non-git directories. A bare git init
+		// satisfies this check without affecting the actual workspace.
+		if wd := cmd.Dir; wd != "" {
+			gitDir := filepath.Join(wd, ".git")
+			if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+				_ = os.MkdirAll(gitDir, 0o755)
+			}
+		} else {
+			// Default working dir
+			gitDir := "/workspace/.git"
+			if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+				_ = os.MkdirAll(gitDir, 0o755)
+			}
+		}
+
+		ptmx, err := pty.Start(cmd)
+		if err != nil {
+			return err
+		}
+		// PTY merges stdin+stdout+stderr into one file descriptor (ptmx).
+		// Reads from ptmx = agent output. Writes to ptmx = agent stdin.
+		stdin = &nopWriteCloser{ptmx}
+		drainToReplay(io.NopCloser(ptmx), replay, &drainWg)
 	}
 
 	s.mu.Lock()
@@ -232,10 +266,6 @@ func (s *sidecar) startProcess() error {
 	s.started = true
 	s.exitDone = exitDone
 	s.mu.Unlock()
-
-	var drainWg sync.WaitGroup
-	drainToReplay(stdout, replay, &drainWg)
-	drainToReplay(stderr, replay, &drainWg)
 
 	go func() {
 		err := cmd.Wait()
@@ -552,3 +582,12 @@ func (s *sidecar) stop() {
 	case <-time.After(2 * time.Second):
 	}
 }
+
+// nopWriteCloser wraps an *os.File as io.WriteCloser.
+// Close is a no-op because the PTY fd is managed by the process lifecycle.
+type nopWriteCloser struct {
+	f *os.File
+}
+
+func (w *nopWriteCloser) Write(p []byte) (int, error) { return w.f.Write(p) }
+func (w *nopWriteCloser) Close() error                { return nil }

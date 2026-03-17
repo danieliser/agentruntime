@@ -73,6 +73,16 @@ func InitClaudeSessionDir(dataDir, sessionID, projectPath, credentialsPath strin
 		// the path before the file is synced from Keychain.
 	}
 
+	// Copy account state (~/.claude.json) so Claude skips onboarding/setup.
+	// Without this, interactive mode shows the theme selector instead of the REPL.
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		accountState := filepath.Join(home, ".claude.json")
+		if data, err := os.ReadFile(accountState); err == nil {
+			_ = os.WriteFile(filepath.Join(sessionDir, ".claude.json"), data, 0o644)
+		}
+	}
+
 	return sessionDir, nil
 }
 

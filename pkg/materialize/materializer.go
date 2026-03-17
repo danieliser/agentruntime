@@ -87,6 +87,11 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 	if settings == nil {
 		settings = map[string]any{}
 	}
+	// Pre-accept the dangerous mode permission prompt so Claude doesn't
+	// show a TUI dialog when --dangerously-skip-permissions is used.
+	if _, exists := settings["skipDangerousModePermissionPrompt"]; !exists {
+		settings["skipDangerousModePermissionPrompt"] = true
+	}
 	if err := writeJSONFile(filepath.Join(claudeDir, "settings.json"), settings); err != nil {
 		return "", err
 	}
@@ -101,6 +106,36 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 	}
 	if err := writeJSONFile(filepath.Join(claudeDir, ".mcp.json"), mcpJSON); err != nil {
 		return "", err
+	}
+
+	// Write a .claude.json that pre-trusts /workspace so Claude skips the
+	// trust dialog in interactive mode. The file is placed in the session dir
+	// and mounted rw so Claude can update it during the session.
+	claudeState := map[string]any{
+		"numStartups":            100,
+		"autoUpdates":            false,
+		"hasCompletedOnboarding": true,
+		"lastOnboardingVersion":  "1.0.53",
+		"hasSeenTasksHint":       true,
+		"hasSeenStashHint":       true,
+		"lastReleaseNotesSeen":   "2.1.76",
+		"projects": map[string]any{
+			"/workspace": map[string]any{
+				"hasTrustDialogAccepted":        true,
+				"hasCompletedProjectOnboarding":  true,
+				"hasTrustDialogHooksAccepted":   true,
+				"allowedTools":                  []any{},
+			},
+		},
+	}
+	claudeStateBytes, _ := json.MarshalIndent(claudeState, "", "  ")
+	claudeStatePath := filepath.Join(claudeDir, "..", ".claude.json")
+	if err := os.WriteFile(claudeStatePath, claudeStateBytes, 0o644); err == nil {
+		*mounts = append(*mounts, apischema.Mount{
+			Host:      claudeStatePath,
+			Container: "/home/agent/.claude.json",
+			Mode:      "rw",
+		})
 	}
 
 	*mounts = append(*mounts, apischema.Mount{
