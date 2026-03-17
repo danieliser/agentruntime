@@ -234,6 +234,27 @@ func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.Session
 		credentialsPath = expanded
 	}
 
+	// Auto-discover credentials from credential sync cache when not explicitly provided.
+	// The daemon's --credential-sync flag populates this cache from Keychain/file sources.
+	if credentialsPath == "" && dataDir != "" {
+		syncCache := filepath.Join(dataDir, "credentials", "claude-credentials.json")
+		if _, err := os.Stat(syncCache); err == nil {
+			credentialsPath = syncCache
+		}
+		// Also check the host's default Claude credentials location.
+		if credentialsPath == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				for _, name := range []string{".credentials.json", "credentials.json"} {
+					hostCreds := filepath.Join(home, ".claude", name)
+					if _, err := os.Stat(hostCreds); err == nil {
+						credentialsPath = hostCreds
+						break
+					}
+				}
+			}
+		}
+	}
+
 	return agentsessions.InitClaudeSessionDir(dataDir, sessionID, claudeProjectPath(), credentialsPath)
 }
 
