@@ -111,14 +111,14 @@
 
 ## Testing
 
-These counts are source-counted from the repository on 2026-03-17. They were not executed as part of this documentation update.
+These counts are source-counted from the repository on 2026-03-17 (post-hardening).
 
 | Category | Count | Notes |
 | --- | --- | --- |
-| Test functions (`func Test...`) | 362 | Across the repo |
-| Fuzz targets (`func Fuzz...`) | 9 | API, client, bridge, materializer, session, agent parsing |
-| Adversarial test functions | 73 | Files named `*adversarial*_test.go` |
-| E2E test functions | 18 | `pkg/e2e` |
+| Test functions (`func Test...`) | 381 | Across the repo |
+| Fuzz targets (`func Fuzz...`) | 17 | API, client, bridge, materializer, session, agent parsing, sidecar normalization |
+| Adversarial test functions | 85 | Files named `*adversarial*_test.go` |
+| E2E test functions | 17 | `pkg/e2e` |
 | Go packages | 12 | `go list ./...` |
 
 ## Remaining Gaps
