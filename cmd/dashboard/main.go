@@ -901,6 +901,17 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; letter-spacing: 1px; }
 .event-line .ev-type.system { color: #737373; }
 .event-line.system-init { background: #0d1117; border: 1px solid #1a2a1a; border-radius: 4px; padding: 6px 8px; margin: 4px 0; font-size: 9px; white-space: pre-wrap; }
 .modal-footer { padding: 8px 16px; border-top: 1px solid #222; display: flex; gap: 6px; }
+
+/* Benchmark panel */
+.bench-panel { display: none; background: #0d1117; border: 1px solid #1a2a1a; border-radius: 6px; padding: 12px; margin-bottom: 12px; font-size: 11px; }
+.bench-panel.open { display: block; }
+.bench-panel h3 { font-size: 12px; color: #4ade80; margin-bottom: 8px; }
+.bench-row { display: flex; gap: 16px; padding: 3px 0; border-bottom: 1px solid #111; color: #888; }
+.bench-row .label { color: #666; min-width: 160px; }
+.bench-row .val { color: #ccc; font-weight: 600; }
+.bench-row .val.fast { color: #22c55e; }
+.bench-row .val.slow { color: #f59e0b; }
+.bench-row .val.err { color: #ef4444; }
 </style>
 </head>
 <body>
@@ -929,6 +940,17 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; letter-spacing: 1px; }
       <div class="dd-menu" id="dd-xp"></div>
     </div>
     <button class="btn" id="configToggle" onclick="toggleConfig()">Config</button>
+    <div class="btn-group">
+      <button class="btn" onclick="runBenchmark('claude','',3)">TTFT</button>
+      <button class="btn btn-dd" onclick="toggleDD('dd-bench')">&#9662;</button>
+      <div class="dd-menu" id="dd-bench">
+        <div class="dd-item" onclick="runBenchmark('claude','',3)">Claude (default)</div>
+        <div class="dd-item" onclick="runBenchmark('claude','claude-haiku-4-5',3)">Claude Haiku</div>
+        <div class="dd-item" onclick="runBenchmark('claude','claude-sonnet-4-6',3)">Claude Sonnet</div>
+        <div class="dd-item" onclick="runBenchmark('codex','',3)">Codex (default)</div>
+        <div class="dd-item" onclick="runBenchmarkAll()">All Combinations</div>
+      </div>
+    </div>
     <div class="btn-group">
       <button class="btn danger" onclick="killAll()">Kill All</button>
       <button class="btn danger btn-dd" onclick="toggleDD('dd-kill')">&#9662;</button>
@@ -968,6 +990,11 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; letter-spacing: 1px; }
     <label>Container config (JSON)</label>
     <textarea id="customContainer" placeholder='{"memory":"4g","cpus":2.0}'></textarea>
   </div>
+</div>
+
+<div class="bench-panel" id="benchPanel">
+  <h3>TTFT Benchmark</h3>
+  <div id="benchResults"></div>
 </div>
 
 <div class="stats" id="stats"></div>
@@ -1036,6 +1063,94 @@ function spawnN(agent, mode) {
 function killByAgent(agent) {
   document.querySelectorAll('.dd-menu').forEach(function(m) { m.classList.remove('open'); });
   fetch('/api/kill-all?agent=' + agent, {method: 'DELETE'});
+}
+
+function runBenchmark(agent, model, runs) {
+  document.querySelectorAll('.dd-menu').forEach(function(m) { m.classList.remove('open'); });
+  var panel = document.getElementById('benchPanel');
+  var results = document.getElementById('benchResults');
+  panel.classList.add('open');
+
+  var header = document.createElement('div');
+  header.className = 'bench-row';
+  header.style.fontWeight = '600';
+  header.style.color = '#aaa';
+  var label = agent + (model ? ' (' + model + ')' : ' (default)');
+  header.textContent = label + ' — running ' + runs + ' iterations...';
+  results.appendChild(header);
+
+  var url = '/api/benchmark?agent=' + agent + '&runs=' + runs;
+  if (model) url += '&model=' + encodeURIComponent(model);
+
+  fetch(url).then(function(r) { return r.text(); }).then(function(text) {
+    results.removeChild(header);
+    var lines = text.trim().split('\n');
+    var ttfts = [];
+    lines.forEach(function(line) {
+      try {
+        var r = JSON.parse(line);
+        var row = document.createElement('div');
+        row.className = 'bench-row';
+        var lbl = document.createElement('span');
+        lbl.className = 'label';
+        lbl.textContent = label + ' run ' + r.run;
+        row.appendChild(lbl);
+
+        var val = document.createElement('span');
+        val.className = 'val';
+        if (r.error) {
+          val.className += ' err';
+          val.textContent = r.error;
+        } else {
+          var cls = r.ttft_ms < 3000 ? 'fast' : (r.ttft_ms < 8000 ? '' : 'slow');
+          val.className += ' ' + cls;
+          val.textContent = 'create: ' + r.create_ms + 'ms  ttft: ' + r.ttft_ms + 'ms';
+          ttfts.push(r.ttft_ms);
+        }
+        row.appendChild(val);
+        results.appendChild(row);
+      } catch(e) {}
+    });
+
+    if (ttfts.length > 0) {
+      var avg = Math.round(ttfts.reduce(function(a,b){return a+b;},0) / ttfts.length);
+      var min = Math.min.apply(null, ttfts);
+      var max = Math.max.apply(null, ttfts);
+      var summary = document.createElement('div');
+      summary.className = 'bench-row';
+      summary.style.borderTop = '1px solid #2a4a2a';
+      summary.style.paddingTop = '4px';
+      var sl = document.createElement('span');
+      sl.className = 'label';
+      sl.textContent = label + ' summary';
+      summary.appendChild(sl);
+      var sv = document.createElement('span');
+      sv.className = 'val fast';
+      sv.textContent = 'avg: ' + avg + 'ms  min: ' + min + 'ms  max: ' + max + 'ms';
+      summary.appendChild(sv);
+      results.appendChild(summary);
+    }
+  });
+}
+
+function runBenchmarkAll() {
+  document.querySelectorAll('.dd-menu').forEach(function(m) { m.classList.remove('open'); });
+  document.getElementById('benchResults').textContent = '';
+  var combos = [
+    ['claude', '', 3],
+    ['claude', 'claude-haiku-4-5', 3],
+    ['claude', 'claude-sonnet-4-6', 3],
+    ['codex', '', 3]
+  ];
+  var idx = 0;
+  function next() {
+    if (idx >= combos.length) return;
+    var c = combos[idx++];
+    runBenchmark(c[0], c[1], c[2]);
+    // Stagger to avoid overwhelming the daemon
+    setTimeout(next, combos[idx-1][2] * 15000 + 5000);
+  }
+  next();
 }
 
 var modalSessionId = null;
