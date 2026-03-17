@@ -220,15 +220,19 @@ func TestConcurrency_30Sessions(t *testing.T) {
 		readWg.Add(1)
 		go func(idx int, c *websocket.Conn, label string) {
 			defer readWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					// gorilla/websocket panics on repeated read after failure
+				}
+			}()
 
 			deadline := time.Now().Add(120 * time.Second)
 			hasOutput := false
 			finished := false
+			readFailed := false
 
-			for time.Now().Before(deadline) && !finished {
-				if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-					break
-				}
+			for time.Now().Before(deadline) && !finished && !readFailed {
+				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 				_, msg, err := c.ReadMessage()
 				if err != nil {
@@ -236,8 +240,9 @@ func TestConcurrency_30Sessions(t *testing.T) {
 					if errors.As(err, &netErr) && netErr.Timeout() {
 						continue // keep waiting
 					}
-					// WS closed
+					// WS closed or fatal read error
 					finished = true
+					readFailed = true
 					break
 				}
 
