@@ -54,8 +54,11 @@ type NormalizedResult struct {
 
 // normalizeClaudeAgentMessage converts Claude's assistant message to standard shape.
 func normalizeClaudeAgentMessage(raw map[string]any) map[string]any {
-	msg := NormalizedAgentMessage{
-		Delta: false, // Claude sends complete messages, not deltas
+	msg := NormalizedAgentMessage{}
+	// Respect delta flag — stream_event deltas set delta:true,
+	// full assistant messages leave it false.
+	if isDelta, ok := raw["delta"].(bool); ok {
+		msg.Delta = isDelta
 	}
 
 	if text, ok := raw["text"].(string); ok {

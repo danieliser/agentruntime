@@ -41,6 +41,7 @@ func TestClaudeBackend_SpawnWithDualChannel(t *testing.T) {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
+		"--include-partial-messages",
 		"--dangerously-skip-permissions",
 		"--ide",
 		"--session-id", "sess-dual",

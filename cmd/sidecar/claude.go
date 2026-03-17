@@ -149,6 +149,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				"-p", b.prompt,
 				"--output-format", "stream-json",
 				"--verbose",
+				"--include-partial-messages",
 				"--dangerously-skip-permissions",
 				"--session-id", b.sessionID,
 			}
@@ -174,6 +175,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				"--output-format", "stream-json",
 				"--input-format", "stream-json",
 				"--verbose",
+				"--include-partial-messages",
 				"--dangerously-skip-permissions",
 				"--ide",
 				"--session-id", b.sessionID,
@@ -436,6 +438,8 @@ func (b *ClaudeBackend) handleStdoutLine(line []byte) {
 	switch envelope.Type {
 	case "assistant":
 		b.handleAssistant(line)
+	case "stream_event":
+		b.handleStreamEvent(line)
 	case "result":
 		b.handleResult(line)
 	case "progress":
@@ -447,6 +451,31 @@ func (b *ClaudeBackend) handleStdoutLine(line []byte) {
 		b.handleSystem(line)
 	case "control_request":
 		b.handleControlRequest(line)
+	}
+}
+
+// handleStreamEvent processes streaming token deltas from --include-partial-messages.
+// Format: {"type":"stream_event","event":{"delta":{"type":"text_delta","text":"tok"}}}
+func (b *ClaudeBackend) handleStreamEvent(line []byte) {
+	var payload struct {
+		Event struct {
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(line, &payload); err != nil {
+		return
+	}
+	if payload.Event.Delta.Type == "text_delta" && payload.Event.Delta.Text != "" {
+		b.emit(Event{
+			Type: "agent_message",
+			Data: map[string]any{
+				"text":  payload.Event.Delta.Text,
+				"delta": true,
+			},
+		})
 	}
 }
 
