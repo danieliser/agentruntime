@@ -543,6 +543,15 @@ func (b *codexBackend) handleNotification(msg codexRPCMessage) {
 		b.mu.Unlock()
 		b.emit(Event{Type: "result", Data: cloneMap(params)})
 	case "item/agentMessage/delta":
+		// Extract turnId from message events as a fallback — turn/started
+		// notification may arrive after the first delta.
+		if turnID := stringField(params, "turnId", "turn_id"); turnID != "" {
+			b.mu.Lock()
+			if b.activeTurnID == "" {
+				b.activeTurnID = turnID
+			}
+			b.mu.Unlock()
+		}
 		eventData := cloneMap(params)
 		if text := firstNonEmpty(stringField(params, "text", "delta"), nestedStringField(params, "item", "text")); text != "" {
 			eventData["text"] = text
