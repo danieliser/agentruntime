@@ -123,6 +123,17 @@ type SteerableHandle interface {
 	SendMention(filePath string, lineStart, lineEnd int) error
 }
 
+// Compile-time interface assertions.
+var (
+	_ Runtime        = (*LocalRuntime)(nil)
+	_ Runtime        = (*LocalSidecarRuntime)(nil)
+	_ Runtime        = (*DockerRuntime)(nil)
+	_ ProcessHandle  = (*localHandle)(nil)
+	_ ProcessHandle  = (*dockerHandle)(nil)
+	_ ProcessHandle  = (*recoveredDockerHandle)(nil)
+	_ SteerableHandle = (*wsHandle)(nil)
+)
+
 // ErrNotSteerable is returned when a command method is called on a handle
 // that does not support the sidecar command protocol.
 var ErrNotSteerable = fmt.Errorf("handle does not support sidecar commands")
