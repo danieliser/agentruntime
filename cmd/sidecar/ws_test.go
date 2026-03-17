@@ -145,7 +145,79 @@ func TestExternalWS_ReplayOnReconnect(t *testing.T) {
 	}
 }
 
-func newTestExternalWSServer(t *testing.T, agentType string, backend *mockBackend) (*ExternalWSServer, *httptest.Server) {
+func TestSidecar_AutoCleanup_ExitsAfterTimeout(t *testing.T) {
+	backend := newMockBackend("sess-cleanup-timeout")
+	server, ts, shutdownCh := newAutoCleanupTestServer(t, backend, 75*time.Millisecond)
+
+	conn := mustDialWS(t, ts, "")
+	backend.exit(0)
+
+	event := readEvent(t, conn)
+	if event.Type != "exit" {
+		t.Fatalf("expected exit event, got %q", event.Type)
+	}
+
+	select {
+	case <-shutdownCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cleanup shutdown")
+	}
+
+	if _, err := http.Get(ts.URL + "/health"); err == nil {
+		t.Fatal("expected sidecar HTTP server to be unavailable after cleanup shutdown")
+	}
+
+	_ = conn.Close()
+	_ = server.Close()
+}
+
+func TestSidecar_AutoCleanup_ResetOnReconnect(t *testing.T) {
+	backend := newMockBackend("sess-cleanup-reconnect")
+	server, ts, shutdownCh := newAutoCleanupTestServer(t, backend, 120*time.Millisecond)
+	defer server.Close()
+
+	conn1 := mustDialWS(t, ts, "")
+	backend.exit(0)
+	exitEvent := readEvent(t, conn1)
+	if exitEvent.Type != "exit" {
+		t.Fatalf("expected exit event, got %q", exitEvent.Type)
+	}
+	_ = conn1.Close()
+
+	time.Sleep(60 * time.Millisecond)
+
+	conn2 := mustDialWS(t, ts, "")
+	defer conn2.Close()
+
+	select {
+	case <-shutdownCh:
+		t.Fatal("cleanup timer did not reset on reconnect")
+	case <-time.After(90 * time.Millisecond):
+	}
+
+	select {
+	case <-shutdownCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cleanup after reconnect window")
+	}
+}
+
+func TestSidecar_AutoCleanup_NoCleanupWhileRunning(t *testing.T) {
+	backend := newMockBackend("sess-cleanup-running")
+	server, ts, shutdownCh := newAutoCleanupTestServer(t, backend, 75*time.Millisecond)
+	defer server.Close()
+
+	conn := mustDialWS(t, ts, "")
+	defer conn.Close()
+
+	select {
+	case <-shutdownCh:
+		t.Fatal("cleanup timer started before agent exit")
+	case <-time.After(175 * time.Millisecond):
+	}
+}
+
+func newTestExternalWSServer(t *testing.T, agentType string, backend AgentBackend) (*ExternalWSServer, *httptest.Server) {
 	t.Helper()
 
 	server := NewExternalWSServer(agentType, backend)
@@ -153,6 +225,27 @@ func newTestExternalWSServer(t *testing.T, agentType string, backend *mockBacken
 	t.Cleanup(ts.Close)
 	t.Cleanup(func() { _ = server.Close() })
 	return server, ts
+}
+
+func newAutoCleanupTestServer(t *testing.T, backend *mockBackend, timeout time.Duration) (*ExternalWSServer, *httptest.Server, <-chan struct{}) {
+	t.Helper()
+
+	server := NewExternalWSServer("claude", backend)
+	server.SetCleanupTimeout(timeout)
+
+	shutdownCh := make(chan struct{}, 1)
+	ts := httptest.NewServer(server.Routes())
+	server.SetShutdownFunc(func() {
+		select {
+		case shutdownCh <- struct{}{}:
+		default:
+		}
+		ts.Close()
+	})
+
+	t.Cleanup(func() { _ = server.Close() })
+	t.Cleanup(ts.Close)
+	return server, ts, shutdownCh
 }
 
 func mustDialWS(t *testing.T, ts *httptest.Server, suffix string) *websocket.Conn {
@@ -186,7 +279,7 @@ func readEvent(t *testing.T, conn *websocket.Conn) Event {
 type mockBackend struct {
 	sessionID string
 	events    chan Event
-	waitCh    chan int
+	waitCh    chan backendExit
 
 	mu        sync.RWMutex
 	running   bool
@@ -198,7 +291,7 @@ func newMockBackend(sessionID string) *mockBackend {
 	return &mockBackend{
 		sessionID: sessionID,
 		events:    make(chan Event, 16),
-		waitCh:    make(chan int, 1),
+		waitCh:    make(chan backendExit, 1),
 	}
 }
 
@@ -229,13 +322,21 @@ func (b *mockBackend) SendContext(string, string) error   { return nil }
 func (b *mockBackend) SendMention(string, int, int) error { return nil }
 func (b *mockBackend) Events() <-chan Event               { return b.events }
 func (b *mockBackend) SessionID() string                  { return b.sessionID }
-func (b *mockBackend) Wait() <-chan int                   { return b.waitCh }
+func (b *mockBackend) Wait() <-chan backendExit           { return b.waitCh }
 func (b *mockBackend) Close() error {
 	b.closeOnce.Do(func() {
 		close(b.waitCh)
 	})
 	return nil
 }
+
+func (b *mockBackend) exit(code int) {
+	b.mu.Lock()
+	b.running = false
+	b.mu.Unlock()
+	b.waitCh <- backendExit{Code: code}
+}
+
 func (b *mockBackend) emit(event Event) { b.events <- event }
 
 func (b *mockBackend) Running() bool {

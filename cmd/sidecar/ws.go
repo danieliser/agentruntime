@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,7 @@ var wsUpgrader = websocket.Upgrader{
 type Event struct {
 	Type      string `json:"type"`
 	Data      any    `json:"data"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
 	Offset    int64  `json:"offset"`
 	Timestamp int64  `json:"timestamp"`
 }
@@ -48,7 +50,7 @@ type AgentBackend interface {
 	Events() <-chan Event
 	SessionID() string
 	Running() bool
-	Wait() <-chan int
+	Wait() <-chan backendExit
 }
 
 type healthResponse struct {
@@ -56,6 +58,12 @@ type healthResponse struct {
 	AgentRunning bool   `json:"agent_running"`
 	AgentType    string `json:"agent_type"`
 	SessionID    string `json:"session_id"`
+	ErrorDetail  string `json:"error_detail,omitempty"`
+}
+
+type backendExit struct {
+	Code        int    `json:"code"`
+	ErrorDetail string `json:"error_detail,omitempty"`
 }
 
 type ExternalWSServer struct {
@@ -67,12 +75,20 @@ type ExternalWSServer struct {
 	cancel context.CancelFunc
 
 	startOnce sync.Once
+	startMu   sync.RWMutex
 	startErr  error
 
 	appendMu sync.Mutex
 
 	clientsMu sync.RWMutex
 	clients   map[*wsClient]struct{}
+
+	cleanupMu      sync.Mutex
+	cleanupTimeout time.Duration
+	cleanupTimer   *time.Timer
+	cleanupID      uint64
+	agentExited    bool
+	shutdownFn     func()
 }
 
 type wsClient struct {
@@ -107,7 +123,8 @@ type errorData struct {
 }
 
 type exitData struct {
-	Code int `json:"code"`
+	Code        int    `json:"code"`
+	ErrorDetail string `json:"error_detail,omitempty"`
 }
 
 type rawCommand struct {
@@ -118,12 +135,13 @@ type rawCommand struct {
 func NewExternalWSServer(agentType string, backend AgentBackend) *ExternalWSServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ExternalWSServer{
-		agentType: agentType,
-		backend:   backend,
-		replay:    session.NewReplayBuffer(replayBufferSize),
-		ctx:       ctx,
-		cancel:    cancel,
-		clients:   make(map[*wsClient]struct{}),
+		agentType:      agentType,
+		backend:        backend,
+		replay:         session.NewReplayBuffer(replayBufferSize),
+		ctx:            ctx,
+		cancel:         cancel,
+		clients:        make(map[*wsClient]struct{}),
+		cleanupTimeout: defaultCleanupTimeout,
 	}
 }
 
@@ -138,8 +156,25 @@ func (s *ExternalWSServer) Routes() http.Handler {
 	return mux
 }
 
+func (s *ExternalWSServer) SetCleanupTimeout(timeout time.Duration) {
+	if timeout < 0 {
+		timeout = 0
+	}
+
+	s.cleanupMu.Lock()
+	s.cleanupTimeout = timeout
+	s.cleanupMu.Unlock()
+}
+
+func (s *ExternalWSServer) SetShutdownFunc(fn func()) {
+	s.cleanupMu.Lock()
+	s.shutdownFn = fn
+	s.cleanupMu.Unlock()
+}
+
 func (s *ExternalWSServer) Close() error {
 	s.cancel()
+	s.stopCleanupTimer()
 	s.replay.Close()
 
 	for _, client := range s.snapshotClients() {
@@ -164,12 +199,20 @@ func (s *ExternalWSServer) Interrupt() error {
 }
 
 func (s *ExternalWSServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	status := "ok"
+	errorDetail := ""
+	if err := s.getStartErr(); err != nil {
+		status = "error"
+		errorDetail = err.Error()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(healthResponse{
-		Status:       "ok",
+		Status:       status,
 		AgentRunning: s.backend != nil && s.backend.Running(),
 		AgentType:    s.agentType,
 		SessionID:    s.sessionID(),
+		ErrorDetail:  errorDetail,
 	})
 }
 
@@ -180,17 +223,24 @@ func (s *ExternalWSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.ensureStarted(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 
 	client := &wsClient{conn: conn}
+	if err := s.ensureStarted(); err != nil {
+		_ = client.writeJSON(Event{
+			Type: "error",
+			Data: errorData{
+				Message: err.Error(),
+				Code:    http.StatusInternalServerError,
+			},
+		})
+		client.close()
+		return
+	}
+
 	_ = conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
@@ -210,19 +260,19 @@ func (s *ExternalWSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 func (s *ExternalWSServer) ensureStarted() error {
 	s.startOnce.Do(func() {
 		if s.backend == nil {
-			s.startErr = errors.New("backend unavailable")
+			s.setStartErr(errors.New("backend unavailable"))
 			return
 		}
 
 		if err := s.backend.Start(s.ctx); err != nil {
-			s.startErr = err
+			s.setStartErr(err)
 			return
 		}
 
 		go s.eventLoop()
 		go s.exitLoop()
 	})
-	return s.startErr
+	return s.getStartErr()
 }
 
 func (s *ExternalWSServer) eventLoop() {
@@ -291,14 +341,30 @@ func (s *ExternalWSServer) exitLoop() {
 	select {
 	case <-s.ctx.Done():
 		return
-	case code, ok := <-waitCh:
+	case result, ok := <-waitCh:
 		if !ok {
 			return
 		}
+		if result.Code != 0 {
+			_ = s.recordAndBroadcast(Event{
+				Type: "system",
+				Data: map[string]any{
+					"subtype":      "agent_error",
+					"code":         result.Code,
+					"error_detail": result.ErrorDetail,
+				},
+			})
+		}
+		exitCode := result.Code
 		_ = s.recordAndBroadcast(Event{
-			Type: "exit",
-			Data: exitData{Code: code},
+			Type:     "exit",
+			ExitCode: &exitCode,
+			Data: exitData{
+				Code:        result.Code,
+				ErrorDetail: result.ErrorDetail,
+			},
 		})
+		s.startCleanupTimer()
 	}
 }
 
@@ -370,6 +436,7 @@ func (s *ExternalWSServer) registerClient(client *wsClient, hasSince bool, since
 	s.clientsMu.Lock()
 	s.clients[client] = struct{}{}
 	s.clientsMu.Unlock()
+	s.resetCleanupTimerOnReconnect()
 	return nil
 }
 
@@ -410,11 +477,20 @@ func (s *ExternalWSServer) snapshotClients() []*wsClient {
 
 func (s *ExternalWSServer) readLoop(client *wsClient) {
 	for {
-		var cmd rawCommand
-		if err := client.conn.ReadJSON(&cmd); err != nil {
+		_, data, err := client.conn.ReadMessage()
+		if err != nil {
 			return
 		}
 		_ = client.conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+
+		var cmd rawCommand
+		if err := json.Unmarshal(data, &cmd); err != nil {
+			_ = client.writeJSON(Event{
+				Type: "error",
+				Data: errorData{Message: "invalid command json: " + err.Error(), Code: http.StatusBadRequest},
+			})
+			continue
+		}
 
 		if err := s.routeCommand(cmd); err != nil {
 			_ = client.writeJSON(Event{
@@ -436,7 +512,11 @@ func (s *ExternalWSServer) routeCommand(cmd rawCommand) error {
 		if err := decodeCommandData(cmd.Data, &payload); err != nil {
 			return err
 		}
-		return s.backend.SendPrompt(payload.Content)
+		content, err := requireCommandContent("prompt", payload.Content)
+		if err != nil {
+			return err
+		}
+		return s.backend.SendPrompt(content)
 	case "interrupt":
 		return s.backend.SendInterrupt()
 	case "steer":
@@ -444,7 +524,11 @@ func (s *ExternalWSServer) routeCommand(cmd rawCommand) error {
 		if err := decodeCommandData(cmd.Data, &payload); err != nil {
 			return err
 		}
-		return s.backend.SendSteer(payload.Content)
+		content, err := requireCommandContent("steer", payload.Content)
+		if err != nil {
+			return err
+		}
+		return s.backend.SendSteer(content)
 	case "context":
 		var payload contextCommand
 		if err := decodeCommandData(cmd.Data, &payload); err != nil {
@@ -469,11 +553,31 @@ func (s *ExternalWSServer) sessionID() string {
 	return s.backend.SessionID()
 }
 
+func (s *ExternalWSServer) setStartErr(err error) {
+	s.startMu.Lock()
+	s.startErr = err
+	s.startMu.Unlock()
+}
+
+func (s *ExternalWSServer) getStartErr() error {
+	s.startMu.RLock()
+	defer s.startMu.RUnlock()
+	return s.startErr
+}
+
 func decodeCommandData(raw json.RawMessage, target any) error {
 	if len(raw) == 0 || string(raw) == "null" {
 		raw = []byte("{}")
 	}
 	return json.Unmarshal(raw, target)
+}
+
+func requireCommandContent(commandType, content string) (string, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", errors.New(commandType + " content is required")
+	}
+	return content, nil
 }
 
 func parseSince(raw string) (int64, bool, error) {
@@ -527,4 +631,67 @@ func (c *wsClient) close() {
 	c.closeOnce.Do(func() {
 		_ = c.conn.Close()
 	})
+}
+
+func (s *ExternalWSServer) startCleanupTimer() {
+	s.cleanupMu.Lock()
+	s.agentExited = true
+	s.cleanupMu.Unlock()
+	s.resetCleanupTimer()
+}
+
+func (s *ExternalWSServer) resetCleanupTimerOnReconnect() {
+	s.cleanupMu.Lock()
+	shouldReset := s.agentExited
+	s.cleanupMu.Unlock()
+	if shouldReset {
+		s.resetCleanupTimer()
+	}
+}
+
+func (s *ExternalWSServer) resetCleanupTimer() {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+
+	if !s.agentExited {
+		return
+	}
+
+	if s.cleanupTimer != nil {
+		s.cleanupTimer.Stop()
+		s.cleanupTimer = nil
+	}
+
+	s.cleanupID++
+	id := s.cleanupID
+	timeout := s.cleanupTimeout
+	s.cleanupTimer = time.AfterFunc(timeout, func() {
+		s.fireCleanup(id)
+	})
+}
+
+func (s *ExternalWSServer) stopCleanupTimer() {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+
+	s.cleanupID++
+	if s.cleanupTimer != nil {
+		s.cleanupTimer.Stop()
+		s.cleanupTimer = nil
+	}
+}
+
+func (s *ExternalWSServer) fireCleanup(id uint64) {
+	s.cleanupMu.Lock()
+	if id != s.cleanupID || !s.agentExited {
+		s.cleanupMu.Unlock()
+		return
+	}
+	shutdownFn := s.shutdownFn
+	s.cleanupTimer = nil
+	s.cleanupMu.Unlock()
+
+	if shutdownFn != nil {
+		shutdownFn()
+	}
 }

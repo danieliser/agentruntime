@@ -26,6 +26,7 @@ type codexBackend struct {
 	mu           sync.RWMutex
 	stdin        io.WriteCloser
 	stdout       io.ReadCloser
+	stderr       io.ReadCloser
 	closeFn      func() error
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -41,9 +42,12 @@ type codexBackend struct {
 	pending   map[string]chan codexRPCResponse
 
 	events    chan Event
-	waitCh    chan int
+	waitCh    chan backendExit
 	done      chan struct{}
 	closeOnce sync.Once
+
+	stderrMu  sync.Mutex
+	stderrBuf strings.Builder
 }
 
 type codexSpawner func(ctx context.Context, cmd []string) (*codexTransport, error)
@@ -51,6 +55,7 @@ type codexSpawner func(ctx context.Context, cmd []string) (*codexTransport, erro
 type codexTransport struct {
 	stdin   io.WriteCloser
 	stdout  io.ReadCloser
+	stderr  io.ReadCloser
 	wait    <-chan error
 	closeFn func() error
 }
@@ -111,7 +116,7 @@ func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner co
 		sessionID: uuid.NewString(),
 		pending:   make(map[string]chan codexRPCResponse),
 		events:    make(chan Event, 64),
-		waitCh:    make(chan int, 1),
+		waitCh:    make(chan backendExit, 1),
 		done:      make(chan struct{}),
 		nextID:    1,
 	}
@@ -139,10 +144,6 @@ func spawnCodexAppServer(ctx context.Context, cmdArgs []string) (*codexTransport
 		return nil, fmt.Errorf("start codex app-server: %w", err)
 	}
 
-	go func() {
-		_, _ = io.Copy(io.Discard, stderr)
-	}()
-
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- cmd.Wait()
@@ -152,6 +153,7 @@ func spawnCodexAppServer(ctx context.Context, cmdArgs []string) (*codexTransport
 	return &codexTransport{
 		stdin:  stdin,
 		stdout: stdout,
+		stderr: stderr,
 		wait:   waitCh,
 		closeFn: func() error {
 			if cmd.Process == nil {
@@ -187,12 +189,14 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 	transport, err := b.spawner(b.ctx, cmd)
 	if err != nil {
 		b.setRunning(false)
+		b.emitError(err.Error())
 		return err
 	}
 
 	b.mu.Lock()
 	b.stdin = transport.stdin
 	b.stdout = transport.stdout
+	b.stderr = transport.stderr
 	b.closeFn = transport.closeFn
 	b.mu.Unlock()
 
@@ -203,6 +207,7 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 
 	// Use JSONL reader (not JSON-RPC) — codex exec --json outputs flat events
 	go b.readExecJSONL()
+	go b.readStderr()
 	if transport.wait != nil {
 		go b.waitLoop(transport.wait)
 	}
@@ -281,16 +286,19 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	transport, err := b.spawner(b.ctx, []string{b.binary, "app-server", "--listen", "stdio://"})
 	if err != nil {
 		b.setRunning(false)
+		b.emitError(err.Error())
 		return err
 	}
 
 	b.mu.Lock()
 	b.stdin = transport.stdin
 	b.stdout = transport.stdout
+	b.stderr = transport.stderr
 	b.closeFn = transport.closeFn
 	b.mu.Unlock()
 
 	go b.readLoop()
+	go b.readStderr()
 	if transport.wait != nil {
 		go b.waitLoop(transport.wait)
 	}
@@ -305,6 +313,7 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 		},
 	})
 	if err != nil {
+		b.emitError(err.Error())
 		_ = b.Close()
 		return err
 	}
@@ -314,11 +323,13 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 		userAgent = stringField(decoded, "userAgent", "user_agent")
 	}
 	if userAgent == "" {
+		b.emitError("codex initialize missing userAgent")
 		_ = b.Close()
 		return errors.New("codex initialize missing userAgent")
 	}
 
 	if err := b.notify("initialized", nil); err != nil {
+		b.emitError(err.Error())
 		_ = b.Close()
 		return err
 	}
@@ -340,7 +351,7 @@ func (b *codexBackend) Running() bool {
 	return b.running
 }
 
-func (b *codexBackend) Wait() <-chan int {
+func (b *codexBackend) Wait() <-chan backendExit {
 	return b.waitCh
 }
 
@@ -571,6 +582,35 @@ func (b *codexBackend) readLoop() {
 	}
 }
 
+func (b *codexBackend) readStderr() {
+	b.mu.RLock()
+	stderr := b.stderr
+	b.mu.RUnlock()
+	if stderr == nil {
+		return
+	}
+	defer stderr.Close()
+
+	buf, err := io.ReadAll(stderr)
+	if err != nil || len(buf) == 0 {
+		return
+	}
+
+	text := strings.TrimSpace(string(buf))
+	if text == "" {
+		return
+	}
+
+	b.appendStderr(text)
+	b.emit(Event{
+		Type: "system",
+		Data: map[string]any{
+			"subtype": "stderr",
+			"text":    text,
+		},
+	})
+}
+
 func (b *codexBackend) waitLoop(wait <-chan error) {
 	err, ok := <-wait
 	if !ok || b.isClosed() {
@@ -578,15 +618,20 @@ func (b *codexBackend) waitLoop(wait <-chan error) {
 	}
 
 	code := 0
+	detail := ""
 	if err != nil {
-		code = 1
+		code = codexExitCode(err)
+		detail = b.stderrDetail()
+		if detail == "" {
+			detail = err.Error()
+		}
 		if !strings.Contains(err.Error(), "killed") {
-			b.emit(Event{Type: "error", Data: map[string]any{"message": err.Error()}})
+			b.emitError(err.Error())
 		}
 	}
 
 	select {
-	case b.waitCh <- code:
+	case b.waitCh <- backendExit{Code: code, ErrorDetail: detail}:
 	default:
 	}
 
@@ -709,6 +754,50 @@ func (b *codexBackend) emit(event Event) {
 		return
 	case b.events <- event:
 	}
+}
+
+func (b *codexBackend) emitError(message string) {
+	b.emit(Event{
+		Type: "error",
+		Data: map[string]any{"message": message},
+	})
+}
+
+func (b *codexBackend) appendStderr(text string) {
+	const maxStderrDetailBytes = 8 * 1024
+
+	b.stderrMu.Lock()
+	defer b.stderrMu.Unlock()
+
+	if text == "" {
+		return
+	}
+	if b.stderrBuf.Len() > 0 {
+		b.stderrBuf.WriteByte('\n')
+	}
+	b.stderrBuf.WriteString(text)
+	if b.stderrBuf.Len() <= maxStderrDetailBytes {
+		return
+	}
+
+	trimmed := b.stderrBuf.String()
+	trimmed = trimmed[len(trimmed)-maxStderrDetailBytes:]
+	b.stderrBuf.Reset()
+	b.stderrBuf.WriteString(trimmed)
+}
+
+func (b *codexBackend) stderrDetail() string {
+	b.stderrMu.Lock()
+	defer b.stderrMu.Unlock()
+	return strings.TrimSpace(b.stderrBuf.String())
+}
+
+func codexExitCode(err error) int {
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
 }
 
 func (b *codexBackend) failPending(err error) {

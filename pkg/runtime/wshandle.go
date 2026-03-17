@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +36,7 @@ type wsHandle struct {
 	finished    bool
 	cleanupDone bool
 	recovery    *RecoveryInfo
+	lastError   string
 }
 
 type wsServerFrame struct {
@@ -82,7 +86,7 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 			var frame wsServerFrame
 			if err := handle.conn.ReadJSON(&frame); err != nil {
 				if ctx.Err() == nil {
-					finish(ExitResult{Err: err})
+					finish(ExitResult{Err: handle.wsDisconnectError(err)})
 				}
 				return
 			}
@@ -105,6 +109,7 @@ func newWSHandle(conn *websocket.Conn, containerID, hostPort string) *wsHandle {
 					return
 				}
 			case "agent_message", "tool_use", "tool_result", "result", "progress", "system", "error":
+				handle.rememberFrameError(frame)
 				if err := handle.writeEvent(frame); err != nil {
 					if ctx.Err() == nil {
 						finish(ExitResult{Err: err})
@@ -204,6 +209,26 @@ func (h *wsHandle) setRecoveryInfo(info *RecoveryInfo) {
 	h.recovery = info
 }
 
+func (h *wsHandle) rememberFrameError(frame wsServerFrame) {
+	if frame.Type != "error" {
+		return
+	}
+
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(frame.Data, &payload); err != nil {
+		return
+	}
+	if strings.TrimSpace(payload.Message) == "" {
+		return
+	}
+
+	h.metaMu.Lock()
+	h.lastError = payload.Message
+	h.metaMu.Unlock()
+}
+
 func (h *wsHandle) runCleanup() {
 	var cleanup func()
 	h.metaMu.Lock()
@@ -228,9 +253,9 @@ func dialSidecar(containerID, hostPort string, sinceOffset int64, prompt string)
 	q.Set("since", fmt.Sprintf("%d", sinceOffset))
 	u.RawQuery = q.Encode()
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, websocketDialError(err, resp)
 	}
 
 	handle := newWSHandle(conn, containerID, hostPort)
@@ -286,6 +311,36 @@ func (h *wsHandle) RecoveryInfo() *RecoveryInfo {
 	return h.recovery
 }
 
+func (h *wsHandle) wsDisconnectError(err error) error {
+	if h.shouldTreatUnexpectedCloseAsExit(err) {
+		return nil
+	}
+
+	h.metaMu.RLock()
+	lastError := h.lastError
+	h.metaMu.RUnlock()
+
+	if lastError != "" {
+		return fmt.Errorf("sidecar websocket disconnected after error: %s", lastError)
+	}
+	return fmt.Errorf("sidecar websocket disconnected: %w", err)
+}
+
+func (h *wsHandle) shouldTreatUnexpectedCloseAsExit(err error) bool {
+	if err == nil || h.RecoveryInfo() == nil {
+		return false
+	}
+
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		websocket.IsCloseError(err,
+			websocket.CloseNormalClosure,
+			websocket.CloseGoingAway,
+			websocket.CloseNoStatusReceived,
+			websocket.CloseAbnormalClosure,
+		)
+}
+
 func (h *wsHandle) writeEvent(frame wsServerFrame) error {
 	payload, err := json.Marshal(frame)
 	if err != nil {
@@ -317,4 +372,29 @@ func wsFrameStringData(data json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return payload, true
+}
+
+func websocketDialError(err error, resp *http.Response) error {
+	if resp == nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	detail := strings.TrimSpace(httpResponseBody(resp))
+	if detail == "" {
+		return fmt.Errorf("%w (status %s)", err, resp.Status)
+	}
+	return fmt.Errorf("%w (status %s: %s)", err, resp.Status, detail)
+}
+
+func httpResponseBody(resp *http.Response) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

@@ -18,11 +18,20 @@ import (
 )
 
 const defaultPort = "9090"
+const defaultCleanupTimeout = 60 * time.Second
 
 type sidecarServer interface {
 	AgentType() string
 	Routes() http.Handler
 	Close() error
+}
+
+type cleanupTimeoutConfigurer interface {
+	SetCleanupTimeout(time.Duration)
+}
+
+type shutdownConfigurer interface {
+	SetShutdownFunc(func())
 }
 
 func main() {
@@ -44,6 +53,16 @@ func run() error {
 		Handler: server.Routes(),
 	}
 
+	cleanupCh := make(chan struct{}, 1)
+	if configurable, ok := server.(shutdownConfigurer); ok {
+		configurable.SetShutdownFunc(func() {
+			select {
+			case cleanupCh <- struct{}{}:
+			default:
+			}
+		})
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- httpServer.ListenAndServe()
@@ -59,28 +78,15 @@ func run() error {
 			return err
 		}
 		return server.Close()
+	case <-cleanupCh:
+		log.Printf("cleanup timeout elapsed, shutting down sidecar")
+		return shutdownSidecar(httpServer, server, errCh)
 	case <-signalCtx.Done():
 		log.Printf("signal received, interrupting agent and shutting down")
 		if err := interruptServer(server); err != nil {
 			log.Printf("interrupt agent: %v", err)
 		}
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		shutdownErr := httpServer.Shutdown(shutdownCtx)
-		closeErr := server.Close()
-		err := <-errCh
-		if shutdownErr != nil {
-			return shutdownErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-		return nil
+		return shutdownSidecar(httpServer, server, errCh)
 	}
 }
 
@@ -104,7 +110,12 @@ func newSidecarFromEnv() (sidecarServer, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		return NewExternalWSServer(agentType, backend), port, nil
+
+		server := NewExternalWSServer(agentType, backend)
+		if err := configureCleanupTimeout(server); err != nil {
+			return nil, "", err
+		}
+		return server, port, nil
 	}
 
 	cmd, ok, err := legacyCommandFromEnv()
@@ -116,6 +127,62 @@ func newSidecarFromEnv() (sidecarServer, string, error) {
 	}
 
 	return nil, "", errors.New("AGENT_CMD is required")
+}
+
+func shutdownSidecar(httpServer *http.Server, server sidecarServer, errCh <-chan error) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	shutdownErr := httpServer.Shutdown(shutdownCtx)
+	closeErr := server.Close()
+	err := <-errCh
+	if shutdownErr != nil {
+		return shutdownErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func configureCleanupTimeout(server sidecarServer) error {
+	configurable, ok := server.(cleanupTimeoutConfigurer)
+	if !ok {
+		return nil
+	}
+
+	timeout, err := parseCleanupTimeoutEnv(os.Getenv("SIDECAR_CLEANUP_TIMEOUT"))
+	if err != nil {
+		return err
+	}
+	configurable.SetCleanupTimeout(timeout)
+	return nil
+}
+
+func parseCleanupTimeoutEnv(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultCleanupTimeout, nil
+	}
+
+	if seconds, err := strconv.Atoi(raw); err == nil {
+		if seconds < 0 {
+			return 0, errors.New("SIDECAR_CLEANUP_TIMEOUT must be non-negative")
+		}
+		return time.Duration(seconds) * time.Second, nil
+	}
+
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, errors.New("SIDECAR_CLEANUP_TIMEOUT must be a duration or integer seconds")
+	}
+	if timeout < 0 {
+		return 0, errors.New("SIDECAR_CLEANUP_TIMEOUT must be non-negative")
+	}
+	return timeout, nil
 }
 
 func parseAgentCommand(raw string) ([]string, error) {
@@ -223,7 +290,7 @@ func newBackend(agentType string, cmd []string) (AgentBackend, error) {
 		}
 		return newCodexBackendWithBinary(cmd[0]), nil
 	default:
-		return newUnsupportedBackend(agentType), nil
+		return newGenericCommandBackend(agentType, cmd, prompt), nil
 	}
 }
 
@@ -231,7 +298,7 @@ type unsupportedBackend struct {
 	agentType string
 	sessionID string
 	events    chan Event
-	waitCh    chan int
+	waitCh    chan backendExit
 }
 
 func newUnsupportedBackend(agentType string) *unsupportedBackend {
@@ -239,7 +306,7 @@ func newUnsupportedBackend(agentType string) *unsupportedBackend {
 		agentType: agentType,
 		sessionID: uuid.NewString(),
 		events:    make(chan Event),
-		waitCh:    make(chan int),
+		waitCh:    make(chan backendExit),
 	}
 }
 
@@ -268,5 +335,7 @@ func (b *unsupportedBackend) SendMention(string, int, int) error {
 func (b *unsupportedBackend) Events() <-chan Event { return b.events }
 func (b *unsupportedBackend) SessionID() string    { return b.sessionID }
 func (b *unsupportedBackend) Running() bool        { return false }
-func (b *unsupportedBackend) Wait() <-chan int     { return b.waitCh }
-func (b *unsupportedBackend) Close() error         { return nil }
+func (b *unsupportedBackend) Wait() <-chan backendExit {
+	return b.waitCh
+}
+func (b *unsupportedBackend) Close() error { return nil }

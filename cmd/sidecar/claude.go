@@ -58,7 +58,10 @@ type ClaudeBackend struct {
 
 	events chan Event
 	done   chan struct{}
-	waitCh chan int
+	waitCh chan backendExit
+
+	stderrMu sync.Mutex
+	stderr   strings.Builder
 }
 
 type execClaudeProcess struct {
@@ -129,7 +132,7 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 		startProcess: startProcess,
 		events:       make(chan Event, 64),
 		done:         make(chan struct{}),
-		waitCh:       make(chan int, 1),
+		waitCh:       make(chan backendExit, 1),
 	}
 }
 
@@ -159,10 +162,12 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				WorkspaceFolders: b.workspace,
 			})
 			if err != nil {
+				b.emitError(err.Error())
 				spawnErr = err
 				return
 			}
 			if err := server.Start(); err != nil {
+				b.emitError(err.Error())
 				spawnErr = err
 				return
 			}
@@ -204,6 +209,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			if mcp != nil {
 				_ = mcp.Stop()
 			}
+			b.emitError(err.Error())
 			spawnErr = err
 			return
 		}
@@ -323,7 +329,7 @@ func (b *ClaudeBackend) Running() bool {
 	return b.running
 }
 
-func (b *ClaudeBackend) Wait() <-chan int {
+func (b *ClaudeBackend) Wait() <-chan backendExit {
 	return b.waitCh
 }
 
@@ -385,6 +391,7 @@ func (b *ClaudeBackend) readStderr(r io.ReadCloser) {
 		if text == "" {
 			continue
 		}
+		b.appendStderr(text)
 		b.emit(Event{
 			Type: "system",
 			Data: map[string]any{
@@ -408,11 +415,16 @@ func (b *ClaudeBackend) waitForExit(process ClaudeProcess) {
 	}
 
 	code := 0
+	detail := ""
 	if err != nil {
-		code = 1
+		code = claudeExitCode(err)
+		detail = b.stderrDetail()
+		if detail == "" {
+			detail = err.Error()
+		}
 	}
 	select {
-	case b.waitCh <- code:
+	case b.waitCh <- backendExit{Code: code, ErrorDetail: detail}:
 	default:
 	}
 
@@ -591,6 +603,51 @@ func (b *ClaudeBackend) emit(event Event) {
 		// block Claude's stdout parsing. If the buffer fills, backpressure wins.
 		b.events <- event
 	}
+}
+
+func (b *ClaudeBackend) emitError(message string) {
+	b.emit(Event{
+		Type: "error",
+		Data: map[string]any{"message": message},
+	})
+}
+
+func (b *ClaudeBackend) appendStderr(text string) {
+	const maxStderrDetailBytes = 8 * 1024
+
+	b.stderrMu.Lock()
+	defer b.stderrMu.Unlock()
+
+	if text == "" {
+		return
+	}
+
+	if b.stderr.Len() > 0 {
+		b.stderr.WriteByte('\n')
+	}
+	b.stderr.WriteString(text)
+	if b.stderr.Len() <= maxStderrDetailBytes {
+		return
+	}
+
+	trimmed := b.stderr.String()
+	trimmed = trimmed[len(trimmed)-maxStderrDetailBytes:]
+	b.stderr.Reset()
+	b.stderr.WriteString(trimmed)
+}
+
+func (b *ClaudeBackend) stderrDetail() string {
+	b.stderrMu.Lock()
+	defer b.stderrMu.Unlock()
+	return strings.TrimSpace(b.stderr.String())
+}
+
+func claudeExitCode(err error) int {
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
 }
 
 func startExecClaudeProcess(ctx context.Context, spec ClaudeSpawnSpec) (ClaudeProcess, error) {
