@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,6 +23,12 @@ type ClaudeBackendConfig struct {
 	// Prompt mode: if set, runs claude -p "prompt" (fire-and-forget).
 	// If empty, runs interactive mode with --input-format stream-json.
 	Prompt string
+
+	// Fields from AGENT_CONFIG passthrough.
+	Model        string            // --model flag (e.g. "claude-opus-4-5")
+	MaxTurns     int               // --max-turns flag
+	AllowedTools []string          // --allowedTools flag (repeatable)
+	ExtraEnv     map[string]string // merged into buildCleanEnv
 }
 
 type ClaudeSpawnSpec struct {
@@ -46,6 +53,12 @@ type ClaudeBackend struct {
 	sessionID string
 	workspace []string
 	prompt    string // if set, fire-and-forget -p mode
+
+	// AGENT_CONFIG passthrough fields.
+	model        string
+	maxTurns     int
+	allowedTools []string
+	extraEnv     map[string]string
 
 	startProcess ClaudeProcessStarter
 
@@ -129,6 +142,10 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 		sessionID:    sessionID,
 		workspace:    workspace,
 		prompt:       cfg.Prompt,
+		model:        cfg.Model,
+		maxTurns:     cfg.MaxTurns,
+		allowedTools: cfg.AllowedTools,
+		extraEnv:     cfg.ExtraEnv,
 		startProcess: startProcess,
 		events:       make(chan Event, 64),
 		done:         make(chan struct{}),
@@ -187,9 +204,24 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			}
 		}
 
+		// Append AGENT_CONFIG passthrough flags (apply to both modes).
+		if b.model != "" {
+			args = append(args, "--model", b.model)
+		}
+		if b.maxTurns > 0 {
+			args = append(args, "--max-turns", strconv.Itoa(b.maxTurns))
+		}
+		for _, tool := range b.allowedTools {
+			args = append(args, "--allowedTools", tool)
+		}
+
 		// Build a clean environment — DO NOT inherit host env wholesale.
 		// Only pass through essential vars + explicit extras (MCP server env).
 		// This prevents host hooks, plugins, MCP servers from leaking in.
+		// Merge AGENT_CONFIG.env on top of the clean env.
+		for k, v := range b.extraEnv {
+			envExtra = append(envExtra, k+"="+v)
+		}
 		cleanEnv := buildCleanEnv(envExtra)
 
 		spec := ClaudeSpawnSpec{

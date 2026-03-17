@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 )
 
 const defaultPort = "9090"
@@ -105,8 +104,13 @@ func newSidecarFromEnv() (sidecarServer, string, error) {
 			return nil, "", err
 		}
 
+		agentCfg, err := parseAgentConfig()
+		if err != nil {
+			return nil, "", err
+		}
+
 		agentType := detectAgentType(cmd)
-		backend, err := newBackend(agentType, cmd)
+		backend, err := newBackend(agentType, cmd, agentCfg)
 		if err != nil {
 			return nil, "", err
 		}
@@ -273,69 +277,30 @@ func interruptServer(server sidecarServer) error {
 	return nil
 }
 
-func newBackend(agentType string, cmd []string) (AgentBackend, error) {
+func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, error) {
 	// AGENT_PROMPT triggers fire-and-forget (-p) mode.
 	// If empty, the sidecar runs in interactive mode (default).
 	prompt := os.Getenv("AGENT_PROMPT")
 
 	switch agentType {
 	case "claude":
+		sessionID := cfg.ResumeSession // empty = generate fresh UUID in NewClaudeBackend
 		return NewClaudeBackend(ClaudeBackendConfig{
-			Binary: cmd[0],
-			Prompt: prompt,
+			Binary:       cmd[0],
+			Prompt:       prompt,
+			SessionID:    sessionID,
+			Model:        cfg.Model,
+			MaxTurns:     cfg.MaxTurns,
+			AllowedTools: cfg.AllowedTools,
+			ExtraEnv:     cfg.Env,
 		}), nil
 	case "codex":
 		if prompt != "" {
-			return newCodexBackendPromptMode(cmd[0], prompt), nil
+			return newCodexBackendPromptMode(cmd[0], prompt, cfg), nil
 		}
-		return newCodexBackendWithBinary(cmd[0]), nil
+		return newCodexBackendInteractive(cmd[0], cfg), nil
 	default:
 		return newGenericCommandBackend(agentType, cmd, prompt), nil
 	}
 }
 
-type unsupportedBackend struct {
-	agentType string
-	sessionID string
-	events    chan Event
-	waitCh    chan backendExit
-}
-
-func newUnsupportedBackend(agentType string) *unsupportedBackend {
-	return &unsupportedBackend{
-		agentType: agentType,
-		sessionID: uuid.NewString(),
-		events:    make(chan Event),
-		waitCh:    make(chan backendExit),
-	}
-}
-
-func (b *unsupportedBackend) Start(context.Context) error { return nil }
-
-func (b *unsupportedBackend) SendPrompt(string) error {
-	return errors.New("prompt routing is not implemented for " + b.agentType + " yet")
-}
-
-func (b *unsupportedBackend) SendInterrupt() error {
-	return errors.New("interrupt routing is not implemented for " + b.agentType + " yet")
-}
-
-func (b *unsupportedBackend) SendSteer(string) error {
-	return errors.New("steering is not implemented for " + b.agentType + " yet")
-}
-
-func (b *unsupportedBackend) SendContext(string, string) error {
-	return errors.New("context injection is not implemented for " + b.agentType + " yet")
-}
-
-func (b *unsupportedBackend) SendMention(string, int, int) error {
-	return errors.New("mentions are not implemented for " + b.agentType + " yet")
-}
-
-func (b *unsupportedBackend) Events() <-chan Event { return b.events }
-func (b *unsupportedBackend) SessionID() string    { return b.sessionID }
-func (b *unsupportedBackend) Running() bool        { return false }
-func (b *unsupportedBackend) Wait() <-chan backendExit {
-	return b.waitCh
-}
-func (b *unsupportedBackend) Close() error { return nil }

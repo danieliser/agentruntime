@@ -47,6 +47,10 @@ type SpawnConfig struct {
 	// control channel instead of embedding them in Cmd.
 	Prompt string
 
+	// Model overrides the agent's default model (e.g. "claude-opus-4-5").
+	// Threaded into AGENT_CONFIG for the sidecar.
+	Model string
+
 	// Env is additional environment variables for the process.
 	Env map[string]string
 

@@ -72,6 +72,10 @@ func (r *LocalSidecarRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (Proce
 	if cfg.Prompt != "" {
 		sidecar.Env = append(sidecar.Env, fmt.Sprintf("AGENT_PROMPT=%s", cfg.Prompt))
 	}
+	// Pass agent config (model, resume_session, env, etc.) to sidecar
+	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
+		sidecar.Env = append(sidecar.Env, fmt.Sprintf("AGENT_CONFIG=%s", acJSON))
+	}
 	// Silence sidecar's own logging
 	sidecar.Stdout = os.Stderr
 	sidecar.Stderr = os.Stderr

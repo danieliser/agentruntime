@@ -114,6 +114,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		AgentName:  req.Agent,
 		Cmd:        spawnCmd,
 		Prompt:     req.Prompt,
+		Model:      req.Model,
 		Env:        req.Env,
 		WorkDir:    workDir,
 		TaskID:     req.TaskID,

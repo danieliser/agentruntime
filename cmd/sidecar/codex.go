@@ -18,11 +18,14 @@ import (
 var errCodexNoActiveTurn = errors.New("codex backend has no active turn")
 
 type codexBackend struct {
-	binary    string
-	prompt    string // if set, fire-and-forget exec mode
-	logger    *log.Logger
-	spawner   codexSpawner
-	sessionID string
+	binary       string
+	prompt       string // if set, fire-and-forget exec mode
+	model        string // --model flag override
+	approvalMode string // "full-auto" | "auto-edit" | "suggest"
+	extraEnv     map[string]string
+	logger       *log.Logger
+	spawner      codexSpawner
+	sessionID    string
 
 	mu           sync.RWMutex
 	stdin        io.WriteCloser
@@ -85,20 +88,24 @@ func newCodexBackend() *codexBackend {
 }
 
 func newCodexBackendWithBinary(binary string) *codexBackend {
-	return newCodexBackendConfig(binary, "", log.Default(), spawnCodexAppServer)
+	return newCodexBackendConfig(binary, "", log.Default(), spawnCodexAppServer, AgentConfig{})
 }
 
 // newCodexBackendPromptMode creates a fire-and-forget backend using codex exec.
-func newCodexBackendPromptMode(binary, prompt string) *codexBackend {
-	b := newCodexBackendConfig(binary, prompt, log.Default(), spawnCodexAppServer)
-	return b
+func newCodexBackendPromptMode(binary, prompt string, cfg AgentConfig) *codexBackend {
+	return newCodexBackendConfig(binary, prompt, log.Default(), spawnCodexAppServer, cfg)
+}
+
+// newCodexBackendInteractive creates an interactive backend with AGENT_CONFIG fields.
+func newCodexBackendInteractive(binary string, cfg AgentConfig) *codexBackend {
+	return newCodexBackendConfig(binary, "", log.Default(), spawnCodexAppServer, cfg)
 }
 
 func newCodexBackendWithSpawner(logger *log.Logger, spawner codexSpawner) *codexBackend {
-	return newCodexBackendConfig("codex", "", logger, spawner)
+	return newCodexBackendConfig("codex", "", logger, spawner, AgentConfig{})
 }
 
-func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner codexSpawner) *codexBackend {
+func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner codexSpawner, cfg AgentConfig) *codexBackend {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
@@ -110,16 +117,19 @@ func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner co
 	}
 
 	return &codexBackend{
-		binary:    binary,
-		prompt:    prompt,
-		logger:    logger,
-		spawner:   spawner,
-		sessionID: uuid.NewString(),
-		pending:   make(map[string]chan codexRPCResponse),
-		events:    make(chan Event, 64),
-		waitCh:    make(chan backendExit, 1),
-		done:      make(chan struct{}),
-		nextID:    1,
+		binary:       binary,
+		prompt:       prompt,
+		model:        cfg.Model,
+		approvalMode: cfg.ApprovalMode,
+		extraEnv:     cfg.Env,
+		logger:       logger,
+		spawner:      spawner,
+		sessionID:    uuid.NewString(),
+		pending:      make(map[string]chan codexRPCResponse),
+		events:       make(chan Event, 64),
+		waitCh:       make(chan backendExit, 1),
+		done:         make(chan struct{}),
+		nextID:       1,
 	}
 }
 
@@ -186,7 +196,15 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 	b.ctx, b.cancel = context.WithCancel(ctx)
 	b.mu.Unlock()
 
-	cmd := []string{b.binary, "exec", "--json", "--full-auto", "--skip-git-repo-check", b.prompt}
+	approvalFlag := "--full-auto"
+	if b.approvalMode != "" && b.approvalMode != "full-auto" {
+		approvalFlag = "--" + b.approvalMode
+	}
+	cmd := []string{b.binary, "exec", "--json", approvalFlag, "--skip-git-repo-check"}
+	if b.model != "" {
+		cmd = append(cmd, "--model", b.model)
+	}
+	cmd = append(cmd, b.prompt)
 	transport, err := b.spawner(b.ctx, cmd)
 	if err != nil {
 		b.setRunning(false)
@@ -284,7 +302,11 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	b.ctx, b.cancel = context.WithCancel(ctx)
 	b.mu.Unlock()
 
-	transport, err := b.spawner(b.ctx, []string{b.binary, "app-server", "--listen", "stdio://"})
+	spawnCmd := []string{b.binary, "app-server", "--listen", "stdio://"}
+	if b.model != "" {
+		spawnCmd = append(spawnCmd, "--model", b.model)
+	}
+	transport, err := b.spawner(b.ctx, spawnCmd)
 	if err != nil {
 		b.setRunning(false)
 		b.emitError(err.Error())
@@ -370,7 +392,7 @@ func (b *codexBackend) SendPrompt(content string) error {
 				"text": content,
 			},
 		},
-		"approvalPolicy": "never",
+		"approvalPolicy": b.codexApprovalPolicy(),
 		"sandboxPolicy": map[string]any{
 			"type": "dangerFullAccess",
 		},
@@ -508,10 +530,18 @@ func (b *codexBackend) callWithID(id any, method string, params any) (json.RawMe
 	b.pending[key] = respCh
 	b.pendingMu.Unlock()
 
+	rawParams, err := marshalRawMessage(params)
+	if err != nil {
+		b.pendingMu.Lock()
+		delete(b.pending, key)
+		b.pendingMu.Unlock()
+		return nil, err
+	}
+
 	if err := b.writeMessage(codexRPCMessage{
 		Method: method,
 		ID:     id,
-		Params: mustRawMessage(params),
+		Params: rawParams,
 	}); err != nil {
 		b.pendingMu.Lock()
 		delete(b.pending, key)
@@ -531,9 +561,13 @@ func (b *codexBackend) callWithID(id any, method string, params any) (json.RawMe
 }
 
 func (b *codexBackend) notify(method string, params any) error {
+	rawParams, err := marshalRawMessage(params)
+	if err != nil {
+		return err
+	}
 	return b.writeMessage(codexRPCMessage{
 		Method: method,
-		Params: mustRawMessage(params),
+		Params: rawParams,
 	})
 }
 
@@ -662,11 +696,16 @@ func (b *codexBackend) handleResponse(msg codexRPCMessage) {
 
 func (b *codexBackend) handleServerRequest(msg codexRPCMessage) {
 	if strings.Contains(msg.Method, "requestApproval") {
+		result, err := marshalRawMessage(map[string]any{
+			"decision": "accept",
+		})
+		if err != nil {
+			b.emit(Event{Type: "error", Data: map[string]any{"message": "marshal approval: " + err.Error()}})
+			return
+		}
 		_ = b.writeMessage(codexRPCMessage{
-			ID: msg.ID,
-			Result: mustRawMessage(map[string]any{
-				"decision": "accept",
-			}),
+			ID:     msg.ID,
+			Result: result,
 		})
 	}
 }
@@ -828,6 +867,20 @@ func (b *codexBackend) isClosed() bool {
 	}
 }
 
+// codexApprovalPolicy maps the AGENT_CONFIG approval_mode to the Codex
+// JSON-RPC approvalPolicy value used in turn/start.
+func (b *codexBackend) codexApprovalPolicy() string {
+	switch b.approvalMode {
+	case "suggest":
+		return "always"
+	case "auto-edit":
+		return "on-failure"
+	default:
+		// "full-auto" or empty — never ask for approval.
+		return "never"
+	}
+}
+
 func (b *codexBackend) setRunning(v bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -847,15 +900,15 @@ func rpcIDKey(id any) string {
 	}
 }
 
-func mustRawMessage(v any) json.RawMessage {
+func marshalRawMessage(v any) (json.RawMessage, error) {
 	if v == nil {
-		return nil
+		return nil, nil
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("marshal raw message: %w", err)
 	}
-	return data
+	return data, nil
 }
 
 func decodeMap(raw json.RawMessage) map[string]any {

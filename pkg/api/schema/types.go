@@ -73,8 +73,10 @@ type ClaudeConfig struct {
 	CredentialsPath string `json:"credentials_path,omitempty" yaml:"credentials_path,omitempty"` // → ~/.claude/credentials.json
 	MemoryPath      string `json:"memory_path,omitempty"      yaml:"memory_path,omitempty"`      // → ~/.claude/projects/{hash}/
 
-	// CLI flags
-	OutputFormat string `json:"output_format,omitempty" yaml:"output_format,omitempty"` // default: "stream-json"
+	// OutputFormat is not user-configurable — the sidecar always uses
+	// "stream-json" for structured event streaming. Retained in the schema
+	// for backward compatibility with existing request payloads but ignored.
+	OutputFormat string `json:"output_format,omitempty" yaml:"output_format,omitempty"`
 }
 
 // CodexConfig holds pre-materialized content/paths for Codex.

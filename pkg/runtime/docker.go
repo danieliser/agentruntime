@@ -216,7 +216,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		return nil, err
 	}
 
-	envValues := make(map[string]string, len(requestEnv(cfg))+1)
+	envValues := make(map[string]string, len(requestEnv(cfg))+3)
 	for key, value := range requestEnv(cfg) {
 		envValues[key] = value
 	}
@@ -224,6 +224,9 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		envValues[key] = value
 	}
 	envValues["AGENT_CMD"] = string(agentCmd)
+	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
+		envValues["AGENT_CONFIG"] = acJSON
+	}
 
 	envFile, err := writeDockerEnvFile(envValues)
 	if err != nil {
