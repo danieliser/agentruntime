@@ -201,9 +201,17 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			return
 		}
 
+		stdin := process.Stdin()
+		// Close stdin for prompt mode — claude -p waits for EOF before processing.
+		// Interactive mode keeps stdin open for JSONL input.
+		if b.prompt != "" && stdin != nil {
+			stdin.Close()
+			stdin = nil
+		}
+
 		b.mu.Lock()
 		b.process = process
-		b.stdin = process.Stdin()
+		b.stdin = stdin
 		b.running = true
 		b.mu.Unlock()
 

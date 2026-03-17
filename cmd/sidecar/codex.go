@@ -201,12 +201,70 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 		transport.stdin.Close()
 	}
 
-	go b.readLoop()
+	// Use JSONL reader (not JSON-RPC) — codex exec --json outputs flat events
+	go b.readExecJSONL()
 	if transport.wait != nil {
 		go b.waitLoop(transport.wait)
 	}
 
 	return nil
+}
+
+// readExecJSONL reads flat JSONL events from codex exec --json.
+// Format: {"type":"thread.started",...}, {"type":"item.completed",...}, etc.
+// Dot-delimited types (thread.started → thread/started for mapping).
+func (b *codexBackend) readExecJSONL() {
+	b.mu.RLock()
+	stdout := b.stdout
+	b.mu.RUnlock()
+	if stdout == nil {
+		return
+	}
+
+	decoder := json.NewDecoder(stdout)
+	for {
+		var raw map[string]any
+		if err := decoder.Decode(&raw); err != nil {
+			if !errors.Is(err, io.EOF) && !b.isClosed() {
+				b.emit(Event{Type: "error", Data: map[string]any{"message": err.Error()}})
+			}
+			return
+		}
+
+		eventType, _ := raw["type"].(string)
+		// Map codex exec event types to our unified types
+		switch {
+		case strings.HasPrefix(eventType, "item.completed"):
+			item, _ := raw["item"].(map[string]any)
+			itemType, _ := item["type"].(string)
+			switch itemType {
+			case "agent_message":
+				text, _ := item["text"].(string)
+				b.emit(Event{Type: "agent_message", Data: map[string]any{
+					"text": text, "final": true, "item": item,
+				}})
+			default:
+				b.emit(Event{Type: "tool_result", Data: raw})
+			}
+		case strings.HasPrefix(eventType, "item.started"):
+			item, _ := raw["item"].(map[string]any)
+			itemType, _ := item["type"].(string)
+			if itemType != "agent_message" {
+				b.emit(Event{Type: "tool_use", Data: raw})
+			}
+		case eventType == "turn.completed":
+			b.emit(Event{Type: "result", Data: raw})
+		case eventType == "turn.started":
+			// skip
+		case eventType == "thread.started":
+			b.emit(Event{Type: "system", Data: map[string]any{"subtype": "thread_started", "thread": raw}})
+		case eventType == "error":
+			b.emit(Event{Type: "error", Data: raw})
+		default:
+			// Forward unknown events as-is
+			b.emit(Event{Type: eventType, Data: raw})
+		}
+	}
 }
 
 func (b *codexBackend) Spawn(ctx context.Context) error {
