@@ -1,3 +1,5 @@
+> **Context:** This document researches the PAOP (Persistence) project's IDE WebSocket prototype, a predecessor approach. The recommendations in this doc were adopted and implemented in agentruntime's sidecar architecture.
+
 # PAOP IDE WebSocket Prototype: Gap Analysis
 
 **Research Date:** 2026-03-17

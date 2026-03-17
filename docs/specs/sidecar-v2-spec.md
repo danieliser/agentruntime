@@ -1,3 +1,5 @@
+> **Status: Implemented** — This spec was written before implementation. The code in `cmd/sidecar/` is the source of truth. See [IMPLEMENTATION-GUIDE.md](../IMPLEMENTATION-GUIDE.md) for the reference documentation.
+
 # Sidecar v2: Dual-Channel Architecture
 
 ## Problem

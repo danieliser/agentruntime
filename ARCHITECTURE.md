@@ -292,7 +292,9 @@ sdk/
   python/              Placeholder (future auto-generated from OpenAPI)
   node/                Placeholder (future auto-generated from OpenAPI)
 docs/
-  specs/               Protocol and design specifications
+  IMPLEMENTATION-GUIDE.md  Developer reference (session lifecycle, event schema)
+  architecture-flows.md    Detailed sequence diagrams
+  specs/               Protocol and design specifications (historical)
   research/            Agent protocol research notes
   design/              Config shape analysis
 ```

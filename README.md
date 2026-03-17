@@ -398,6 +398,14 @@ Current behavior:
 - Docker: `./agentd --runtime docker`. The runtime starts `agentruntime-agent:latest`, waits for the sidecar health endpoint, then connects to the container over its published port.
 - Legacy local pipe mode still exists as `./agentd --runtime local-pipe`, but it bypasses sidecar v2 and does not provide normalized events. New integrations should use `local`.
 
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture and design decisions
+- [docs/IMPLEMENTATION-GUIDE.md](docs/IMPLEMENTATION-GUIDE.md) — Developer reference (session lifecycle, event schema, field reference)
+- [docs/architecture-flows.md](docs/architecture-flows.md) — Detailed sequence diagrams
+- [docs/specs/](docs/specs/) — Design specs (historical)
+- [docs/research/](docs/research/) — Protocol research references
+
 ## Configuration
 
 `SessionRequest` is the shared request shape used by HTTP, the Go client, and `agentd dispatch --config`.
