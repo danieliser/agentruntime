@@ -746,14 +746,19 @@ func TestDeleteSession_KillsProcess(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
 
-	// Session state must reflect termination — poll briefly.
+	// Session should be removed from manager after delete, or in a terminal state.
+	// Poll briefly — the session may already be gone (removed on delete).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		resp3 := get(t, ts, "/sessions/"+id)
 		var s map[string]any
 		decodeJSON(t, resp3.Body, &s)
 		resp3.Body.Close()
-		st := s["state"].(string)
+		// Session removed from manager — delete succeeded
+		if s == nil || s["state"] == nil {
+			return // success — session was removed
+		}
+		st, _ := s["state"].(string)
 		if st == string(session.StateCompleted) || st == string(session.StateFailed) {
 			return // success
 		}

@@ -320,10 +320,6 @@ func injectionAgentCases() []injectionAgentCase {
 			agent:             &CodexAgent{},
 			supportsSessionID: true,
 		},
-		{
-			name:  "opencode",
-			agent: &OpenCodeAgent{},
-		},
 	}
 }
 
@@ -406,7 +402,7 @@ func installHelperAgentBinaries(t *testing.T) {
 	dir := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\nexec %s -test.run=TestAgentInjectionHelperProcess -- \"$@\"\n", shellSingleQuote(exe))
 
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex"} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatalf("write helper binary %s failed: %v", name, err)

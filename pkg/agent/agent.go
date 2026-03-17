@@ -1,5 +1,5 @@
 // Package agent defines the Agent interface and built-in agent definitions
-// for AI coding assistants (Claude Code, Codex, OpenCode).
+// for AI coding assistants (Claude Code, Codex).
 package agent
 
 // Agent knows how to construct the CLI command for a specific AI tool.
@@ -11,7 +11,7 @@ type Agent interface {
 	// directly to Runtime.Spawn as SpawnConfig.Cmd.
 	BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 
-	// Name returns the agent identifier ("claude", "codex", "opencode").
+	// Name returns the agent identifier ("claude", "codex").
 	Name() string
 
 	// ParseOutput reads raw output bytes and extracts a structured result
@@ -83,6 +83,5 @@ func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register(&ClaudeAgent{})
 	r.Register(&CodexAgent{})
-	r.Register(&OpenCodeAgent{})
 	return r
 }

@@ -9,7 +9,7 @@ import (
 // accessible by name — the contract any caller depends on.
 func TestRegistry_DefaultAgents(t *testing.T) {
 	r := DefaultRegistry()
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex"} {
 		if r.Get(name) == nil {
 			t.Errorf("expected agent %q to be registered in default registry", name)
 		}
@@ -213,42 +213,11 @@ func TestCodexAgent_BuildCmd_Interactive(t *testing.T) {
 	}
 }
 
-// --- OpenCodeAgent ---
-
-func TestOpenCodeAgent_Name(t *testing.T) {
-	a := &OpenCodeAgent{}
-	if a.Name() != "opencode" {
-		t.Fatalf("expected name 'opencode', got %q", a.Name())
-	}
-}
-
-func TestOpenCodeAgent_BuildCmd_Basic(t *testing.T) {
-	a := &OpenCodeAgent{}
-	cmd, err := a.BuildCmd("explain the code", AgentConfig{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cmd[0] != "opencode" {
-		t.Fatalf("expected cmd[0]='opencode', got %q", cmd[0])
-	}
-	if !contains(cmd, "explain the code") {
-		t.Fatalf("expected prompt in cmd, got %v", cmd)
-	}
-}
-
-func TestOpenCodeAgent_BuildCmd_EmptyPrompt(t *testing.T) {
-	a := &OpenCodeAgent{}
-	_, err := a.BuildCmd("", AgentConfig{})
-	if err == nil {
-		t.Fatal("expected error for empty prompt")
-	}
-}
-
 // --- AgentConfig zero value ---
 
 func TestAgentConfig_ZeroValue_AllAgents(t *testing.T) {
 	// All agents must handle a zero-value AgentConfig without panicking.
-	agents := []Agent{&ClaudeAgent{}, &CodexAgent{}, &OpenCodeAgent{}}
+	agents := []Agent{&ClaudeAgent{}, &CodexAgent{}}
 	for _, a := range agents {
 		t.Run(a.Name(), func(t *testing.T) {
 			cmd, err := a.BuildCmd("test prompt", AgentConfig{})
@@ -267,7 +236,7 @@ func TestAgentConfig_ZeroValue_AllAgents(t *testing.T) {
 func TestAllAgents_CmdNeverEmpty(t *testing.T) {
 	// Every agent must produce at least [binary, prompt] — a single-element
 	// cmd cannot be a valid invocation.
-	agents := []Agent{&ClaudeAgent{}, &CodexAgent{}, &OpenCodeAgent{}}
+	agents := []Agent{&ClaudeAgent{}, &CodexAgent{}}
 	for _, a := range agents {
 		t.Run(a.Name(), func(t *testing.T) {
 			cmd, err := a.BuildCmd("do something", AgentConfig{})
@@ -284,7 +253,7 @@ func TestAllAgents_CmdNeverEmpty(t *testing.T) {
 func TestAllAgents_BinaryMatchesName(t *testing.T) {
 	// The first element of cmd must be the agent binary name. This is the
 	// contract the runtime's Spawn() depends on.
-	agents := []Agent{&ClaudeAgent{}, &CodexAgent{}, &OpenCodeAgent{}}
+	agents := []Agent{&ClaudeAgent{}, &CodexAgent{}}
 	for _, a := range agents {
 		t.Run(a.Name(), func(t *testing.T) {
 			cmd, err := a.BuildCmd("test", AgentConfig{})

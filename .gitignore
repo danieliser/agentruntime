@@ -2,6 +2,7 @@
 /agentd
 /sidecar
 /agentruntime-sidecar
+/dashboard
 *.exe
 *.dll
 *.so
