@@ -138,7 +138,7 @@ func TestExternalWS_ReplayOnReconnect(t *testing.T) {
 
 	data, ok := replayed.Data.(map[string]any)
 	if !ok {
-		t.Fatalf("expected object data, got %T", replayed.Data)
+		t.Fatalf("expected replay data object, got %T", replayed.Data)
 	}
 	if got, _ := data["text"].(string); got != "second" {
 		t.Fatalf("expected replay text second, got %q", got)
@@ -151,7 +151,7 @@ func newTestExternalWSServer(t *testing.T, agentType string, backend *mockBacken
 	server := NewExternalWSServer(agentType, backend)
 	ts := httptest.NewServer(server.Routes())
 	t.Cleanup(ts.Close)
-	t.Cleanup(server.Close)
+	t.Cleanup(func() { _ = server.Close() })
 	return server, ts
 }
 
@@ -188,9 +188,10 @@ type mockBackend struct {
 	events    chan Event
 	waitCh    chan int
 
-	mu      sync.RWMutex
-	running bool
-	prompts []string
+	mu        sync.RWMutex
+	running   bool
+	prompts   []string
+	closeOnce sync.Once
 }
 
 func newMockBackend(sessionID string) *mockBackend {
@@ -229,7 +230,13 @@ func (b *mockBackend) SendMention(string, int, int) error { return nil }
 func (b *mockBackend) Events() <-chan Event               { return b.events }
 func (b *mockBackend) SessionID() string                  { return b.sessionID }
 func (b *mockBackend) Wait() <-chan int                   { return b.waitCh }
-func (b *mockBackend) emit(event Event)                   { b.events <- event }
+func (b *mockBackend) Close() error {
+	b.closeOnce.Do(func() {
+		close(b.waitCh)
+	})
+	return nil
+}
+func (b *mockBackend) emit(event Event) { b.events <- event }
 
 func (b *mockBackend) Running() bool {
 	b.mu.RLock()

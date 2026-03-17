@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,30 +11,31 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/danieliser/agentruntime/pkg/session"
 )
 
-const writeTimeout = 5 * time.Second
+const (
+	replayBufferSize = 1 << 20
+	writeTimeout     = 5 * time.Second
+	pingInterval     = 30 * time.Second
+	pongTimeout      = 10 * time.Second
+)
 
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
 type Event struct {
-	Type   string         `json:"type"`
-	Data   map[string]any `json:"data,omitempty"`
-	Offset int64          `json:"offset,omitempty"`
+	Type      string `json:"type"`
+	Data      any    `json:"data"`
+	Offset    int64  `json:"offset"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 type Command struct {
-	Type string         `json:"type"`
-	Data map[string]any `json:"data,omitempty"`
-}
-
-type healthResponse struct {
-	Status       string `json:"status"`
-	AgentRunning bool   `json:"agent_running"`
-	AgentType    string `json:"agent_type"`
-	SessionID    string `json:"session_id,omitempty"`
+	Type string `json:"type"`
+	Data any    `json:"data"`
 }
 
 type AgentBackend interface {
@@ -47,31 +49,19 @@ type AgentBackend interface {
 	SessionID() string
 	Running() bool
 	Wait() <-chan int
-	Close() error
 }
 
-type replayEntry struct {
-	offset int64
-	event  Event
-}
-
-type wsConn struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
-}
-
-func (c *wsConn) writeJSON(v any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-		return err
-	}
-	return c.conn.WriteJSON(v)
+type healthResponse struct {
+	Status       string `json:"status"`
+	AgentRunning bool   `json:"agent_running"`
+	AgentType    string `json:"agent_type"`
+	SessionID    string `json:"session_id"`
 }
 
 type ExternalWSServer struct {
 	agentType string
 	backend   AgentBackend
+	replay    *session.ReplayBuffer
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -79,10 +69,50 @@ type ExternalWSServer struct {
 	startOnce sync.Once
 	startErr  error
 
-	mu      sync.RWMutex
-	conns   map[*websocket.Conn]*wsConn
-	replay  []replayEntry
-	nextOff int64
+	appendMu sync.Mutex
+
+	clientsMu sync.RWMutex
+	clients   map[*wsClient]struct{}
+}
+
+type wsClient struct {
+	conn *websocket.Conn
+
+	writeMu   sync.Mutex
+	closeOnce sync.Once
+}
+
+type promptCommand struct {
+	Content string `json:"content"`
+}
+
+type steerCommand struct {
+	Content string `json:"content"`
+}
+
+type contextCommand struct {
+	Text     string `json:"text"`
+	FilePath string `json:"filePath"`
+}
+
+type mentionCommand struct {
+	FilePath  string `json:"filePath"`
+	LineStart int    `json:"lineStart"`
+	LineEnd   int    `json:"lineEnd"`
+}
+
+type errorData struct {
+	Message string `json:"message"`
+	Code    int    `json:"code"`
+}
+
+type exitData struct {
+	Code int `json:"code"`
+}
+
+type rawCommand struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 func NewExternalWSServer(agentType string, backend AgentBackend) *ExternalWSServer {
@@ -90,9 +120,10 @@ func NewExternalWSServer(agentType string, backend AgentBackend) *ExternalWSServ
 	return &ExternalWSServer{
 		agentType: agentType,
 		backend:   backend,
+		replay:    session.NewReplayBuffer(replayBufferSize),
 		ctx:       ctx,
 		cancel:    cancel,
-		conns:     make(map[*websocket.Conn]*wsConn),
+		clients:   make(map[*wsClient]struct{}),
 	}
 }
 
@@ -109,18 +140,20 @@ func (s *ExternalWSServer) Routes() http.Handler {
 
 func (s *ExternalWSServer) Close() error {
 	s.cancel()
+	s.replay.Close()
 
-	s.mu.Lock()
-	for conn := range s.conns {
-		_ = conn.Close()
-		delete(s.conns, conn)
+	for _, client := range s.snapshotClients() {
+		client.close()
 	}
-	s.mu.Unlock()
 
-	if s.backend != nil {
-		return s.backend.Close()
+	switch backend := any(s.backend).(type) {
+	case interface{ Close() error }:
+		return backend.Close()
+	case interface{ Stop() error }:
+		return backend.Stop()
+	default:
+		return nil
 	}
-	return nil
 }
 
 func (s *ExternalWSServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -134,7 +167,7 @@ func (s *ExternalWSServer) handleHealth(w http.ResponseWriter, _ *http.Request) 
 }
 
 func (s *ExternalWSServer) handleWS(w http.ResponseWriter, r *http.Request) {
-	since, err := parseSince(r.URL.Query().Get("since"))
+	since, hasSince, err := parseSince(r.URL.Query().Get("since"))
 	if err != nil {
 		http.Error(w, "invalid since", http.StatusBadRequest)
 		return
@@ -150,60 +183,42 @@ func (s *ExternalWSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &wsConn{conn: conn}
-	s.addConn(conn, client)
-	defer s.removeConn(conn)
-	defer conn.Close()
-
-	for _, event := range s.replayAfter(since) {
-		if err := client.writeJSON(event); err != nil {
-			return
-		}
-	}
-
-	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	client := &wsClient{conn: conn}
+	_ = conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
 	})
 
-	for {
-		var cmd Command
-		if err := conn.ReadJSON(&cmd); err != nil {
-			return
-		}
-		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-
-		if err := s.routeCommand(cmd); err != nil {
-			_ = client.writeJSON(Event{
-				Type: "error",
-				Data: map[string]any{"message": err.Error()},
-			})
-		}
+	if err := s.registerClient(client, hasSince, since); err != nil {
+		client.close()
+		return
 	}
+	defer s.unregisterClient(client)
+	defer client.close()
+
+	go client.pingLoop(s.ctx)
+	s.readLoop(client)
 }
 
 func (s *ExternalWSServer) ensureStarted() error {
 	s.startOnce.Do(func() {
 		if s.backend == nil {
-			s.startErr = errors.New("backend is nil")
+			s.startErr = errors.New("backend unavailable")
 			return
 		}
 
-		s.startErr = s.backend.Start(s.ctx)
-		if s.startErr != nil {
+		if err := s.backend.Start(s.ctx); err != nil {
+			s.startErr = err
 			return
 		}
 
 		go s.eventLoop()
+		go s.exitLoop()
 	})
 	return s.startErr
 }
 
 func (s *ExternalWSServer) eventLoop() {
-	if s.backend == nil {
-		return
-	}
-
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -212,78 +227,189 @@ func (s *ExternalWSServer) eventLoop() {
 			if !ok {
 				return
 			}
-			s.recordAndBroadcast(event)
+			if event.Type == "" {
+				continue
+			}
+			_ = s.recordAndBroadcast(event)
 		}
 	}
 }
 
-func (s *ExternalWSServer) recordAndBroadcast(event Event) {
-	s.mu.Lock()
-	s.nextOff++
-	event.Offset = s.nextOff
-	s.replay = append(s.replay, replayEntry{
-		offset: event.Offset,
-		event:  event,
-	})
-
-	clients := make([]*wsConn, 0, len(s.conns))
-	for _, client := range s.conns {
-		clients = append(clients, client)
+func (s *ExternalWSServer) exitLoop() {
+	waitCh := s.backend.Wait()
+	if waitCh == nil {
+		return
 	}
-	s.mu.Unlock()
 
-	for _, client := range clients {
-		_ = client.writeJSON(event)
+	select {
+	case <-s.ctx.Done():
+		return
+	case code, ok := <-waitCh:
+		if !ok {
+			return
+		}
+		_ = s.recordAndBroadcast(Event{
+			Type: "exit",
+			Data: exitData{Code: code},
+		})
 	}
 }
 
-func (s *ExternalWSServer) replayAfter(offset int64) []Event {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *ExternalWSServer) recordAndBroadcast(event Event) error {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
 
-	events := make([]Event, 0, len(s.replay))
-	for _, entry := range s.replay {
-		if entry.offset > offset {
-			events = append(events, entry.event)
+	line, _, err := encodeEventLine(s.replay.TotalBytes(), event)
+	if err != nil {
+		return err
+	}
+
+	_, offset := s.replay.WriteOffset(line)
+	event.Offset = offset
+
+	var failed []*wsClient
+	for _, client := range s.snapshotClients() {
+		if err := client.writeJSON(event); err != nil {
+			failed = append(failed, client)
 		}
+	}
+	for _, client := range failed {
+		s.unregisterClient(client)
+		client.close()
+	}
+	return nil
+}
+
+func encodeEventLine(baseOffset int64, event Event) ([]byte, int64, error) {
+	if event.Timestamp == 0 {
+		event.Timestamp = time.Now().UnixMilli()
+	}
+
+	offset := baseOffset
+	for i := 0; i < 6; i++ {
+		event.Offset = offset
+		line, err := json.Marshal(event)
+		if err != nil {
+			return nil, 0, err
+		}
+		next := baseOffset + int64(len(line)+1)
+		if next == offset {
+			return append(line, '\n'), offset, nil
+		}
+		offset = next
+	}
+
+	event.Offset = offset
+	line, err := json.Marshal(event)
+	if err != nil {
+		return nil, 0, err
+	}
+	return append(line, '\n'), baseOffset + int64(len(line)+1), nil
+}
+
+func (s *ExternalWSServer) registerClient(client *wsClient, hasSince bool, since int64) error {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+
+	if hasSince {
+		data, _ := s.replay.ReadFrom(since)
+		for _, event := range decodeReplay(data) {
+			if err := client.writeJSON(event); err != nil {
+				return err
+			}
+		}
+	}
+
+	s.clientsMu.Lock()
+	s.clients[client] = struct{}{}
+	s.clientsMu.Unlock()
+	return nil
+}
+
+func decodeReplay(data []byte) []Event {
+	lines := bytes.Split(data, []byte{'\n'})
+	events := make([]Event, 0, len(lines))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+
+		var event Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		events = append(events, event)
 	}
 	return events
 }
 
-func (s *ExternalWSServer) addConn(raw *websocket.Conn, client *wsConn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.conns[raw] = client
+func (s *ExternalWSServer) unregisterClient(client *wsClient) {
+	s.clientsMu.Lock()
+	delete(s.clients, client)
+	s.clientsMu.Unlock()
 }
 
-func (s *ExternalWSServer) removeConn(raw *websocket.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.conns, raw)
+func (s *ExternalWSServer) snapshotClients() []*wsClient {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+
+	out := make([]*wsClient, 0, len(s.clients))
+	for client := range s.clients {
+		out = append(out, client)
+	}
+	return out
 }
 
-func (s *ExternalWSServer) routeCommand(cmd Command) error {
+func (s *ExternalWSServer) readLoop(client *wsClient) {
+	for {
+		var cmd rawCommand
+		if err := client.conn.ReadJSON(&cmd); err != nil {
+			return
+		}
+		_ = client.conn.SetReadDeadline(time.Now().Add(pingInterval + pongTimeout))
+
+		if err := s.routeCommand(cmd); err != nil {
+			_ = client.writeJSON(Event{
+				Type: "error",
+				Data: errorData{Message: err.Error(), Code: http.StatusBadRequest},
+			})
+		}
+	}
+}
+
+func (s *ExternalWSServer) routeCommand(cmd rawCommand) error {
 	if s.backend == nil {
 		return errors.New("backend unavailable")
 	}
 
 	switch cmd.Type {
 	case "prompt":
-		return s.backend.SendPrompt(stringValue(cmd.Data["content"]))
+		var payload promptCommand
+		if err := decodeCommandData(cmd.Data, &payload); err != nil {
+			return err
+		}
+		return s.backend.SendPrompt(payload.Content)
 	case "interrupt":
 		return s.backend.SendInterrupt()
 	case "steer":
-		return s.backend.SendSteer(stringValue(cmd.Data["content"]))
+		var payload steerCommand
+		if err := decodeCommandData(cmd.Data, &payload); err != nil {
+			return err
+		}
+		return s.backend.SendSteer(payload.Content)
 	case "context":
-		return s.backend.SendContext(stringValue(cmd.Data["text"]), stringValue(cmd.Data["filePath"]))
+		var payload contextCommand
+		if err := decodeCommandData(cmd.Data, &payload); err != nil {
+			return err
+		}
+		return s.backend.SendContext(payload.Text, payload.FilePath)
 	case "mention":
-		return s.backend.SendMention(
-			stringValue(cmd.Data["filePath"]),
-			intValue(cmd.Data["lineStart"]),
-			intValue(cmd.Data["lineEnd"]),
-		)
-	case "ping":
-		return nil
+		var payload mentionCommand
+		if err := decodeCommandData(cmd.Data, &payload); err != nil {
+			return err
+		}
+		return s.backend.SendMention(payload.FilePath, payload.LineStart, payload.LineEnd)
 	default:
 		return errors.New("unknown command type: " + cmd.Type)
 	}
@@ -296,33 +422,62 @@ func (s *ExternalWSServer) sessionID() string {
 	return s.backend.SessionID()
 }
 
-func parseSince(raw string) (int64, error) {
+func decodeCommandData(raw json.RawMessage, target any) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		raw = []byte("{}")
+	}
+	return json.Unmarshal(raw, target)
+}
+
+func parseSince(raw string) (int64, bool, error) {
 	if raw == "" {
-		return 0, nil
+		return 0, false, nil
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, errors.New("since must be non-negative")
+		return 0, false, errors.New("since must be non-negative")
 	}
-	return value, nil
+	return value, true, nil
 }
 
-func stringValue(v any) string {
-	if s, ok := v.(string); ok {
-		return s
+func (c *wsClient) writeJSON(v any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
 	}
-	return ""
+	return c.conn.WriteJSON(v)
 }
 
-func intValue(v any) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case int64:
-		return int(n)
-	default:
-		return 0
+func (c *wsClient) writePing() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
 	}
+	return c.conn.WriteMessage(websocket.PingMessage, nil)
+}
+
+func (c *wsClient) pingLoop(ctx context.Context) {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.writePing(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (c *wsClient) close() {
+	c.closeOnce.Do(func() {
+		_ = c.conn.Close()
+	})
 }
