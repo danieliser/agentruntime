@@ -221,6 +221,7 @@ func (s *Server) handleDeleteSession(c *gin.Context) {
 		return
 	}
 	_ = sess.Kill()
+	sess.Replay.Close()
 	sess.SetCompleted(-1)
 	s.sessions.Remove(sess.ID)
 	snap := sess.Snapshot()

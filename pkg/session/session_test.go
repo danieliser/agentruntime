@@ -335,3 +335,174 @@ func TestSession_EndedAt_SetOnCompletion(t *testing.T) {
 		t.Fatalf("EndedAt %v is outside expected range [%v, %v]", s.EndedAt, before, after)
 	}
 }
+
+// --- Max sessions limit ---
+
+func TestManager_MaxSessions_EnforcedOnAdd(t *testing.T) {
+	m := NewManager()
+	m.SetMaxSessions(3)
+
+	for i := 0; i < 3; i++ {
+		if err := m.Add(NewSession("", "claude", "local")); err != nil {
+			t.Fatalf("Add %d failed unexpectedly: %v", i, err)
+		}
+	}
+
+	// 4th session must be rejected.
+	err := m.Add(NewSession("", "claude", "local"))
+	if err != ErrMaxSessions {
+		t.Fatalf("expected ErrMaxSessions, got %v", err)
+	}
+	if len(m.List()) != 3 {
+		t.Fatalf("expected 3 sessions after rejected add, got %d", len(m.List()))
+	}
+}
+
+func TestManager_MaxSessions_RemoveFreesSlot(t *testing.T) {
+	m := NewManager()
+	m.SetMaxSessions(2)
+
+	s1 := NewSession("", "claude", "local")
+	s2 := NewSession("", "claude", "local")
+	_ = m.Add(s1)
+	_ = m.Add(s2)
+
+	// At limit — new add fails.
+	if err := m.Add(NewSession("", "claude", "local")); err != ErrMaxSessions {
+		t.Fatalf("expected ErrMaxSessions at limit, got %v", err)
+	}
+
+	// Remove one — new add succeeds.
+	m.Remove(s1.ID)
+	if err := m.Add(NewSession("", "claude", "local")); err != nil {
+		t.Fatalf("Add after Remove should succeed, got %v", err)
+	}
+}
+
+func TestManager_MaxSessions_ZeroMeansUnlimited(t *testing.T) {
+	m := NewManager()
+	m.SetMaxSessions(0) // explicit unlimited
+
+	for i := 0; i < 50; i++ {
+		if err := m.Add(NewSession("", "claude", "local")); err != nil {
+			t.Fatalf("Add %d failed with unlimited: %v", i, err)
+		}
+	}
+}
+
+// --- Create 5, delete 3, verify 2 remain ---
+
+func TestManager_CreateFiveDeleteThreeVerifyTwo(t *testing.T) {
+	m := NewManager()
+	sessions := make([]*Session, 5)
+	for i := range sessions {
+		s := NewSession("", "claude", "local")
+		if err := m.Add(s); err != nil {
+			t.Fatalf("Add session %d: %v", i, err)
+		}
+		// Write some data so the replay buffer is initialized.
+		s.Replay.Write([]byte("hello from session " + s.ID))
+		sessions[i] = s
+	}
+
+	if len(m.List()) != 5 {
+		t.Fatalf("expected 5 sessions, got %d", len(m.List()))
+	}
+
+	// Delete sessions 0, 1, 2 — simulate what handleDeleteSession does.
+	for _, s := range sessions[:3] {
+		_ = s.Kill()
+		s.Replay.Close()
+		s.SetCompleted(-1)
+		m.Remove(s.ID)
+	}
+
+	// Verify 2 remain.
+	remaining := m.List()
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 remaining sessions, got %d", len(remaining))
+	}
+
+	// Verify the deleted sessions are gone.
+	for _, s := range sessions[:3] {
+		if m.Get(s.ID) != nil {
+			t.Fatalf("deleted session %s still reachable", s.ID)
+		}
+	}
+
+	// Verify the surviving sessions are still accessible.
+	for _, s := range sessions[3:] {
+		got := m.Get(s.ID)
+		if got == nil {
+			t.Fatalf("surviving session %s not found", s.ID)
+		}
+		if got.State != StatePending {
+			t.Fatalf("surviving session state: expected %q, got %q", StatePending, got.State)
+		}
+	}
+}
+
+// --- Replay buffer closure on delete ---
+
+func TestManager_DeleteClosesReplayBuffer(t *testing.T) {
+	m := NewManager()
+	sessions := make([]*Session, 3)
+	for i := range sessions {
+		s := NewSession("", "claude", "local")
+		_ = m.Add(s)
+		s.Replay.Write([]byte("data"))
+		sessions[i] = s
+	}
+
+	// Delete session 0 — replay buffer must be marked done.
+	target := sessions[0]
+	_ = target.Kill()
+	target.Replay.Close()
+	target.SetCompleted(-1)
+	m.Remove(target.ID)
+
+	if !target.Replay.IsDone() {
+		t.Fatal("replay buffer should be closed (done) after delete")
+	}
+
+	// Surviving sessions must still have open replay buffers.
+	for _, s := range sessions[1:] {
+		if s.Replay.IsDone() {
+			t.Fatalf("surviving session %s has closed replay buffer", s.ID)
+		}
+	}
+}
+
+// --- ShutdownAll ---
+
+func TestManager_ShutdownAll_ClosesAllReplayBuffers(t *testing.T) {
+	m := NewManager()
+	sessions := make([]*Session, 4)
+	for i := range sessions {
+		s := NewSession("", "claude", "local")
+		_ = m.Add(s)
+		s.Replay.Write([]byte("output data"))
+		sessions[i] = s
+	}
+
+	m.ShutdownAll()
+
+	// Registry must be empty.
+	if len(m.List()) != 0 {
+		t.Fatalf("expected 0 sessions after ShutdownAll, got %d", len(m.List()))
+	}
+
+	// All replay buffers must be closed.
+	for i, s := range sessions {
+		if !s.Replay.IsDone() {
+			t.Fatalf("session %d replay buffer not closed after ShutdownAll", i)
+		}
+	}
+
+	// All sessions must be in a terminal state.
+	for i, s := range sessions {
+		if s.State != StateFailed {
+			t.Fatalf("session %d state: expected %q, got %q", i, StateFailed, s.State)
+		}
+	}
+}
