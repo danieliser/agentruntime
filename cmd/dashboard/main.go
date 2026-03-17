@@ -129,7 +129,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		req.Prompt = r.URL.Query().Get("prompt")
 	}
 	if req.Prompt == "" {
-		req.Prompt = "Print the numbers 1 through 10, each on its own line. No other text."
+		req.Prompt = "Count from 1 to 60, printing one number per line. Sleep 1 second between each number. Use the Bash tool to run: for i in $(seq 1 60); do echo $i; sleep 1; done"
 	}
 
 	interactive := req.Mode == "interactive"
@@ -189,18 +189,25 @@ func spawnOne(agent, mode string, interactive bool, prompt string, env map[strin
 		body["container"] = container
 	}
 
-	data, _ := json.Marshal(body)
+	data, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("spawn %s: marshal: %v", label, err)
+		return nil
+	}
 	resp, err := http.Post(daemonURL+"/sessions", "application/json", bytes.NewReader(data))
 	if err != nil {
 		log.Printf("spawn %s: %v", label, err)
 		return nil
 	}
+	defer resp.Body.Close()
 
 	var sessResp struct {
 		SessionID string `json:"session_id"`
 	}
-	json.NewDecoder(resp.Body).Decode(&sessResp)
-	resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&sessResp); err != nil {
+		log.Printf("spawn %s: decode response: %v", label, err)
+		return nil
+	}
 
 	if sessResp.SessionID == "" {
 		return nil
@@ -216,6 +223,11 @@ func spawnOne(agent, mode string, interactive bool, prompt string, env map[strin
 		config:     body,
 		prompt:     prompt,
 		generation: gen,
+	}
+
+	// Record the initial prompt as the first event in the stream
+	if prompt != "" {
+		sess.recordUserEvent(prompt)
 	}
 
 	mu.Lock()
@@ -384,10 +396,27 @@ func (s *dashSession) sendStdin(data string) error {
 	if s.conn == nil {
 		return fmt.Errorf("no connection")
 	}
+	// Record user message in event buffer so it shows in the stream viewer
+	s.recordUserEvent(strings.TrimRight(data, "\n\r"))
 	return s.conn.WriteJSON(map[string]any{
 		"type": "stdin",
 		"data": data,
 	})
+}
+
+// recordUserEvent injects a synthetic event into the buffer for display.
+func (s *dashSession) recordUserEvent(content string) {
+	frame, _ := json.Marshal(map[string]any{
+		"type": "user_message",
+		"data": map[string]any{"content": content},
+		"timestamp": time.Now().UnixMilli(),
+	})
+	s.eventMu.Lock()
+	s.eventBuf = append(s.eventBuf, frame)
+	if len(s.eventBuf) > 100 {
+		s.eventBuf = s.eventBuf[len(s.eventBuf)-100:]
+	}
+	s.eventMu.Unlock()
 }
 
 func (s *dashSession) closeConn() {
@@ -756,6 +785,10 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; letter-spacing: 1px; }
 .event-line .ev-type.tool_result { color: #22c55e; }
 .event-line .ev-type.result { color: #60a5fa; }
 .event-line .ev-type.error { color: #ef4444; }
+.event-line .ev-type.user_message { color: #2dd4bf; font-style: italic; }
+.event-line .ev-type.progress { color: #a3a3a3; }
+.event-line .ev-type.system { color: #737373; }
+.event-line.system-init { background: #0d1117; border: 1px solid #1a2a1a; border-radius: 4px; padding: 6px 8px; margin: 4px 0; font-size: 9px; white-space: pre-wrap; }
 .modal-footer { padding: 8px 16px; border-top: 1px solid #222; display: flex; gap: 6px; }
 </style>
 </head>
@@ -806,7 +839,7 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; letter-spacing: 1px; }
   </div>
   <div class="config-content active" id="tab-prompt">
     <label>Custom prompt (used for next spawn)</label>
-    <textarea id="customPrompt">Print the numbers 1 through 10, each on its own line. No other text.</textarea>
+    <textarea id="customPrompt">Count from 1 to 60, printing one number per line. Sleep 1 second between each number. Use the Bash tool to run: for i in $(seq 1 60); do echo $i; sleep 1; done</textarea>
   </div>
   <div class="config-content" id="tab-env">
     <label>Environment variables (KEY=VALUE, one per line)</label>
@@ -1089,7 +1122,7 @@ function openModal(id, agent, mode) {
 
   var filters = document.getElementById('modalFilters');
   filters.textContent = '';
-  ['all','agent_message','tool_use','tool_result','result','error','system'].forEach(function(f) {
+  ['all','user_message','agent_message','tool_use','tool_result','result','progress','error','system'].forEach(function(f) {
     var chip = document.createElement('span');
     chip.className = 'filter-chip' + (f === 'all' ? ' active' : '');
     chip.textContent = f;
@@ -1131,22 +1164,51 @@ function loadEvents() {
       var innerType = ft;
       var dataPreview = '';
 
+      var inner = null;
       if ((ft === 'stdout' || ft === 'replay') && typeof frame.data === 'string') {
         try {
-          var inner = JSON.parse(frame.data);
+          inner = JSON.parse(frame.data);
           innerType = inner.type || ft;
-          if (inner.data && inner.data.text) dataPreview = inner.data.text;
-          else if (inner.data && inner.data.message) dataPreview = inner.data.message;
-          else if (inner.data && inner.data.name) dataPreview = inner.data.name;
-          else dataPreview = JSON.stringify(inner.data).slice(0, 120);
-        } catch(e) { dataPreview = frame.data.slice(0, 120); }
-      } else {
-        dataPreview = JSON.stringify(frame.data || frame).slice(0, 120);
+        } catch(e) {}
+      }
+
+      // For user_message (synthetic), show directly
+      if (ft === 'user_message') {
+        innerType = 'user_message';
+        dataPreview = (frame.data && frame.data.content) || '';
+      }
+      // System init event — show key fields expanded
+      else if (innerType === 'system' && inner && inner.data && inner.data.subtype === 'init') {
+        var d = inner.data;
+        var parts = [];
+        if (d.model) parts.push('model: ' + d.model);
+        if (d.tools) parts.push('tools: ' + d.tools.length);
+        if (d.mcp_servers) parts.push('mcp: ' + d.mcp_servers.length);
+        if (d.agents) parts.push('agents: ' + d.agents.length);
+        if (d.skills) parts.push('skills: ' + d.skills.length);
+        if (d.session_id) parts.push('sid: ' + d.session_id.slice(0, 8));
+        if (d.permissionMode) parts.push('perms: ' + d.permissionMode);
+        if (d.cwd) parts.push('cwd: ' + d.cwd);
+        dataPreview = parts.join(' | ');
+        line.className = 'event-line system-init';
+      }
+      // Standard inner events
+      else if (inner && inner.data) {
+        if (inner.data.text) dataPreview = inner.data.text;
+        else if (inner.data.message) dataPreview = inner.data.message;
+        else if (inner.data.name) dataPreview = inner.data.name;
+        else if (inner.data.content) dataPreview = inner.data.content;
+        else dataPreview = JSON.stringify(inner.data).slice(0, 200);
+      }
+      // Raw frames
+      else {
+        dataPreview = JSON.stringify(frame.data || frame).slice(0, 200);
       }
 
       var timeSpan = document.createElement('span');
       timeSpan.className = 'ev-time';
-      timeSpan.textContent = frame.offset ? '[' + frame.offset + '] ' : '';
+      var ts = frame.offset ? '[' + frame.offset + '] ' : (frame.timestamp ? '[' + new Date(frame.timestamp).toLocaleTimeString() + '] ' : '');
+      timeSpan.textContent = ts;
       line.appendChild(timeSpan);
 
       var typeSpan = document.createElement('span');
@@ -1155,7 +1217,7 @@ function loadEvents() {
       line.appendChild(typeSpan);
 
       var dataSpan = document.createElement('span');
-      dataSpan.textContent = ' ' + (dataPreview.length > 100 ? dataPreview.slice(0, 100) + '...' : dataPreview);
+      dataSpan.textContent = ' ' + (dataPreview.length > 150 ? dataPreview.slice(0, 150) + '...' : dataPreview);
       line.appendChild(dataSpan);
 
       body.appendChild(line);
