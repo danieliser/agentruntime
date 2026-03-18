@@ -23,7 +23,7 @@ jobs:
           - goos: darwin
             goarch: amd64
             runner: ubuntu-latest
-            wheel_plat: macosx_11_0_x86_64
+            wheel_plat: macosx_10_9_x86_64
           - goos: linux
             goarch: amd64
             runner: ubuntu-latest
@@ -56,7 +56,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -ldflags="-s -w" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+          go build -trimpath -ldflags="-s -w" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 
       - name: Patch version in pyproject.toml
         working-directory: packages/agentd-py
@@ -124,7 +124,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -ldflags="-s -w" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+          go build -trimpath -ldflags="-s -w" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 
       - name: Patch version in pyproject.toml
         working-directory: packages/agentd-py
