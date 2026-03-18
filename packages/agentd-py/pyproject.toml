@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentruntime-agentd"
+version = "0.1.0"
+description = "Pre-built agentd binary for running coding agents behind one API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Daniel Iser"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.scripts]
+agentd = "agentruntime_agentd:main"
+
+[project.urls]
+Homepage = "https://github.com/danieliser/agentruntime"
+Issues = "https://github.com/danieliser/agentruntime/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentruntime_agentd"]

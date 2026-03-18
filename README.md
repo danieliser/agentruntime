@@ -28,6 +28,30 @@ agent CLI
   -> normalized by sidecar
 ```
 
+## Installation
+
+### Via pip (no Go required)
+
+```bash
+pip install agentruntime-agentd
+```
+
+This installs the pre-built `agentd` binary for your platform. After installation, `agentd` is available on your PATH:
+
+```bash
+agentd --port 8090 --runtime local
+```
+
+For programmatic use:
+
+```python
+from agentruntime_agentd import get_binary_path
+
+binary = get_binary_path()  # absolute path to the agentd binary
+```
+
+### From source
+
 ## Quick Start
 
 The default `local` runtime needs both binaries: `agentd` and `agentruntime-sidecar`.
