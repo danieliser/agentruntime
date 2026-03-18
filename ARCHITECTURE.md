@@ -117,11 +117,11 @@ connection — not at sidecar boot.
 ### Claude (two modes)
 
 **Prompt mode** (`AGENT_PROMPT` set): spawns
-`claude -p "<prompt>" --output-format stream-json --dangerously-skip-permissions`.
+`claude -p "<prompt>" --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --session-id <uuid>`.
 Stdin closed immediately. One-shot execution. No MCP server.
 
 **Interactive/IDE mode** (`AGENT_PROMPT` empty): spawns
-`claude --output-format stream-json --input-format stream-json --ide --dangerously-skip-permissions`.
+`claude --output-format stream-json --input-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --ide --session-id <uuid>`.
 Stdin stays open for JSONL commands. An MCP WebSocket server runs on a random
 localhost port to provide IDE tools. Claude connects to it via
 `CLAUDE_CODE_SSE_PORT`. Tool permission requests are auto-approved by the
@@ -167,10 +167,10 @@ milliseconds.
 
 | Type | Data shape | Source |
 |------|-----------|--------|
-| `agent_message` | `{text, delta, model, usage}` | Agent text output (streaming or final) |
+| `agent_message` | `{text, delta, model, usage, turn_id, item_id}` | Agent text output (streaming or final) |
 | `tool_use` | `{id, name, input}` | Tool invocation started |
 | `tool_result` | `{id, name, output, is_error, duration_ms}` | Tool completed (Codex only) |
-| `result` | `{session_id, status, cost_usd, duration_ms, num_turns}` | Turn/session finished |
+| `result` | `{session_id, turn_id, status, cost_usd, duration_ms, num_turns, usage}` | Turn/session finished |
 | `progress` | passthrough `map[string]any` | Claude progress updates |
 | `system` | `{subtype, ...}` | Stderr lines, thread_started, hooks |
 | `error` | `{message}` | Errors from any source |
