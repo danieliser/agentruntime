@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +26,7 @@ type wsHandle struct {
 	stdoutW     *io.PipeWriter
 	done        chan ExitResult
 	containerID string
+	dockerHost  string // DOCKER_HOST for remote Docker daemon
 	hostPort    string
 	cancel      context.CancelFunc
 	killFn      func() error // override for non-Docker runtimes
@@ -341,14 +341,8 @@ func (h *wsHandle) Kill() error {
 	if h.killFn != nil {
 		killErr = h.killFn()
 	} else {
-		// Default: Docker container stop + remove
-		stopErr := exec.Command("docker", "stop", h.containerID).Run()
-		rmErr := exec.Command("docker", "rm", h.containerID).Run()
-		if stopErr != nil {
-			killErr = stopErr
-		} else {
-			killErr = rmErr
-		}
+		// Default: Docker container stop + remove (host-aware for remote Docker)
+		stopDockerContainerHost(h.dockerHost, h.containerID)
 	}
 
 	if h.cancel != nil {

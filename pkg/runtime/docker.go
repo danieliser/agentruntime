@@ -156,7 +156,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 
 	hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, containerID, dockerSidecarContainerPort)
 	if err != nil {
-		stopDockerContainer(containerID)
+		stopDockerContainerHost(r.cfg.Host, containerID)
 		if spec.cleanup != nil {
 			spec.cleanup()
 		}
@@ -164,7 +164,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	}
 
 	if err := waitForDockerSidecarHealth(ctx, hostPort); err != nil {
-		stopDockerContainer(containerID)
+		stopDockerContainerHost(r.cfg.Host, containerID)
 		if spec.cleanup != nil {
 			spec.cleanup()
 		}
@@ -173,12 +173,13 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 
 	handle, err := dialSidecar(containerID, hostPort, 0, dockerPrompt(cfg))
 	if err != nil {
-		stopDockerContainer(containerID)
+		stopDockerContainerHost(r.cfg.Host, containerID)
 		if spec.cleanup != nil {
 			spec.cleanup()
 		}
 		return nil, &SpawnError{Reason: "sidecar ws", Err: err}
 	}
+	handle.dockerHost = r.cfg.Host
 	handle.setCleanup(spec.cleanup)
 	return handle, nil
 }
@@ -459,7 +460,7 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		if id == "" {
 			continue
 		}
-		labels, err := dockerContainerLabels(ctx, id)
+		labels, err := dockerContainerLabelsHost(ctx, r.cfg.Host, id)
 		if err != nil {
 			return nil, fmt.Errorf("docker inspect %s: %w", id, err)
 		}
@@ -469,6 +470,7 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		if hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, id, dockerSidecarContainerPort); err == nil {
 			handle, err := dialSidecar(id, hostPort, 0, "")
 			if err == nil {
+				handle.dockerHost = r.cfg.Host
 				handle.setRecoveryInfo(&RecoveryInfo{
 					SessionID: sessionID,
 					TaskID:    taskID,
@@ -478,7 +480,7 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 			}
 		}
 
-		handle, err := newRecoveredDockerHandle(ctx, id, sessionID, taskID)
+		handle, err := newRecoveredDockerHandle(ctx, r.cfg.Host, id, sessionID, taskID)
 		if err != nil {
 			return nil, fmt.Errorf("docker logs %s: %w", id, err)
 		}
@@ -600,26 +602,33 @@ func dockerPrompt(cfg SpawnConfig) string {
 }
 
 func stopDockerContainer(containerID string) {
+	stopDockerContainerHost("", containerID)
+}
+
+func stopDockerContainerHost(host, containerID string) {
 	if containerID == "" {
 		return
 	}
-	_ = exec.Command("docker", "stop", containerID).Run()
-	_ = exec.Command("docker", "rm", containerID).Run()
+	_, _ = dockerOutputHost(context.Background(), host, "stop", containerID)
+	_, _ = dockerOutputHost(context.Background(), host, "rm", containerID)
 }
 
 func dockerContainerLabels(ctx context.Context, containerID string) (map[string]string, error) {
-	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .Config.Labels}}", containerID).Output()
+	return dockerContainerLabelsHost(ctx, "", containerID)
+}
+
+func dockerContainerLabelsHost(ctx context.Context, host, containerID string) (map[string]string, error) {
+	out, err := dockerOutputHost(ctx, host, "inspect", "--format", "{{json .Config.Labels}}", containerID)
 	if err != nil {
 		return nil, err
 	}
 
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" || trimmed == "null" {
+	if out == "" || out == "null" {
 		return nil, nil
 	}
 
 	var labels map[string]string
-	if err := json.Unmarshal([]byte(trimmed), &labels); err != nil {
+	if err := json.Unmarshal([]byte(out), &labels); err != nil {
 		return nil, fmt.Errorf("parse labels: %w", err)
 	}
 	return labels, nil
@@ -659,6 +668,7 @@ func (h *dockerHandle) RecoveryInfo() *RecoveryInfo { return nil }
 // It follows docker logs so recovered sessions can resume stdout/stderr streaming.
 type recoveredDockerHandle struct {
 	containerID string
+	dockerHost  string
 	SessionID   string
 	TaskID      string
 
@@ -695,11 +705,15 @@ func (h *recoveredDockerHandle) Wait() <-chan ExitResult {
 func (h *recoveredDockerHandle) Kill() error {
 	h.killMu.Lock()
 	defer h.killMu.Unlock()
-	return exec.Command("docker", "kill", h.containerID).Run()
+	_, err := dockerOutputHost(context.Background(), h.dockerHost, "kill", h.containerID)
+	return err
 }
 
-func newRecoveredDockerHandle(ctx context.Context, containerID, sessionID, taskID string) (*recoveredDockerHandle, error) {
+func newRecoveredDockerHandle(ctx context.Context, host, containerID, sessionID, taskID string) (*recoveredDockerHandle, error) {
 	cmd := exec.CommandContext(ctx, "docker", "logs", "--follow", "--since=0", containerID)
+	if host != "" {
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -717,6 +731,7 @@ func newRecoveredDockerHandle(ctx context.Context, containerID, sessionID, taskI
 
 	handle := &recoveredDockerHandle{
 		containerID: containerID,
+		dockerHost:  host,
 		SessionID:   sessionID,
 		TaskID:      taskID,
 		cmd:         cmd,
