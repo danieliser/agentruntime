@@ -97,8 +97,8 @@ sequenceDiagram
     Note over S: Spawn Codex (app-server or exec mode)
     alt Interactive mode (no prompt in request)
     S->>CX: codex app-server --listen stdio:// [--model M]
-    S->>CX: {method:"initialize", id:0, params:{clientInfo:{name:"agentruntime"}}}
-    CX->>S: {id:0, result:{userAgent:"codex-cli/0.115.0"}}
+    S->>CX: {method:"initialize", id:0, params:{clientInfo:<br/>{name:"agentruntime",version:"0.3.0"},<br/>capabilities:{experimentalApi:true}}}
+    CX->>S: {id:0, result:{userAgent:"codex-cli/..."}}
     S->>CX: {method:"initialized"}
 
     C->>H: WS: {type:"prompt", data:{content:"fix the bug"}}
@@ -220,6 +220,6 @@ graph TD
 | **Steering** | interrupt control_request + new user message | `turn/steer` (native) | Not supported |
 | **Tool approval** | `control_request` with `can_use_tool` auto-approved by sidecar | `requestApproval` auto-accepted by sidecar | N/A (`--full-auto`) |
 | **Context injection** | `selection_changed` via MCP WS | Not supported natively | Not supported |
-| **Session resume** | `--session-id` + `--resume` | `thread/resume` JSON-RPC | N/A (one-shot) |
+| **Session resume** | `--session-id` (always set; `--resume` not yet wired) | `thread/resume` JSON-RPC (not yet wired) | N/A (one-shot) |
 | **Auth** | OAuth via credentials.json mount | OAuth via auth.json mount | OAuth via auth.json mount |
 | **Output format** | Anthropic API message objects | Codex item events with deltas | Codex flat JSONL events |
