@@ -106,7 +106,7 @@ type MCPServer struct {
 // If omitted entirely, sane defaults are applied:
 // --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges:true
 type ContainerConfig struct {
-	Image       string   `json:"image,omitempty"        yaml:"image,omitempty"`   // default: "ubuntu:22.04"
+	Image       string   `json:"image,omitempty"        yaml:"image,omitempty"`   // default: "agentruntime-agent:latest"
 	Memory      string   `json:"memory,omitempty"       yaml:"memory,omitempty"`  // e.g. "4g"
 	CPUs        float64  `json:"cpus,omitempty"         yaml:"cpus,omitempty"`    // e.g. 2.0
 	Network     string   `json:"network,omitempty"      yaml:"network,omitempty"` // default: "bridge"

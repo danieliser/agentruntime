@@ -39,7 +39,7 @@ End-to-end trace of a single session from HTTP request to cleanup.
 7. **Lookup agent** — `s.agents.Get(req.Agent)` resolves from the `DefaultRegistry()` (pre-registered: `"claude"`, `"codex"`) → 400 `"unknown agent: X"`.
 8. **Resolve resume session** — `s.lookupResumeSessionID(req.Agent, req.ResumeSession)` calls `agentsessions.ClaudeResumeArgs()` or `agentsessions.CodexResumeArgs()` to find the agent-native session ID from prior session directories.
 9. **Build AgentConfig** — Constructs `agent.AgentConfig{WorkDir, Env, Interactive, ResumeSessionID}`.
-10. **Build command** — `ag.BuildCmd(prompt, agCfg)` returns the argv slice (e.g., `["claude", "--dangerously-skip-permissions", "-p", "...", "--output-format", "stream-json", ...]`).
+10. **Build command** — `ag.BuildCmd(prompt, agCfg)` returns the argv slice (e.g., `["claude", "--dangerously-skip-permissions", "-p", "...", "--output-format", "stream-json", "--verbose", ...]`). Note: the sidecar backend adds additional flags (`--include-partial-messages`, `--input-format stream-json`, `--ide`, `--session-id`) when it spawns Claude directly — `BuildCmd` is used only by the legacy `local-pipe` runtime.
 11. **Docker cmd override** — For Docker runtime, `spawnCmd` is truncated to `cmd[0]` only — the sidecar handles the full argv via `AGENT_CMD`.
 
 ### 1.3 Session Creation & Spawn
@@ -483,7 +483,7 @@ For non-interactive sessions (`interactive: false`):
 1. `EnsureNetwork()` creates the `agentruntime-agents` Docker bridge network.
 2. `EnsureProxy()` starts the `agentruntime-proxy` Squid container for managed egress.
 3. `prepareRun()` materializes agent config via `materializer.Materialize()` and builds `docker run` args.
-4. Container is started detached (`-d`) with `--rm`, port mapping (`-p 0:9090`), security hardening (`--cap-drop ALL`, `--cap-add DAC_OVERRIDE`, `--security-opt no-new-privileges:true`), labels, env-file, and volume mounts.
+4. Container is started detached (`-d`) with `--rm`, `--init`, port mapping (`-p 0:9090`), security hardening (`--cap-drop ALL`, `--cap-add DAC_OVERRIDE`, `--security-opt no-new-privileges:true`), labels, env-file, and volume mounts.
 5. `dockerContainerPort()` discovers the mapped host port.
 6. `waitForDockerSidecarHealth()` polls `http://localhost:{port}/health` (15s timeout, 200ms interval).
 7. `dialSidecar()` connects WS and optionally sends the prompt.
@@ -495,8 +495,9 @@ For non-interactive sessions (`interactive: false`):
 
 **Cleanup()**: `NetworkManager.Cleanup()` stops the proxy container and removes the Docker network.
 
-**Security defaults** (applied unless overridden by `ContainerConfig.SecurityOpt`):
+**Container defaults** (always applied):
 ```
+--init
 --cap-drop ALL
 --cap-add DAC_OVERRIDE
 --security-opt no-new-privileges:true
