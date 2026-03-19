@@ -16,6 +16,7 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/api"
+	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/credentials"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
@@ -27,6 +28,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "attach" {
 		os.Exit(runAttachCommand(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "chat" {
+		os.Exit(runChatCommand(os.Args[2:]))
 	}
 
 	port := flag.Int("port", 8090, "HTTP server port")
@@ -88,6 +92,27 @@ func main() {
 		log.Printf("recovered %d orphaned sessions from all runtimes", totalRecovered)
 	}
 
+	// Initialize chat subsystem (named persistent chats with idle timeout).
+	chatRegistry, err := chat.NewRegistry(*dataDir)
+	if err != nil {
+		log.Fatalf("failed to initialize chat registry: %v", err)
+	}
+
+	runtimeMap := make(map[string]runtime.Runtime, len(allRuntimes))
+	for _, r := range allRuntimes {
+		runtimeMap[r.Name()] = r
+	}
+	chatManager := chat.NewManager(chatRegistry, sessions, runtimeMap, *rtName, nil, nil)
+	chatWatcher := chat.NewIdleWatcher(chatRegistry, sessions, chatManager)
+
+	chatCtx, chatCancel := context.WithCancel(context.Background())
+	defer chatCancel()
+	chatWatcher.Start(chatCtx)
+
+	// Recover running chats: any chat with state=="running" whose session
+	// no longer exists should be transitioned to idle.
+	recoverRunningChats(chatRegistry, sessions)
+
 	// Optional credential sync.
 	if *credSync {
 		creds := credentials.NewSync(*dataDir)
@@ -107,6 +132,8 @@ func main() {
 		DataDir:       *dataDir,
 		LogDir:        logDir,
 		ExtraRuntimes: extraRuntimes,
+		ChatRegistry:  chatRegistry,
+		ChatManager:   chatManager,
 	})
 
 	// Graceful shutdown on SIGINT/SIGTERM.
@@ -174,6 +201,33 @@ func defaultDataDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "agentruntime")
+}
+
+// recoverRunningChats transitions any chat with state=="running" whose session
+// is no longer in the session manager to idle. This handles daemon restarts
+// where the agent process was lost.
+func recoverRunningChats(reg *chat.Registry, sm *session.Manager) {
+	chats, err := reg.List()
+	if err != nil {
+		log.Printf("warning: failed to list chats for recovery: %v", err)
+		return
+	}
+	for _, c := range chats {
+		if c.State != chat.ChatStateRunning {
+			continue
+		}
+		if sm.Get(c.CurrentSession) != nil {
+			continue
+		}
+		oldSession := c.CurrentSession
+		c.State = chat.ChatStateIdle
+		c.CurrentSession = ""
+		if err := reg.Save(c); err != nil {
+			log.Printf("warning: failed to save recovered chat %q: %v", c.Name, err)
+			continue
+		}
+		log.Printf("chat %q recovered to idle (session %s not found)", c.Name, oldSession)
+	}
 }
 
 func newRuntime(name, dataDir, dockerHost string) (runtime.Runtime, error) {
