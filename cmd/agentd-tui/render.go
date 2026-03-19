@@ -16,6 +16,7 @@ var (
 	systemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241")) // gray
 	resultStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))  // blue
 	promptStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true) // yellow bold
+	userMsgStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)  // blue bold
 	replayDim     = lipgloss.NewStyle().Faint(true)
 )
 
@@ -50,23 +51,19 @@ func (r *renderer) renderEvent(ev agentEvent, isReplay bool) string {
 	switch ev.Type {
 	case "agent_message":
 		text, _ := ev.Data["text"].(string)
-		delta, _ := ev.Data["delta"].(string)
-
-		content := text
-		if delta != "" {
-			content = delta
-		}
-		if content == "" {
+		if text == "" {
 			return ""
 		}
 
-		// Render markdown for complete messages, raw for deltas.
-		if delta != "" {
-			out = content
+		isDelta, _ := ev.Data["delta"].(bool)
+		if isDelta {
+			// Delta chunks rendered raw (streaming).
+			out = agentStyle.Render(text)
 		} else {
-			rendered, err := r.glamour.Render(content)
+			// Complete message — render markdown.
+			rendered, err := r.glamour.Render(text)
 			if err != nil {
-				out = content
+				out = text
 			} else {
 				out = strings.TrimSpace(rendered)
 			}

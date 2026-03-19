@@ -32,14 +32,18 @@ type model struct {
 	lines []string
 
 	// State tracking.
-	mode         inputMode
-	promptText   string   // current question text
-	promptOpts   []string // current options
-	connected    bool
-	exited       bool
-	exitCode     int
-	streaming    bool     // currently receiving deltas
-	streamBuf    strings.Builder // accumulated delta text
+	mode       inputMode
+	connected  bool
+	exited     bool
+	exitCode   int
+	streaming  bool            // currently receiving delta chunks
+	streamBuf  strings.Builder // accumulated delta text
+
+	// Metrics from events.
+	inputTokens  int
+	outputTokens int
+	costUSD      float64
+	toolCalls    int
 
 	// Layout.
 	width  int
@@ -48,7 +52,7 @@ type model struct {
 
 func newModel(conn *websocket.Conn, meta chatMeta) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message..."
+	ta.Placeholder = "Type a message... (/steer, /interrupt, /info, esc to quit)"
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
@@ -80,9 +84,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.exited {
 				return m, tea.Quit
 			}
-			// Send interrupt to the agent.
 			_ = m.conn.WriteJSON(map[string]string{"type": "interrupt"})
 			m.appendLine(systemStyle.Render("sent interrupt (ctrl+c again to quit)"))
+			m.updateViewport()
 			return m, nil
 
 		case "esc":
@@ -96,29 +100,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 
 			if m.mode == modePrompt {
-				// Send response to agent via stdin.
 				m.sendStdin(text)
 				m.mode = modeNormal
-				m.appendLine(fmt.Sprintf("\n%s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("▶ "+text)))
+				m.input.Placeholder = "Type a message..."
+				m.appendLine(userMsgStyle.Render("▶ " + text))
 			} else if strings.HasPrefix(text, "/") {
 				m.handleCommand(text)
 			} else {
-				// Send as stdin to the agent.
 				m.sendStdin(text)
-				m.appendLine(fmt.Sprintf("\n%s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true).Render("▶ "+text)))
+				m.appendLine(userMsgStyle.Render("▶ " + text))
 			}
 			m.updateViewport()
 			return m, nil
 
-		case "pgup", "pgdown", "up", "down":
-			// Pass to viewport for scrolling.
+		case "pgup", "pgdown":
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			cmds = append(cmds, cmd)
 			return m, tea.Batch(cmds...)
 		}
 
-		// Pass other keys to textarea.
+		// All other keys go to textarea.
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
@@ -129,8 +131,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderer.setWidth(msg.Width)
 
 		inputHeight := 3
-		headerHeight := 1
-		vpHeight := msg.Height - inputHeight - headerHeight - 2
+		headerHeight := 2 // header + status bar
+		vpHeight := msg.Height - inputHeight - headerHeight - 1
 		if vpHeight < 5 {
 			vpHeight = 5
 		}
@@ -143,10 +145,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connected = true
 		m.meta.SessionID = msg.sessionID
 		label := m.meta.Name
-		if label == "" {
+		if label == "" && len(msg.sessionID) >= 8 {
 			label = msg.sessionID[:8]
 		}
 		m.appendLine(systemStyle.Render(fmt.Sprintf("Connected to %s (%s)", label, m.meta.Agent)))
+		m.appendLine("")
 		m.updateViewport()
 
 	case agentEventMsg:
@@ -154,10 +157,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 
 	case sessionExitMsg:
+		m.flushStream()
 		m.exited = true
 		m.exitCode = msg.code
 		m.appendLine("")
-		m.appendLine(resultStyle.Render(fmt.Sprintf("── Session exited (code %d) — press esc to quit ──", msg.code)))
+		m.appendLine(resultStyle.Render(fmt.Sprintf("── session exited (code %d) — esc to quit ──", msg.code)))
 		m.updateViewport()
 
 	case wsErrorMsg:
@@ -170,41 +174,70 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) {
-	// Check for interactive prompts (tool_use with input_request subtype, or system prompts).
-	if ev.Type == "agent_message" {
-		delta, _ := ev.Data["delta"].(string)
+	switch ev.Type {
+	case "agent_message":
+		isDelta, _ := ev.Data["delta"].(bool)
 		text, _ := ev.Data["text"].(string)
-
-		if delta != "" {
-			// Streaming delta — accumulate.
-			m.streaming = true
-			m.streamBuf.WriteString(delta)
-			// Re-render the accumulated stream.
-			m.replaceLastStream()
+		if text == "" {
 			return
 		}
 
-		if text != "" && m.streaming {
-			// Final complete message replaces the stream buffer.
+		if isDelta {
+			m.streaming = true
+			m.streamBuf.WriteString(text)
+			m.replaceStreamLine()
+			return
+		}
+
+		// Complete message — render through glamour.
+		if m.streaming {
 			m.streaming = false
 			m.streamBuf.Reset()
-			rendered := m.renderer.renderEvent(ev, isReplay)
-			if rendered != "" {
-				m.replaceLastStream()
-				m.appendLine(rendered)
-			}
-			return
 		}
-	}
+		rendered := m.renderer.renderEvent(ev, isReplay)
+		if rendered != "" {
+			m.replaceOrAppendStream(rendered)
+		}
 
-	// Flush any pending stream before other event types.
-	if ev.Type != "agent_message" && m.streaming {
+	case "tool_use":
 		m.flushStream()
-	}
+		m.toolCalls++
+		rendered := m.renderer.renderEvent(ev, isReplay)
+		if rendered != "" {
+			m.appendLine(rendered)
+		}
 
-	// Detect interactive prompts from the agent.
-	if ev.Type == "system" {
+	case "tool_result":
+		rendered := m.renderer.renderEvent(ev, isReplay)
+		if rendered != "" {
+			m.appendLine(rendered)
+		}
+
+	case "result":
+		m.flushStream()
+		// Extract metrics.
+		if data, ok := ev.Data["usage"].(map[string]interface{}); ok {
+			if v, ok := data["input_tokens"].(float64); ok {
+				m.inputTokens += int(v)
+			}
+			if v, ok := data["output_tokens"].(float64); ok {
+				m.outputTokens += int(v)
+			}
+		}
+		if v, ok := ev.Data["cost_usd"].(float64); ok {
+			m.costUSD += v
+		}
+		rendered := m.renderer.renderEvent(ev, isReplay)
+		if rendered != "" {
+			m.appendLine(rendered)
+		}
+
+	case "system":
 		subtype, _ := ev.Data["subtype"].(string)
+		if subtype == "heartbeat" {
+			return // suppress
+		}
+		// Detect interactive prompts.
 		if subtype == "input_request" || subtype == "question" {
 			question, _ := ev.Data["text"].(string)
 			var opts []string
@@ -216,41 +249,56 @@ func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) {
 				}
 			}
 			m.mode = modePrompt
-			m.promptText = question
-			m.promptOpts = opts
 			m.appendLine(m.renderer.renderPrompt(question, opts))
 			m.input.Placeholder = "Your response..."
 			return
 		}
-	}
+		rendered := m.renderer.renderEvent(ev, isReplay)
+		if rendered != "" {
+			m.appendLine(rendered)
+		}
 
-	rendered := m.renderer.renderEvent(ev, isReplay)
-	if rendered != "" {
-		m.appendLine(rendered)
+	default:
+		m.flushStream()
+		rendered := m.renderer.renderEvent(ev, isReplay)
+		if rendered != "" {
+			m.appendLine(rendered)
+		}
 	}
 }
 
-func (m *model) appendLine(s string) {
-	m.lines = append(m.lines, s)
-}
+const streamMarker = "<<STREAM>>"
 
-func (m *model) replaceLastStream() {
-	// Render the current stream buffer as a streaming block.
+func (m *model) replaceStreamLine() {
 	content := m.streamBuf.String()
 	if content == "" {
 		return
 	}
-	// Find and replace the last stream marker, or append.
-	streamLine := agentStyle.Render(content)
+	styled := agentStyle.Render(content)
+	// Replace existing stream marker.
 	for i := len(m.lines) - 1; i >= 0; i-- {
-		if m.lines[i] == "<<STREAM>>" {
-			m.lines[i] = streamLine
+		if m.lines[i] == streamMarker || (i == len(m.lines)-1 && m.streaming) {
+			m.lines[i] = styled
 			return
 		}
 	}
-	// No existing stream marker — add one.
-	m.lines = append(m.lines, "<<STREAM>>")
-	m.lines[len(m.lines)-1] = streamLine
+	m.lines = append(m.lines, styled)
+}
+
+func (m *model) replaceOrAppendStream(rendered string) {
+	// Replace the last stream line with the final glamour-rendered version.
+	for i := len(m.lines) - 1; i >= 0; i-- {
+		if m.lines[i] == streamMarker {
+			m.lines[i] = rendered
+			return
+		}
+	}
+	// Replace the last line if it was a stream line.
+	if len(m.lines) > 0 && m.lines[len(m.lines)-1] != "" {
+		m.lines[len(m.lines)-1] = rendered
+		return
+	}
+	m.appendLine(rendered)
 }
 
 func (m *model) flushStream() {
@@ -263,20 +311,16 @@ func (m *model) flushStream() {
 	if content == "" {
 		return
 	}
-	// Render final accumulated text through glamour.
 	rendered, err := m.renderer.glamour.Render(content)
 	if err != nil {
 		rendered = content
 	}
 	rendered = strings.TrimSpace(rendered)
-	// Replace the stream marker.
-	for i := len(m.lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(m.lines[i], "\x1b") || m.lines[i] == "<<STREAM>>" {
-			m.lines[i] = rendered
-			return
-		}
-	}
-	m.appendLine(rendered)
+	m.replaceOrAppendStream(rendered)
+}
+
+func (m *model) appendLine(s string) {
+	m.lines = append(m.lines, s)
 }
 
 func (m *model) updateViewport() {
@@ -307,7 +351,8 @@ func (m *model) handleCommand(cmd string) {
 		info, _ := json.MarshalIndent(m.meta, "", "  ")
 		m.appendLine(systemStyle.Render(string(info)))
 	case "/quit", "/exit":
-		// Will be handled by the next Update cycle.
+		// Handled by esc in Update.
+		m.appendLine(systemStyle.Render("use esc to quit"))
 	default:
 		m.appendLine(systemStyle.Render("unknown command: " + parts[0]))
 	}
@@ -326,39 +371,36 @@ func (m model) View() string {
 			title = title[:8]
 		}
 	}
-	status := "●"
+
+	statusDot := "●"
 	statusColor := lipgloss.Color("42") // green
 	if m.exited {
-		status = "○"
+		statusDot = "○"
 		statusColor = lipgloss.Color("241")
+	} else if m.streaming {
+		statusDot = "◉"
 	}
-	header := lipgloss.NewStyle().
-		Foreground(statusColor).
-		Render(status) + " " +
+
+	header := lipgloss.NewStyle().Foreground(statusColor).Render(statusDot) + " " +
 		lipgloss.NewStyle().Bold(true).Render(title)
 	if m.meta.Agent != "" {
 		header += systemStyle.Render(" (" + m.meta.Agent + ")")
 	}
-
-	// Mode indicator.
-	modeLabel := ""
 	if m.mode == modePrompt {
-		modeLabel = promptStyle.Render(" [WAITING FOR INPUT]")
+		header += promptStyle.Render(" [WAITING FOR INPUT]")
 	}
-	header += modeLabel
 
-	headerBar := lipgloss.NewStyle().
-		Width(m.width).
-		Padding(0, 1).
-		Render(header)
+	// Status bar with metrics.
+	metrics := systemStyle.Render(fmt.Sprintf(
+		"tokens: %d in / %d out  tools: %d  cost: $%.4f",
+		m.inputTokens, m.outputTokens, m.toolCalls, m.costUSD,
+	))
 
-	// Divider.
+	headerBar := lipgloss.NewStyle().Width(m.width).Padding(0, 1).Render(header + "  " + metrics)
+
 	divider := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("238")).
 		Render(strings.Repeat("─", m.width))
 
-	// Input area.
-	inputBox := m.input.View()
-
-	return fmt.Sprintf("%s\n%s\n%s\n%s", headerBar, m.viewport.View(), divider, inputBox)
+	return fmt.Sprintf("%s\n%s\n%s\n%s", headerBar, m.viewport.View(), divider, m.input.View())
 }
