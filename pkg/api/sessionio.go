@@ -150,6 +150,10 @@ func parseAndTrackEvent(sess *session.Session, line []byte) {
 				}
 				sess.RecordUsage(inputToks, outputToks, 0)
 			}
+			// Capture Claude session ID for resume across respawns.
+			if sessionID, ok := data["session_id"].(string); ok && sessionID != "" {
+				sess.SetTag("claude_session_id", sessionID)
+			}
 		}
 	}
 }

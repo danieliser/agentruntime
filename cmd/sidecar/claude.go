@@ -18,6 +18,7 @@ import (
 type ClaudeBackendConfig struct {
 	Binary           string
 	SessionID        string
+	Resume           bool // when true, pass --resume to continue prior session
 	WorkspaceFolders []string
 	StartProcess     ClaudeProcessStarter
 	// Prompt mode: if set, runs claude -p "prompt" (fire-and-forget).
@@ -52,6 +53,7 @@ type ClaudeProcessStarter func(context.Context, ClaudeSpawnSpec) (ClaudeProcess,
 type ClaudeBackend struct {
 	binary    string
 	sessionID string
+	resume    bool
 	workspace []string
 	prompt    string // if set, fire-and-forget -p mode
 
@@ -142,6 +144,7 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 	return &ClaudeBackend{
 		binary:       binary,
 		sessionID:    sessionID,
+		resume:       cfg.Resume,
 		workspace:    workspace,
 		prompt:       cfg.Prompt,
 		model:        cfg.Model,
@@ -174,7 +177,12 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				"--verbose",
 				"--include-partial-messages",
 				"--dangerously-skip-permissions",
-				"--session-id", b.sessionID,
+			}
+			if b.resume {
+				// --resume <session-id> continues a prior Claude session.
+				args = append(args, "--resume", b.sessionID)
+			} else {
+				args = append(args, "--session-id", b.sessionID)
 			}
 		} else {
 			// Interactive: start MCP server for tool support + context injection
@@ -203,7 +211,11 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				"--include-partial-messages",
 				"--dangerously-skip-permissions",
 				"--ide",
-				"--session-id", b.sessionID,
+			}
+			if b.resume {
+				args = append(args, "--resume", b.sessionID)
+			} else {
+				args = append(args, "--session-id", b.sessionID)
 			}
 		}
 

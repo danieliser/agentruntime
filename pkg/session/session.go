@@ -135,6 +135,17 @@ func (s *Session) RecordUsage(input, output int, cost float64) {
 	s.CostUSD += cost
 }
 
+// SetTag sets a key-value pair on the session's Tags map. Thread-safe.
+// Initializes the map if nil.
+func (s *Session) SetTag(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Tags == nil {
+		s.Tags = make(map[string]string)
+	}
+	s.Tags[key] = value
+}
+
 // RecordToolCall increments the tool call count. Thread-safe.
 func (s *Session) RecordToolCall() {
 	s.mu.Lock()

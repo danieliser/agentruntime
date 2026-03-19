@@ -286,10 +286,12 @@ func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, 
 	switch agentType {
 	case "claude":
 		sessionID := cfg.ResumeSession // empty = generate fresh UUID in NewClaudeBackend
+		resume := sessionID != ""      // resuming a prior session
 		return NewClaudeBackend(ClaudeBackendConfig{
 			Binary:       cmd[0],
 			Prompt:       prompt,
 			SessionID:    sessionID,
+			Resume:       resume,
 			Model:        cfg.Model,
 			MaxTurns:     cfg.MaxTurns,
 			AllowedTools: cfg.AllowedTools,
