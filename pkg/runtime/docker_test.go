@@ -313,8 +313,10 @@ func TestDockerSpawn_V2_AgentCmdIsBinaryOnly(t *testing.T) {
 	if !strings.Contains(string(data), "AGENT_CMD=[\"claude\"]\n") {
 		t.Fatalf("expected binary-only AGENT_CMD, got %q", string(data))
 	}
-	if strings.Contains(string(data), "fix the bug") {
-		t.Fatalf("did not expect prompt embedded in AGENT_CMD env, got %q", string(data))
+	// Prompt should be in AGENT_PROMPT for sidecar fire-and-forget mode,
+	// NOT embedded in AGENT_CMD args.
+	if !strings.Contains(string(data), "AGENT_PROMPT=fix the bug\n") {
+		t.Fatalf("expected AGENT_PROMPT in env file, got %q", string(data))
 	}
 }
 
@@ -637,4 +639,154 @@ func startFakeDockerV2Sidecar(t *testing.T, received chan<- wsClientFrame) strin
 		t.Fatalf("parse server URL: %v", err)
 	}
 	return u.Port()
+}
+
+func TestDockerVolumeName(t *testing.T) {
+	tests := []struct {
+		sessionID string
+		expected  string
+	}{
+		{"abc123", "agentruntime-vol-abc123"},
+		{"very-long-session-id-with-many-chars", "agentruntime-vol-very-long-session-id-with-many-chars"},
+	}
+	for _, tc := range tests {
+		got := dockerVolumeName(tc.sessionID)
+		if got != tc.expected {
+			t.Errorf("dockerVolumeName(%q) = %q, want %q", tc.sessionID, got, tc.expected)
+		}
+	}
+}
+
+func TestDockerPrepareRun_PersistSession_CreatesVolumeMount(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  # Capture the volume name (last arg)
+  shift 4  # skip "volume", "create", "--label", label
+  volume_name="$1"
+  exit 0
+fi
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	workDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"claude"},
+		SessionID: "persist-1234",
+		Request: &apischema.SessionRequest{
+			WorkDir:        workDir,
+			PersistSession: true,
+			Claude:         &apischema.ClaudeConfig{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	// Check that volume mount was added to args
+	expectedMount := "agentruntime-vol-persist-1234:/home/agent/.claude/projects:rw"
+	if !hasFlagValue(spec.args, "-v", expectedMount) {
+		t.Fatalf("expected volume mount %q in args, got %v", expectedMount, spec.args)
+	}
+}
+
+func TestDockerPrepareRun_NoPersistSession_NoVolume(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	workDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"claude"},
+		SessionID: "nopersist-1234",
+		Request: &apischema.SessionRequest{
+			WorkDir:        workDir,
+			PersistSession: false,
+			Claude:         &apischema.ClaudeConfig{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	// Check that NO volume mount was added
+	for i := 0; i < len(spec.args)-1; i++ {
+		if spec.args[i] == "-v" && strings.Contains(spec.args[i+1], ".claude/projects") {
+			t.Fatalf("unexpected volume mount in args: %v", spec.args)
+		}
+	}
+}
+
+func TestDockerPrepareRun_VolumeMount_SkipsValidation(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"echo"},
+		SessionID: "vol-skip-validate",
+		Request: &apischema.SessionRequest{
+			Mounts: []apischema.Mount{{
+				Host:      "my-volume",
+				Container: "/data",
+				Mode:      "rw",
+				Type:      "volume",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun with volume mount should not fail validation: %v", err)
+	}
+	defer spec.cleanup()
+
+	// Check that volume mount is in args
+	if !hasFlagValue(spec.args, "-v", "my-volume:/data:rw") {
+		t.Fatalf("expected volume mount in args, got %v", spec.args)
+	}
+}
+
+func TestDockerPrepareRun_ReuseVolume(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  exit 1  # Fail to create (should not be called when reusing)
+fi
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	workDir := t.TempDir()
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:        []string{"claude"},
+		SessionID:  "new-session-5678",
+		VolumeName: "agentruntime-vol-old-session-1234",  // Reuse existing volume
+		Request: &apischema.SessionRequest{
+			WorkDir:        workDir,
+			PersistSession: true,
+			Claude:         &apischema.ClaudeConfig{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun with reused volume failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	// Check that the reused volume mount is in args
+	expectedMount := "agentruntime-vol-old-session-1234:/home/agent/.claude/projects:rw"
+	if !hasFlagValue(spec.args, "-v", expectedMount) {
+		t.Fatalf("expected reused volume mount %q in args, got %v", expectedMount, spec.args)
+	}
 }

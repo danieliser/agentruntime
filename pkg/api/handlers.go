@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
@@ -28,9 +29,14 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
+	available := make([]string, 0, len(s.runtimes))
+	for name := range s.runtimes {
+		available = append(available, name)
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "ok",
-		"runtime": s.runtime.Name(),
+		"status":           "ok",
+		"default_runtime":  s.runtime.Name(),
+		"runtimes":         available,
 	})
 }
 
@@ -48,8 +54,17 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
 		return
 	}
-	if req.Runtime != "" && req.Runtime != s.runtime.Name() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unknown runtime: %s", req.Runtime)})
+	// Resolve runtime — use requested or default.
+	rt := s.RuntimeFor(req.Runtime)
+	if rt == nil {
+		available := make([]string, 0, len(s.runtimes))
+		for name := range s.runtimes {
+			available = append(available, name)
+		}
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":     fmt.Sprintf("unknown runtime: %s", req.Runtime),
+			"available": available,
+		})
 		return
 	}
 
@@ -86,6 +101,16 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		}
 	}
 
+	// Check if resuming a session with a persistent volume
+	var originalSession *session.Session
+	if req.ResumeSession != "" {
+		originalSession = s.sessions.Get(req.ResumeSession)
+		if originalSession != nil && originalSession.VolumeName != "" {
+			// Inherit persistence from the original session
+			req.PersistSession = true
+		}
+	}
+
 	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -110,12 +135,23 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	}
 
 	spawnCmd := cmd
-	if s.runtime.Name() == "docker" && len(cmd) > 0 {
+	if rt.Name() == "docker" && len(cmd) > 0 {
 		spawnCmd = []string{cmd[0]}
 	}
 
-	// Create the session.
-	sess := session.NewSession(req.TaskID, req.Agent, s.runtime.Name(), req.Tags)
+	// Create the session. Use caller-provided session ID if valid UUID.
+	requestedID := req.SessionID
+	if requestedID != "" {
+		if _, err := uuid.Parse(requestedID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a valid UUID"})
+			return
+		}
+		if s.sessions.Get(requestedID) != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "session_id already exists"})
+			return
+		}
+	}
+	sess := session.NewSessionWithID(requestedID, req.TaskID, req.Agent, rt.Name(), req.Tags)
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -129,9 +165,22 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		return
 	}
 
+	// Determine volume name for persistence
+	var volumeNameForSpawn string
+	if req.PersistSession {
+		if originalSession != nil && originalSession.VolumeName != "" {
+			// Reuse the original session's volume for resume
+			volumeNameForSpawn = originalSession.VolumeName
+		} else {
+			// Create a new volume for this session
+			volumeNameForSpawn = "agentruntime-vol-" + sess.ID
+		}
+		sess.VolumeName = volumeNameForSpawn
+	}
+
 	// Spawn the process.
 	ctx := context.Background()
-	handle, err := s.runtime.Spawn(ctx, runtime.SpawnConfig{
+	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
 		SessionID:  sess.ID,
 		AgentName:  req.Agent,
 		Cmd:        spawnCmd,
@@ -142,6 +191,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		TaskID:     req.TaskID,
 		Request:    &req,
 		SessionDir: &sess.SessionDir,
+		VolumeName: volumeNameForSpawn,
 		PTY:        req.PTY,
 	})
 	if err != nil {
@@ -241,6 +291,7 @@ func (s *Server) handleGetSessionInfo(c *gin.Context) {
 		EndedAt:       snap.EndedAt,
 		ExitCode:      snap.ExitCode,
 		SessionDir:    snap.SessionDir,
+		VolumeName:    snap.VolumeName,
 		LogFile:       session.LogFilePath(s.logDir, snap.ID),
 		WSURL:         sessionWSURL(c, snap.ID),
 		LogURL:        sessionLogURL(c, snap.ID),
@@ -263,6 +314,20 @@ func (s *Server) handleDeleteSession(c *gin.Context) {
 	sess.Replay.Close()
 	sess.SetCompleted(-1)
 	s.sessions.Remove(sess.ID)
+
+	// Check if caller requested volume removal
+	removeVolume := c.Query("remove_volume") == "true"
+	if removeVolume && sess.VolumeName != "" && s.runtime.Name() == "docker" {
+		// Try to remove the volume, but don't fail the deletion if it doesn't exist
+		rt := s.RuntimeFor("docker")
+		if rt != nil {
+			dockerRT, ok := rt.(*runtime.DockerRuntime)
+			if ok {
+				_ = dockerRT.RemoveSessionVolume(context.Background(), sess.VolumeName)
+			}
+		}
+	}
+
 	snap := sess.Snapshot()
 	c.JSON(http.StatusOK, gin.H{"id": snap.ID, "state": snap.State})
 }
@@ -314,7 +379,7 @@ func (s *Server) handleSessionWS(c *gin.Context) {
 		}
 	}
 
-	b := bridge.New(conn, sess.Handle, sess.Replay)
+	b := bridge.New(conn, sess.Handle, sess.Replay, s.logDir, sess.ID)
 	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	defer cancel()
 	b.Run(ctx, sess.ID, sinceOffset)
@@ -431,7 +496,7 @@ func resumeSessionIDFromArgs(args []string) (string, error) {
 }
 
 func (s *Server) prepareSessionDir(sess *session.Session, req *SessionRequest, workDir string) error {
-	if sess == nil || req == nil || s.runtime == nil || s.runtime.Name() != "local" {
+	if sess == nil || req == nil {
 		return nil
 	}
 

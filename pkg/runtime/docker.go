@@ -197,6 +197,43 @@ func (r *DockerRuntime) buildRunArgs(cfg SpawnConfig) ([]string, error) {
 	return spec.args, nil
 }
 
+// dockerVolumeName returns the Docker volume name for a session.
+func dockerVolumeName(sessionID string) string {
+	return "agentruntime-vol-" + sessionID
+}
+
+// createSessionVolume creates a named Docker volume for session persistence.
+// It is idempotent — if the volume already exists, it does not fail.
+func (r *DockerRuntime) createSessionVolume(ctx context.Context, sessionID string) (string, error) {
+	volumeName := dockerVolumeName(sessionID)
+	cmd := r.dockerCmd(ctx,
+		"volume", "create",
+		"--label", fmt.Sprintf("agentruntime.session_id=%s", sessionID),
+		volumeName,
+	)
+	// Run the command but ignore "already exists" errors
+	// Docker returns a non-zero exit if the volume exists, but we treat that as success
+	if err := cmd.Run(); err != nil {
+		// Check if the error indicates the volume already exists
+		// This is a heuristic based on docker error messages
+		errStr := err.Error()
+		if !strings.Contains(errStr, "already exists") && !strings.Contains(errStr, "duplicates") {
+			return "", fmt.Errorf("docker volume create failed: %w", err)
+		}
+		// Volume already exists — that's fine for resume scenarios
+	}
+	return volumeName, nil
+}
+
+// RemoveSessionVolume removes a named Docker volume.
+func (r *DockerRuntime) RemoveSessionVolume(ctx context.Context, volumeName string) error {
+	cmd := r.dockerCmd(ctx, "volume", "rm", volumeName)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker volume rm failed: %w", err)
+	}
+	return nil
+}
+
 func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	req := cfg.Request
 	image := r.cfg.Image
@@ -218,15 +255,16 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 
 	mounts := requestMounts(cfg)
 
-	// Validate all host mount paths
+	// Validate all host mount paths (skip volume mounts)
 	for _, mount := range mounts {
-		if mount.Host != "" {
+		if mount.Host != "" && mount.Type != "volume" {
 			if err := validateMountPath(mount.Host); err != nil {
 				return nil, err
 			}
 		}
 	}
 
+	var volumeName string
 	if req != nil && (req.Claude != nil || req.Codex != nil) {
 		result, err := r.materializer.Materialize(req, cfg.SessionID)
 		if err != nil {
@@ -238,14 +276,40 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		cleanups = append(cleanups, result.CleanupFn)
 		mounts = append(mounts, result.Mounts...)
 
-		// Validate materialized mounts
+		// Validate materialized mounts (skip volume mounts)
 		for _, mount := range result.Mounts {
-			if mount.Host != "" {
+			if mount.Host != "" && mount.Type != "volume" {
 				if err := validateMountPath(mount.Host); err != nil {
 					cleanup()
 					return nil, err
 				}
 			}
+		}
+
+		// Create named volume for session persistence if requested
+		if req.PersistSession {
+			var err error
+			// Use provided volume name (for resume) or create a new one
+			if cfg.VolumeName != "" {
+				volumeName = cfg.VolumeName
+			} else {
+				volumeName, err = r.createSessionVolume(context.Background(), cfg.SessionID)
+				if err != nil {
+					cleanup()
+					return nil, err
+				}
+				// Register volume cleanup on failure (only for newly created volumes)
+				cleanups = append(cleanups, func() {
+					_ = r.RemoveSessionVolume(context.Background(), volumeName)
+				})
+			}
+			// Add volume mount for Claude's project cache
+			mounts = append(mounts, apischema.Mount{
+				Host:      volumeName,
+				Container: "/home/agent/.claude/projects",
+				Mode:      "rw",
+				Type:      "volume",
+			})
 		}
 	}
 
@@ -265,6 +329,13 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	envValues["AGENT_CMD"] = string(agentCmd)
 	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
 		envValues["AGENT_CONFIG"] = acJSON
+	}
+	// Pass prompt via env so the sidecar knows this is fire-and-forget mode.
+	// Without this, the sidecar defaults to interactive (no -p flag) and
+	// Claude Code stays alive after emitting its result.
+	interactive := cfg.Request != nil && cfg.Request.Interactive
+	if prompt := dockerPrompt(cfg); prompt != "" && !interactive {
+		envValues["AGENT_PROMPT"] = prompt
 	}
 
 	envFile, err := writeDockerEnvFile(envValues)
@@ -295,11 +366,14 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		args = append(args, "-t")
 	}
 	for _, mount := range mounts {
-		// Ensure single-file mount sources exist on the host before docker run.
+		// For named volume mounts, skip host path preparation.
+		// For bind-mounts, ensure single-file mount sources exist on the host before docker run.
 		// If Docker encounters a host path that doesn't exist, it creates a
 		// directory at that path — which breaks file bind-mounts (e.g.
 		// .claude.json, credentials). Pre-creating the file prevents this.
-		ensureHostMountSource(mount.Host)
+		if mount.Type != "volume" {
+			ensureHostMountSource(mount.Host)
+		}
 		args = append(args, "-v", formatDockerMount(mount))
 	}
 

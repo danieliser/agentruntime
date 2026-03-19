@@ -30,6 +30,7 @@ type Session struct {
 	AgentName   string                `json:"agent_name"`
 	RuntimeName string                `json:"runtime_name"`
 	SessionDir  string                `json:"session_dir,omitempty"`
+	VolumeName  string                `json:"volume_name,omitempty"`
 	Tags        map[string]string     `json:"tags,omitempty"`
 	State       State                 `json:"state"`
 	ExitCode    *int                  `json:"exit_code,omitempty"`
@@ -49,13 +50,23 @@ type Session struct {
 }
 
 // NewSession creates a session in the Pending state.
+// If sessionID is empty, a new UUID is generated.
 func NewSession(taskID, agentName, runtimeName string, tags ...map[string]string) *Session {
+	return NewSessionWithID("", taskID, agentName, runtimeName, tags...)
+}
+
+// NewSessionWithID creates a session with a caller-specified ID.
+// If sessionID is empty, a new UUID is generated.
+func NewSessionWithID(sessionID, taskID, agentName, runtimeName string, tags ...map[string]string) *Session {
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+	}
 	var sessionTags map[string]string
 	if len(tags) > 0 {
 		sessionTags = cloneTags(tags[0])
 	}
 	return &Session{
-		ID:          uuid.New().String(),
+		ID:          sessionID,
 		TaskID:      taskID,
 		AgentName:   agentName,
 		RuntimeName: runtimeName,

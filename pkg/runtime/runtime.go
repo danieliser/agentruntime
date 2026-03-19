@@ -68,6 +68,10 @@ type SpawnConfig struct {
 	// to any materialized per-session files they create.
 	SessionDir *string
 
+	// VolumeName is the Docker volume name to mount (for persistent sessions).
+	// If empty, a new volume is created based on SessionID.
+	VolumeName string
+
 	// PTY requests a pseudo-terminal allocation. Not all runtimes support this.
 	PTY bool
 }
