@@ -84,11 +84,21 @@ func pumpEvents(conn *websocket.Conn, p *tea.Program) {
 					debugLog.Printf("NDJSON parse error: %v line=%s", err, line[:min(len(line), 100)])
 					continue
 				}
-				// Skip heartbeats — they flood the replay and provide no user value.
+				// Skip noise events.
 				if ev.Type == "system" {
 					if sub, _ := ev.Data["subtype"].(string); sub == "heartbeat" || sub == "init" || sub == "hook_started" || sub == "hook_response" {
 						continue
 					}
+				}
+				// Skip delta chunks during replay — only show final complete messages.
+				if isReplay && ev.Type == "agent_message" {
+					if isDelta, _ := ev.Data["delta"].(bool); isDelta {
+						continue
+					}
+				}
+				// Skip result events (turn-end noise in interactive mode).
+				if ev.Type == "result" {
+					continue
 				}
 				debugLog.Printf("event: type=%s replay=%v", ev.Type, isReplay)
 				p.Send(agentEventMsg{event: ev, replay: isReplay})
