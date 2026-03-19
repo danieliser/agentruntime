@@ -89,3 +89,96 @@ func TestDetectStartupCrash(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyFromEvents(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []EventForClassification
+		expect ErrorCategory
+	}{
+		// False-positive prevention: Codex JSONL with embedded "authorization" and "error" in tool output
+		{
+			name: "codex jsonl embedded authorization null error null",
+			events: []EventForClassification{
+				{Type: "agent_message", Text: "I'll help you with that."},
+				// Simulating tool_result that would appear in Codex JSONL output
+				// with "authorization" and "error" fields — these should be ignored
+				{Type: "tool_result", Text: `{"authorization": null, "error": null}`},
+				{Type: "agent_message", Text: "The operation completed successfully."},
+			},
+			expect: CategoryNone,
+		},
+		// Real auth error in agent message should be detected
+		{
+			name: "codex real auth error in agent_message",
+			events: []EventForClassification{
+				{Type: "agent_message", Text: "I tried to authenticate but got: authentication failed - invalid token"},
+				{Type: "system", Text: "Process exited with code 1"},
+			},
+			expect: CategoryAuthError,
+		},
+		// Error events should be scanned
+		{
+			name: "error event type scanned",
+			events: []EventForClassification{
+				{Type: "agent_message", Text: "Working on the task..."},
+				{Type: "error", Text: "API key is invalid or expired"},
+			},
+			expect: CategoryAuthError,
+		},
+		// Tool results should be ignored even with error patterns
+		{
+			name: "tool_result ignored",
+			events: []EventForClassification{
+				{Type: "agent_message", Text: "Task complete."},
+				{Type: "tool_result", Text: "Error: permission denied for this resource"},
+				{Type: "agent_message", Text: "But the main operation succeeded."},
+			},
+			expect: CategoryNone,
+		},
+		// System events should be ignored
+		{
+			name: "system event ignored",
+			events: []EventForClassification{
+				{Type: "agent_message", Text: "Everything is fine."},
+				{Type: "system", Text: "Rate limit exceeded on backend service"},
+			},
+			expect: CategoryNone,
+		},
+		// Empty events
+		{
+			name:   "empty events",
+			events: []EventForClassification{},
+			expect: CategoryNone,
+		},
+		// Only non-scanned event types
+		{
+			name: "only tool and system events",
+			events: []EventForClassification{
+				{Type: "tool_use", Text: "API Error: 503"},
+				{Type: "system", Text: "You have reached your API usage limits"},
+				{Type: "tool_result", Text: "Model not found"},
+			},
+			expect: CategoryNone,
+		},
+		// Multiple agent messages concatenated
+		{
+			name: "multiple agent messages",
+			events: []EventForClassification{
+				{Type: "agent_message", Text: "First message"},
+				{Type: "agent_message", Text: "Second message"},
+				{Type: "agent_message", Text: "Rate limit exceeded on my request"},
+			},
+			expect: CategoryRateLimit,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyFromEvents(tt.events)
+			if got != tt.expect {
+				t.Errorf("ClassifyFromEvents() = %q, want %q", got, tt.expect)
+			}
+		})
+	}
+}

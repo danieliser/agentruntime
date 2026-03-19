@@ -3,7 +3,10 @@
 // to enable automated retry logic and actionable error reporting.
 package errors
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // ErrorCategory identifies the type of agent session error.
 type ErrorCategory string
@@ -17,16 +20,42 @@ const (
 	CategoryDuplicateSession ErrorCategory = "duplicate_session"
 	CategoryUpstreamAPI      ErrorCategory = "upstream_api_error"
 	CategoryStartupCrash     ErrorCategory = "startup_crash"
+	CategoryStall            ErrorCategory = "stall"
 )
 
 // Retryable returns true if the error category is potentially recoverable
 // with a retry (possibly with backoff or different config).
 func (c ErrorCategory) Retryable() bool {
 	switch c {
-	case CategoryRateLimit, CategoryDuplicateSession, CategoryUpstreamAPI:
+	case CategoryRateLimit, CategoryDuplicateSession, CategoryUpstreamAPI, CategoryStall:
 		return true
 	default:
 		return false
+	}
+}
+
+// Fatal returns true if the error is unrecoverable within the current session
+// and the agent should be killed immediately to avoid wasting resources.
+func (c ErrorCategory) Fatal() bool {
+	switch c {
+	case CategoryAuthError, CategoryRateLimit, CategoryModelNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+// ActionMessage returns a human-readable remediation hint for the error.
+func (c ErrorCategory) ActionMessage() string {
+	switch c {
+	case CategoryAuthError:
+		return "Authentication failed. Run 'claude setup-token' (Claude) or 'codex login' (Codex) on the host to refresh credentials."
+	case CategoryRateLimit:
+		return "API usage limit reached. Check your plan limits or wait for the reset window."
+	case CategoryModelNotFound:
+		return "The requested model is not available. Check model name and account access."
+	default:
+		return ""
 	}
 }
 
@@ -42,6 +71,10 @@ var patterns = []pattern{
 	{regexp.MustCompile(`(?i)invalid.*model`), CategoryModelNotFound},
 	{regexp.MustCompile(`(?i)(?:authentication|auth).*(?:failed|error|invalid)`), CategoryAuthError},
 	{regexp.MustCompile(`(?i)API key.*(?:invalid|missing|expired)`), CategoryAuthError},
+	{regexp.MustCompile(`(?i)refresh.token.*(?:reused|expired|invalid|already used)`), CategoryAuthError},
+	{regexp.MustCompile(`(?i)Failed to refresh token`), CategoryAuthError},
+	{regexp.MustCompile(`(?i)access token could not be refreshed`), CategoryAuthError},
+	{regexp.MustCompile(`(?i)You have reached your.*API usage limits`), CategoryRateLimit},
 	{regexp.MustCompile(`(?i)permission.*denied`), CategoryPermissionDenied},
 	{regexp.MustCompile(`(?i)rate.*limit.*exceeded`), CategoryRateLimit},
 	{regexp.MustCompile(`(?i)duplicate session`), CategoryDuplicateSession},
@@ -60,6 +93,31 @@ func Classify(output string) ErrorCategory {
 		}
 	}
 	return CategoryNone
+}
+
+// EventForClassification represents a minimal event for error classification.
+// It includes only the fields needed to extract agent-authored text.
+type EventForClassification struct {
+	Type string
+	Text string
+}
+
+// ClassifyFromEvents scans only agent-authored text from a sequence of events,
+// ignoring embedded tool output and API responses. This prevents false positives
+// from Codex JSONL that embeds MCP results and raw API responses in event data.
+//
+// Only agent_message and error events are scanned; tool results, system events,
+// and other metadata are ignored.
+func ClassifyFromEvents(events []EventForClassification) ErrorCategory {
+	var buf strings.Builder
+	for _, evt := range events {
+		switch evt.Type {
+		case "agent_message", "error":
+			buf.WriteString(evt.Text)
+			buf.WriteByte('\n')
+		}
+	}
+	return Classify(buf.String())
 }
 
 // DetectStartupCrash returns true if the session metrics indicate the agent
