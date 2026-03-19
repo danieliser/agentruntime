@@ -314,7 +314,7 @@ func TestSidecar_AutoCleanup_NoCleanupWhileRunning(t *testing.T) {
 func newTestExternalWSServer(t *testing.T, agentType string, backend AgentBackend) (*ExternalWSServer, *httptest.Server) {
 	t.Helper()
 
-	server := NewExternalWSServer(agentType, backend)
+	server := NewExternalWSServer(agentType, backend, StallConfig{})
 	ts := httptest.NewServer(server.Routes())
 	t.Cleanup(ts.Close)
 	t.Cleanup(func() { _ = server.Close() })
@@ -324,7 +324,7 @@ func newTestExternalWSServer(t *testing.T, agentType string, backend AgentBacken
 func newAutoCleanupTestServer(t *testing.T, backend *mockBackend, timeout time.Duration) (*ExternalWSServer, *httptest.Server, <-chan struct{}) {
 	t.Helper()
 
-	server := NewExternalWSServer("claude", backend)
+	server := NewExternalWSServer("claude", backend, StallConfig{})
 	server.SetCleanupTimeout(timeout)
 
 	shutdownCh := make(chan struct{}, 1)
@@ -451,4 +451,132 @@ func (b *mockBackend) lastPrompt() string {
 		return ""
 	}
 	return b.prompts[len(b.prompts)-1]
+}
+
+func TestHeartbeat_EmittedAtInterval(t *testing.T) {
+	// Temporarily reduce heartbeat interval for testing.
+	oldInterval := heartbeatInterval
+	heartbeatInterval = 50 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = oldInterval })
+
+	backend := newMockBackend("sess-heartbeat")
+	server, ts := newTestExternalWSServer(t, "claude", backend)
+	defer server.Close()
+
+	conn := mustDialWS(t, ts, "")
+	defer conn.Close()
+
+	// Wait for and verify first heartbeat.
+	heartbeat1 := readEvent(t, conn)
+	if heartbeat1.Type != "system" {
+		t.Fatalf("expected system event, got %q", heartbeat1.Type)
+	}
+
+	data1, ok := heartbeat1.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected system payload map, got %T", heartbeat1.Data)
+	}
+
+	subtype1, ok := data1["subtype"].(string)
+	if !ok || subtype1 != "heartbeat" {
+		t.Fatalf("expected heartbeat subtype, got %v", data1["subtype"])
+	}
+
+	// Wait for second heartbeat to ensure periodic emission.
+	heartbeat2 := readEvent(t, conn)
+	if heartbeat2.Type != "system" {
+		t.Fatalf("expected system event, got %q", heartbeat2.Type)
+	}
+
+	data2, ok := heartbeat2.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected system payload map, got %T", heartbeat2.Data)
+	}
+
+	subtype2, ok := data2["subtype"].(string)
+	if !ok || subtype2 != "heartbeat" {
+		t.Fatalf("expected heartbeat subtype, got %v", data2["subtype"])
+	}
+}
+
+func TestHeartbeat_IncludesMetrics(t *testing.T) {
+	// Temporarily reduce heartbeat interval for testing.
+	oldInterval := heartbeatInterval
+	heartbeatInterval = 50 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = oldInterval })
+
+	backend := newMockBackend("sess-heartbeat-metrics")
+	server, ts := newTestExternalWSServer(t, "claude", backend)
+	defer server.Close()
+
+	conn := mustDialWS(t, ts, "")
+	defer conn.Close()
+
+	// Emit some events to generate metrics.
+	backend.emit(Event{
+		Type: "tool_use",
+		Data: map[string]any{"name": "test_tool"},
+	})
+
+	backend.emit(Event{
+		Type: "tool_use",
+		Data: map[string]any{"name": "test_tool"},
+	})
+
+	backend.emit(Event{
+		Type: "result",
+		Data: map[string]any{
+			"usage": map[string]any{
+				"input_tokens":  float64(100),
+				"output_tokens": float64(50),
+			},
+		},
+	})
+
+	// Read events until we find a heartbeat.
+	var heartbeat Event
+	found := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		// Set a short read timeout to avoid blocking indefinitely
+		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		event := readEvent(t, conn)
+		if event.Type == "system" {
+			data, _ := event.Data.(map[string]any)
+			if subtype, _ := data["subtype"].(string); subtype == "heartbeat" {
+				heartbeat = event
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatal("timed out waiting for heartbeat")
+	}
+
+	data, ok := heartbeat.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected heartbeat payload map, got %T", heartbeat.Data)
+	}
+
+	// Check that metrics are present.
+	if uptime, ok := data["uptime_ms"].(float64); !ok || uptime < 0 {
+		t.Fatalf("expected non-negative uptime_ms, got %v", data["uptime_ms"])
+	}
+
+	if inputToks, ok := data["input_tokens"].(float64); !ok || int(inputToks) != 100 {
+		t.Fatalf("expected input_tokens 100, got %v", data["input_tokens"])
+	}
+
+	if outputToks, ok := data["output_tokens"].(float64); !ok || int(outputToks) != 50 {
+		t.Fatalf("expected output_tokens 50, got %v", data["output_tokens"])
+	}
+
+	if toolCalls, ok := data["tool_calls"].(float64); !ok || int(toolCalls) != 2 {
+		t.Fatalf("expected tool_calls 2, got %v", data["tool_calls"])
+	}
+
+	if _, ok := data["agent_running"].(bool); !ok {
+		t.Fatalf("expected agent_running bool, got %T", data["agent_running"])
+	}
 }

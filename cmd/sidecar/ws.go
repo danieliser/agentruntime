@@ -24,6 +24,8 @@ const (
 	pongTimeout      = 10 * time.Second
 )
 
+var heartbeatInterval = 10 * time.Second // exported for testing
+
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
@@ -78,6 +80,7 @@ type ExternalWSServer struct {
 	startOnce sync.Once
 	startMu   sync.RWMutex
 	startErr  error
+	startTime time.Time // for uptime calculation
 
 	appendMu sync.Mutex
 
@@ -92,11 +95,18 @@ type ExternalWSServer struct {
 	shutdownFn     func()
 
 	// Session metrics for error classification at exit.
-	metricsMu       sync.Mutex
-	totalInputToks  int
-	totalOutputToks int
+	metricsMu        sync.Mutex
+	totalInputToks   int
+	totalOutputToks  int
 	totalOutputBytes int
-	agentTextBuf    strings.Builder // agent_message text for error scanning
+	totalToolCalls   int             // count of tool_use events
+	agentTextBuf     strings.Builder // agent_message text for error scanning
+	stderrAuthErrors int             // consecutive auth errors from stderr
+	fatalEmitted     bool            // true after fatal error event sent
+
+	// Stall detection state.
+	stallDetector *StallDetector
+	stallConfig   StallConfig
 }
 
 type wsClient struct {
@@ -142,7 +152,7 @@ type rawCommand struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func NewExternalWSServer(agentType string, backend AgentBackend) *ExternalWSServer {
+func NewExternalWSServer(agentType string, backend AgentBackend, stallCfg StallConfig) *ExternalWSServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ExternalWSServer{
 		agentType:      agentType,
@@ -152,6 +162,7 @@ func NewExternalWSServer(agentType string, backend AgentBackend) *ExternalWSServ
 		cancel:         cancel,
 		clients:        make(map[*wsClient]struct{}),
 		cleanupTimeout: defaultCleanupTimeout,
+		stallConfig:    stallCfg,
 	}
 }
 
@@ -279,8 +290,22 @@ func (s *ExternalWSServer) ensureStarted() error {
 			return
 		}
 
+		// Record start time for uptime calculation.
+		s.startMu.Lock()
+		s.startTime = time.Now()
+		s.startMu.Unlock()
+
+		// Create and start stall detector.
+		s.stallDetector = NewStallDetector(
+			s.stallConfig,
+			s.recordAndBroadcast,
+			s.cancel,
+		)
+
 		go s.eventLoop()
 		go s.exitLoop()
+		go s.stallDetector.Run(s.ctx)
+		go s.systemEventHeartbeat()
 	})
 	return s.getStartErr()
 }
@@ -297,18 +322,29 @@ func (s *ExternalWSServer) eventLoop() {
 			if event.Type == "" {
 				continue
 			}
+
+			// Update stall detection timestamps.
+			if s.stallDetector != nil {
+				s.stallDetector.RecordEvent(event.Type)
+			}
+
+			// Track metrics before normalization (usage field is in raw data).
+			fatal := s.trackEventMetrics(event)
 			event = s.normalizeEvent(event)
-			s.trackEventMetrics(event)
 			_ = s.recordAndBroadcast(event)
+			if fatal {
+				s.emitFatalError()
+			}
 		}
 	}
 }
 
 // trackEventMetrics accumulates session-level metrics for error classification at exit.
-func (s *ExternalWSServer) trackEventMetrics(event Event) {
+// Returns true if a fatal error was detected and the session should be killed.
+func (s *ExternalWSServer) trackEventMetrics(event Event) bool {
 	data, _ := event.Data.(map[string]any)
 	if data == nil {
-		return
+		return false
 	}
 
 	s.metricsMu.Lock()
@@ -320,7 +356,13 @@ func (s *ExternalWSServer) trackEventMetrics(event Event) {
 			s.agentTextBuf.WriteString(text)
 			s.agentTextBuf.WriteByte('\n')
 			s.totalOutputBytes += len(text)
+			// Check agent messages for fatal errors too.
+			if cat := agentErrors.Classify(text); cat.Fatal() {
+				s.stderrAuthErrors++
+			}
 		}
+	case "tool_use":
+		s.totalToolCalls++
 	case "result":
 		if usage, ok := data["usage"].(map[string]any); ok {
 			if v, ok := usage["input_tokens"].(float64); ok {
@@ -330,7 +372,64 @@ func (s *ExternalWSServer) trackEventMetrics(event Event) {
 				s.totalOutputToks += int(v)
 			}
 		}
+	case "system":
+		// Scan stderr for auth/credential errors.
+		if subtype, _ := data["subtype"].(string); subtype == "stderr" {
+			if text, ok := data["text"].(string); ok {
+				if cat := agentErrors.Classify(text); cat.Fatal() {
+					s.stderrAuthErrors++
+				} else {
+					// Non-auth stderr resets the consecutive counter.
+					s.stderrAuthErrors = 0
+				}
+			}
+		}
+	case "error":
+		// Check error events from the agent backend.
+		if msg, ok := data["message"].(string); ok {
+			if cat := agentErrors.Classify(msg); cat.Fatal() {
+				s.stderrAuthErrors++
+			}
+		}
 	}
+
+	// Threshold: 3+ consecutive auth errors = fatal. Kill the session.
+	return s.stderrAuthErrors >= 3 && !s.fatalEmitted
+}
+
+// emitFatalError broadcasts a fatal error event and kills the agent process.
+// Called when unrecoverable auth/credential errors are detected mid-session.
+func (s *ExternalWSServer) emitFatalError() {
+	s.metricsMu.Lock()
+	if s.fatalEmitted {
+		s.metricsMu.Unlock()
+		return
+	}
+	s.fatalEmitted = true
+	agentText := s.agentTextBuf.String()
+	s.metricsMu.Unlock()
+
+	// Classify to get the specific category and action message.
+	cat := agentErrors.Classify(agentText)
+	if cat == agentErrors.CategoryNone {
+		cat = agentErrors.CategoryAuthError // fallback — we know it's auth from stderr
+	}
+
+	_ = s.recordAndBroadcast(Event{
+		Type: "error",
+		Data: map[string]any{
+			"message":        cat.ActionMessage(),
+			"error_category": string(cat),
+			"fatal":          true,
+			"retryable":      cat.Retryable(),
+		},
+	})
+
+	// Kill the agent — no point letting it retry with dead credentials.
+	if s.backend != nil {
+		s.backend.SendInterrupt()
+	}
+	s.cancel()
 }
 
 // classifySessionError examines accumulated session metrics and agent text
@@ -437,6 +536,53 @@ func (s *ExternalWSServer) exitLoop() {
 		})
 		s.startCleanupTimer()
 	}
+}
+
+// systemEventHeartbeat periodically emits heartbeat system events with current metrics.
+func (s *ExternalWSServer) systemEventHeartbeat() {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.emitHeartbeat()
+		}
+	}
+}
+
+// emitHeartbeat captures current metrics and broadcasts a heartbeat event.
+func (s *ExternalWSServer) emitHeartbeat() {
+	// Capture metrics snapshot under lock.
+	s.metricsMu.Lock()
+	inputToks := s.totalInputToks
+	outputToks := s.totalOutputToks
+	toolCalls := s.totalToolCalls
+	s.metricsMu.Unlock()
+
+	// Calculate uptime in milliseconds.
+	s.startMu.RLock()
+	startTime := s.startTime
+	s.startMu.RUnlock()
+
+	uptimeMs := int64(0)
+	if !startTime.IsZero() {
+		uptimeMs = time.Since(startTime).Milliseconds()
+	}
+
+	_ = s.recordAndBroadcast(Event{
+		Type: "system",
+		Data: map[string]any{
+			"subtype":      "heartbeat",
+			"uptime_ms":    uptimeMs,
+			"input_tokens": inputToks,
+			"output_tokens": outputToks,
+			"tool_calls":   toolCalls,
+			"agent_running": s.backend != nil && s.backend.Running(),
+		},
+	})
 }
 
 func (s *ExternalWSServer) recordAndBroadcast(event Event) error {
@@ -586,6 +732,12 @@ func (s *ExternalWSServer) routeCommand(cmd rawCommand) error {
 
 	switch cmd.Type {
 	case "prompt":
+		// Reset stall detection on inbound prompts — the agent is about to work.
+		if s.stallDetector != nil {
+			s.stallDetector.RecordEvent("prompt")
+			s.stallDetector.ClearResult()
+		}
+
 		var payload promptCommand
 		if err := decodeCommandData(cmd.Data, &payload); err != nil {
 			return err

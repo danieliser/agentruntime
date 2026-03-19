@@ -35,6 +35,18 @@ type AgentConfig struct {
 
 	// Effort controls the agent's effort level (Claude --effort).
 	Effort string `json:"effort,omitempty"`
+
+	// StallWarningTimeout is seconds of event-stream silence before emitting
+	// an advisory stall_warning system event. Default: 600 (10 min). 0 = use default. -1 = disabled.
+	StallWarningTimeout int `json:"stall_warning_timeout,omitempty"`
+
+	// StallKillTimeout is seconds of event-stream silence before force-killing
+	// the agent process. Default: 3000 (50 min). 0 = use default. -1 = disabled.
+	StallKillTimeout int `json:"stall_kill_timeout,omitempty"`
+
+	// ResultGracePeriod is seconds to wait after a result event for the process
+	// to exit before force-killing. Default: 10. 0 = use default. -1 = disabled.
+	ResultGracePeriod int `json:"result_grace_period,omitempty"`
 }
 
 // parseAgentConfig reads and parses the AGENT_CONFIG env var.

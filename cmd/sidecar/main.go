@@ -115,7 +115,8 @@ func newSidecarFromEnv() (sidecarServer, string, error) {
 			return nil, "", err
 		}
 
-		server := NewExternalWSServer(agentType, backend)
+		stallCfg := stallConfigFromAgentConfig(agentCfg)
+		server := NewExternalWSServer(agentType, backend, stallCfg)
 		if err := configureCleanupTimeout(server); err != nil {
 			return nil, "", err
 		}
@@ -302,6 +303,27 @@ func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, 
 		return newCodexBackendInteractive(cmd[0], cfg), nil
 	default:
 		return newGenericCommandBackend(agentType, cmd, prompt), nil
+	}
+}
+
+func stallConfigFromAgentConfig(cfg AgentConfig) StallConfig {
+	return StallConfig{
+		WarningTimeout: durationFromSeconds(cfg.StallWarningTimeout, 600),
+		KillTimeout:    durationFromSeconds(cfg.StallKillTimeout, 3000),
+		ResultGrace:    durationFromSeconds(cfg.ResultGracePeriod, 10),
+	}
+}
+
+// durationFromSeconds converts integer seconds to time.Duration.
+// 0 means "use default". -1 means "disabled" (returns -1ns, which < 0).
+func durationFromSeconds(seconds, defaultSeconds int) time.Duration {
+	switch {
+	case seconds < 0:
+		return -1 // disabled; all checks use `> 0` guards
+	case seconds == 0:
+		return time.Duration(defaultSeconds) * time.Second
+	default:
+		return time.Duration(seconds) * time.Second
 	}
 }
 
