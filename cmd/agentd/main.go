@@ -135,6 +135,9 @@ func main() {
 		ChatRegistry:  chatRegistry,
 		ChatManager:   chatManager,
 	})
+	// Wire the spawner after server creation to break the circular dependency
+	// between api.Server (needs chatManager) and chatManager (needs spawner).
+	chatManager.SetSpawner(srv)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	go func() {

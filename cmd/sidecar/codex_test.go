@@ -22,8 +22,12 @@ func TestCodexBackend_InitializeHandshake(t *testing.T) {
 	}()
 
 	msg := proc.nextWrite(t)
-	if got, want := runner.cmd, []string{"codex", "app-server", "--listen", "stdio://"}; !equalStrings(got, want) {
-		t.Fatalf("spawned command = %v, want %v", got, want)
+	wantCmd := []string{"codex", "app-server", "--listen", "stdio://"}
+	if isInsideContainer() {
+		wantCmd = append(wantCmd, "--sandbox", "danger-full-access")
+	}
+	if got := runner.cmd; !equalStrings(got, wantCmd) {
+		t.Fatalf("spawned command = %v, want %v", got, wantCmd)
 	}
 	if msg["method"] != "initialize" {
 		t.Fatalf("first method = %v, want initialize", msg["method"])

@@ -1,6 +1,9 @@
 package schema
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // HealthResponse is returned by GET /health.
 type HealthResponse struct {
@@ -207,3 +210,86 @@ func (r *SessionRequest) EffectiveTimeout() time.Duration {
 // Resources is an alias for backward compatibility during migration.
 // Deprecated: use ContainerConfig instead.
 type Resources = ContainerConfig
+
+// --- Chat API types ---
+
+// CreateChatRequest is the body for POST /chats.
+type CreateChatRequest struct {
+	Name   string          `json:"name"`
+	Config ChatAPIConfig   `json:"config"`
+}
+
+// ChatAPIConfig mirrors chat.ChatConfig for API consumers.
+type ChatAPIConfig struct {
+	Agent        string            `json:"agent"`
+	Runtime      string            `json:"runtime,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Effort       string            `json:"effort,omitempty"`
+	MCPServers   []MCPServer       `json:"mcp_servers,omitempty"`
+	AutoDiscover interface{}       `json:"auto_discover,omitempty"`
+	WorkDir      string            `json:"work_dir,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	IdleTimeout  string            `json:"idle_timeout,omitempty"`
+	MaxTurns     int               `json:"max_turns,omitempty"`
+}
+
+// ChatResponse is returned by GET /chats/:name and POST /chats.
+type ChatResponse struct {
+	Name           string        `json:"name"`
+	Config         ChatAPIConfig `json:"config"`
+	State          string        `json:"state"`
+	VolumeName     string        `json:"volume_name,omitempty"`
+	CurrentSession string        `json:"current_session,omitempty"`
+	SessionChain   []string      `json:"session_chain"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	LastActiveAt   *time.Time    `json:"last_active_at,omitempty"`
+	WSURL          string        `json:"ws_url,omitempty"`
+}
+
+// ChatSummary is returned by GET /chats.
+type ChatSummary struct {
+	Name         string     `json:"name"`
+	State        string     `json:"state"`
+	Agent        string     `json:"agent"`
+	Runtime      string     `json:"runtime,omitempty"`
+	SessionCount int        `json:"session_count"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastActiveAt *time.Time `json:"last_active_at,omitempty"`
+}
+
+// SendMessageRequest is the body for POST /chats/:name/messages.
+type SendMessageRequest struct {
+	Message string `json:"message"`
+}
+
+// SendMessageResponse is returned by POST /chats/:name/messages.
+type SendMessageResponse struct {
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+	Queued    bool   `json:"queued,omitempty"`
+	Spawned   bool   `json:"spawned,omitempty"`
+	WSURL     string `json:"ws_url"`
+}
+
+// ChatMessageEntry is one entry in GET /chats/:name/messages.
+type ChatMessageEntry struct {
+	SessionID string          `json:"session_id"`
+	Type      string          `json:"type"`
+	Data      json.RawMessage `json:"data"`
+	Offset    int64           `json:"offset"`
+	Timestamp time.Time       `json:"timestamp"`
+}
+
+// ChatMessagesResponse is returned by GET /chats/:name/messages.
+type ChatMessagesResponse struct {
+	Messages []ChatMessageEntry `json:"messages"`
+	Total    int                `json:"total"`
+	HasMore  bool               `json:"has_more"`
+	Before   int64              `json:"before,omitempty"`
+}
+
+// UpdateChatConfigRequest is the body for PATCH /chats/:name/config.
+type UpdateChatConfigRequest struct {
+	Config ChatAPIConfig `json:"config"`
+}

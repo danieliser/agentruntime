@@ -470,6 +470,114 @@ func (s *Server) handleSessionHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, historyEntries)
 }
 
+// SpawnSession implements chat.SessionSpawner. It creates and starts a session
+// using the same pipeline as handleCreateSession, without HTTP context.
+func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session.Session, error) {
+	rt := s.RuntimeFor(req.Runtime)
+	if rt == nil {
+		return nil, fmt.Errorf("unknown runtime: %s", req.Runtime)
+	}
+
+	ag := s.agents.Get(req.Agent)
+	if ag == nil {
+		return nil, fmt.Errorf("unknown agent: %s", req.Agent)
+	}
+
+	switch req.Agent {
+	case "claude":
+		if req.Claude == nil {
+			req.Claude = &ClaudeConfig{}
+		}
+	case "codex":
+		if req.Codex == nil {
+			req.Codex = &CodexConfig{}
+		}
+	}
+
+	var originalSession *session.Session
+	if req.ResumeSession != "" {
+		originalSession = s.sessions.Get(req.ResumeSession)
+		if originalSession != nil && originalSession.VolumeName != "" {
+			req.PersistSession = true
+		}
+	}
+
+	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession)
+	if err != nil {
+		return nil, fmt.Errorf("lookup resume session: %w", err)
+	}
+
+	mounts := req.EffectiveMounts()
+	workDir := effectiveWorkDir(req.WorkDir, mounts)
+
+	agCfg := agent.AgentConfig{
+		WorkDir:         workDir,
+		Env:             req.Env,
+		Interactive:     req.Interactive,
+		ResumeSessionID: resumeSessionID,
+	}
+	prompt := req.Prompt
+	if req.Interactive {
+		prompt = ""
+	}
+	cmd, err := ag.BuildCmd(prompt, agCfg)
+	if err != nil {
+		return nil, fmt.Errorf("build cmd: %w", err)
+	}
+
+	spawnCmd := cmd
+	if rt.Name() == "docker" && len(cmd) > 0 {
+		spawnCmd = []string{cmd[0]}
+	}
+
+	sess := session.NewSessionWithID(req.SessionID, req.TaskID, req.Agent, rt.Name(), req.Tags)
+	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
+		return nil, fmt.Errorf("prepare session dir: %w", err)
+	}
+	if err := s.sessions.Add(sess); err != nil {
+		return nil, fmt.Errorf("add session: %w", err)
+	}
+
+	var volumeNameForSpawn string
+	if req.PersistSession {
+		if originalSession != nil && originalSession.VolumeName != "" {
+			volumeNameForSpawn = originalSession.VolumeName
+		} else {
+			volumeNameForSpawn = "agentruntime-vol-" + sess.ID
+		}
+		sess.VolumeName = volumeNameForSpawn
+	}
+
+	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
+		SessionID:  sess.ID,
+		AgentName:  req.Agent,
+		Cmd:        spawnCmd,
+		Prompt:     req.Prompt,
+		Model:      req.Model,
+		Env:        req.Env,
+		WorkDir:    workDir,
+		TaskID:     req.TaskID,
+		Request:    &req,
+		SessionDir: &sess.SessionDir,
+		VolumeName: volumeNameForSpawn,
+		PTY:        req.PTY,
+	})
+	if err != nil {
+		s.sessions.Remove(sess.ID)
+		return nil, fmt.Errorf("spawn: %w", err)
+	}
+
+	sess.SetRunning(handle)
+	log.Printf("[session %s] spawned (chat): agent=%s pid=%d", sess.ID, req.Agent, handle.PID())
+
+	if !req.Interactive && handle.Stdin() != nil {
+		handle.Stdin().Close()
+	}
+
+	AttachSessionIO(sess, s.logDir)
+	return sess, nil
+}
+
 func effectiveWorkDir(workDir string, mounts []Mount) string {
 	if workDir != "" {
 		return workDir

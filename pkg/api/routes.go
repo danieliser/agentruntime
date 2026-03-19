@@ -20,6 +20,19 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 
 	r.GET("/ws/sessions/:id", s.handleSessionWS)
 
+	chats := r.Group("/chats")
+	{
+		chats.POST("", s.handleCreateChat)
+		chats.GET("", s.handleListChats)
+		chats.GET("/:name", s.handleGetChat)
+		chats.POST("/:name/messages", s.handleSendMessage)
+		chats.GET("/:name/messages", s.handleGetChatMessages)
+		chats.PATCH("/:name/config", s.handleUpdateChatConfig)
+		chats.DELETE("/:name", s.handleDeleteChat)
+	}
+
+	r.GET("/ws/chats/:name", s.handleChatWS)
+
 	// Static dashboard files (API routes take priority since registered first).
 	// Serves files from ./web/dist directory.
 	r.Static("/dashboard", "./web/dist")

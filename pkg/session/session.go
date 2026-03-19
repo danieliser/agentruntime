@@ -118,6 +118,14 @@ func (s *Session) RecordActivity() {
 	s.LastActivity = &now
 }
 
+// SetLastActivityForTest sets LastActivity to a specific time. Thread-safe.
+// Intended for testing only.
+func (s *Session) SetLastActivityForTest(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LastActivity = &t
+}
+
 // RecordUsage accumulates token counts and cost. Thread-safe.
 func (s *Session) RecordUsage(input, output int, cost float64) {
 	s.mu.Lock()

@@ -389,6 +389,9 @@ func requirePOSIXHelperHarness(t *testing.T) {
 	if stdruntime.GOOS == "windows" {
 		t.Skip("helper binary harness requires POSIX shell wrappers")
 	}
+	if _, err := exec.LookPath("ps"); err != nil {
+		t.Skip("ps not found in PATH; skipping process-inspection test")
+	}
 }
 
 func installHelperAgentBinaries(t *testing.T) {

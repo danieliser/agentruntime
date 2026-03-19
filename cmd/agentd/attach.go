@@ -7,6 +7,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -14,6 +16,8 @@ import (
 	"syscall"
 
 	"github.com/gorilla/websocket"
+
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 )
 
 func runAttachCommand(args []string) int {
@@ -43,6 +47,16 @@ func runAttachCommand(args []string) int {
 	}
 
 	sessionID := fs.Arg(0)
+
+	// If the argument doesn't look like a UUID, try to resolve it as a chat name.
+	if !isUUID(sessionID) {
+		chatResp, err := resolveChatSession(sessionID, *port)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "attach: %v\n", err)
+			return 1
+		}
+		sessionID = chatResp.CurrentSession
+	}
 
 	if err := attach(sessionID, *port, *since, *noReplay); err != nil {
 		fmt.Fprintf(os.Stderr, "attach: %v\n", err)
@@ -228,6 +242,53 @@ func handleServerFrame(frame *ServerFrame) error {
 }
 
 var errSessionExit = errors.New("session exited")
+
+// isUUID reports whether s looks like a UUID (8-4-4-4-12 hex, 36 chars with hyphens).
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveChatSession calls GET /chats/{name} and returns the chat record.
+// Returns an error if the chat is not in running state or has no current session.
+func resolveChatSession(name string, port int) (*apischema.ChatResponse, error) {
+	resp, err := chatGet(port, "/chats/"+name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve chat %q: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("chat %q not found", name)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("resolve chat %q: server error %d: %s", name, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var chatResp apischema.ChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return nil, fmt.Errorf("decode chat %q: %w", name, err)
+	}
+	if chatResp.State != "running" {
+		return nil, fmt.Errorf("chat %q is not running (state: %s)", name, chatResp.State)
+	}
+	if chatResp.CurrentSession == "" {
+		return nil, fmt.Errorf("chat %q is running but has no current session", name)
+	}
+	return &chatResp, nil
+}
 
 // printNDJSON parses and pretty-prints NDJSON event data.
 // If isReplay is true, output is dimmed (for history).
