@@ -11,6 +11,7 @@ package credentials
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -48,10 +49,12 @@ func newSyncWithExtractor(dataDir string, ext tokenExtractor) *Sync {
 }
 
 const (
-	credentialsSubdir = "credentials"
-	throttleInterval  = 30 * time.Second
-	claudeService     = "Claude Code-credentials"
-	claudeCacheFile   = "claude-credentials.json"
+	credentialsSubdir      = "credentials"
+	throttleInterval       = 30 * time.Second
+	claudeService          = "Claude Code-credentials"
+	claudeCacheFile        = "claude-credentials.json"
+	codexRefreshThrottle   = 12 * time.Hour
+	codexCacheFile         = "codex-auth.json"
 )
 
 // ClaudeCredentialsFile returns the path to a cached Claude OAuth credentials
@@ -136,6 +139,86 @@ func (s *Sync) Watch(ctx context.Context, interval time.Duration) {
 				return
 			case <-ticker.C:
 				s.ClaudeCredentialsFile() // ignore error — best effort
+			}
+		}
+	}()
+}
+
+// CodexWatch starts a background goroutine that monitors Codex auth token expiry
+// and proactively refreshes tokens on the given interval. Cancel the context to stop.
+//
+// On each tick: checks if access token expires within 24 hours. If so, refreshes
+// from OpenAI's token endpoint. Refreshes are throttled to once every 12 hours
+// (even on consecutive failures) to avoid hammering the endpoint.
+// Refreshed auth.json is copied to {dataDir}/credentials/codex-auth.json for containers.
+func (s *Sync) CodexWatch(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		var lastRefreshAttempt time.Time
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Throttle refresh attempts to 12-hour intervals
+				if time.Since(lastRefreshAttempt) < codexRefreshThrottle {
+					continue
+				}
+
+				// Get auth.json path
+				authPath, err := s.CodexCredentialsFile()
+				if err != nil {
+					// No auth.json found, skip check
+					continue
+				}
+
+				// Check if token needs refresh
+				_, needsRefresh, err := CheckCodexTokenExpiry(authPath)
+				if err != nil {
+					log.Printf("warning: codex expiry check failed: %v", err)
+					continue
+				}
+
+				if !needsRefresh {
+					// Token is still good
+					continue
+				}
+
+				// Mark refresh attempt (before trying, to throttle failures)
+				lastRefreshAttempt = time.Now()
+
+				// Attempt refresh
+				if err := RefreshCodexToken(authPath); err != nil {
+					// Error already logged by RefreshCodexToken
+					continue
+				}
+
+				// Copy refreshed auth.json to credentials cache
+				cacheDir := filepath.Join(s.dataDir, credentialsSubdir)
+				cachePath := filepath.Join(cacheDir, codexCacheFile)
+
+				if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+					log.Printf("warning: create credentials cache dir: %v", err)
+					continue
+				}
+
+				// Read refreshed auth.json
+				data, err := os.ReadFile(authPath)
+				if err != nil {
+					log.Printf("warning: read refreshed codex auth: %v", err)
+					continue
+				}
+
+				// Write to cache with restrictive permissions
+				if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+					log.Printf("warning: write codex auth cache: %v", err)
+					continue
+				}
+
+				log.Printf("codex token refreshed and cached to %s", cachePath)
 			}
 		}
 	}()
