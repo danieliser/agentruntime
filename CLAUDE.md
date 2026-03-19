@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+@AGENTS.md
+
 ## Project Overview
 
 agentruntime is a Go daemon and library for running coding agents behind one API. The current mainline architecture is sidecar-first: `agentd` manages sessions and logs, the selected runtime launches `cmd/sidecar/`, and the sidecar speaks to Claude Code or Codex, normalizes their output, and feeds that event stream back to the daemon.
