@@ -55,6 +55,17 @@ type codexBackend struct {
 	stderrBuf strings.Builder
 }
 
+// isInsideContainer returns true if running inside a Docker/Podman container.
+func isInsideContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return true
+	}
+	return false
+}
+
 type codexSpawner func(ctx context.Context, cmd []string, env []string) (*codexTransport, error)
 
 type codexTransport struct {
@@ -205,6 +216,11 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 		approvalFlag = "--" + b.approvalMode
 	}
 	cmd := []string{b.binary, "exec", "--json", approvalFlag, "--skip-git-repo-check"}
+	// When running inside a Docker container, disable Codex's bubblewrap sandbox.
+	// The container itself provides isolation — bwrap fails without CAP_SYS_ADMIN.
+	if isInsideContainer() {
+		cmd = append(cmd, "--sandbox", "danger-full-access")
+	}
 	if b.model != "" {
 		cmd = append(cmd, "--model", b.model)
 	}
@@ -307,6 +323,9 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	b.mu.Unlock()
 
 	spawnCmd := []string{b.binary, "app-server", "--listen", "stdio://"}
+	if isInsideContainer() {
+		spawnCmd = append(spawnCmd, "--sandbox", "danger-full-access")
+	}
 	if b.model != "" {
 		spawnCmd = append(spawnCmd, "--model", b.model)
 	}
