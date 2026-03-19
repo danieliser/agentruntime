@@ -2,6 +2,71 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.5.0] — 2026-03-19
+
+### Stall Detection
+- **Two-phase stall detection**: Advisory warning at 10 min of silence, hard kill at 50 min. Result marker early exit: force-kill after 10s grace when agent emits result but process doesn't exit (fixes hung MCP servers).
+- **Configurable**: `stall_warning_timeout`, `stall_kill_timeout`, `result_grace_period` via `AGENT_CONFIG`. Set `-1` to disable individual phases.
+
+### Session Persistence
+- **Named Docker volumes**: `agentruntime-vol-{sessionID}` mounted at `~/.claude/projects/` for session continuity across container restarts. Enables `--resume` across container lifecycles.
+- **API**: `persist_session: true` on SessionRequest. Volume reuse for resumed sessions. `DELETE /sessions/:id?remove_volume=true` for explicit cleanup.
+
+### WebSocket Log Forwarding
+- **NDJSON log catch-up**: When replay buffer wraps on long sessions, bridge falls back to disk-based NDJSON log file. `gap` flag on replay frames signals missing data.
+- **Daemon restart recovery**: Recovered sessions restore from NDJSON log files.
+
+### Dashboard
+- **Ops dashboard** at `/dashboard/`: dark theme, auto-refreshing sessions table, click-to-detail with live WS event log, session metrics (tokens, tools, cost, uptime).
+- **Branding**: SVG wordmark, GitHub/issues links, footer with report-issue link.
+- **Vanilla JS**: No build tools, three files (HTML, JS, CSS).
+
+### Rich System Events
+- **Heartbeat**: Every 10s with uptime, tokens, tool calls, agent status. Flows through replay buffer.
+- **Tool call tracking**: New counter in event metrics.
+
+### Error Handling
+- **Codex JSONL false-positive prevention**: `ClassifyFromEvents()` filters to `agent_message` and `error` types only, ignoring embedded MCP results.
+- **Fatal error fast-fail**: Sidecar detects repeated auth errors from stderr, emits `fatal: true` error event, kills agent immediately. Consumers stop waiting.
+- **New patterns**: `refresh_token_reused`, `Failed to refresh token`, `API usage limits`.
+
+### Multi-Runtime
+- **Both runtimes active simultaneously**: `--runtime` sets default, both `local` and `docker` always available. Callers select per-session via `runtime` field.
+- **Recovery on all runtimes**: Not just primary.
+- **Cleanup on all runtimes**: `errors.Join()` aggregation at shutdown.
+
+### Codex Token Refresh
+- **Proactive refresh**: JWT expiry checking with 24h threshold. Automatic refresh via OpenAI's Auth0 endpoint. 12h check interval. Atomic file writes.
+- **Graceful degradation**: Logs actionable "run codex login" message on failure.
+
+### Security
+- **API key stripping**: Local runtime strips `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` from sidecar env so agents use OAuth.
+- **Host state isolation**: Removed blind copy of `~/.claude.json` into session dirs.
+- **Mount pre-creation**: Single-file bind-mount sources auto-created to prevent Docker directory creation.
+- **Materializer guard**: Auto-infers claude/codex config block from agent name.
+- **AGENT_PROMPT**: Docker runtime passes prompt via env for fire-and-forget mode so Claude exits after result.
+- **Session ID passthrough**: Callers can set `session_id` on requests (valid UUID, rejects duplicates).
+
+### Documentation
+- Six configuration guides (Claude, Codex, MCP, env vars, hooks, skills/agents/plugins)
+- Credential architecture guide
+- Research-backed specs for all features
+- Auto-discovery spec (773 lines) with exact Claude Code and Codex CLI cascade rules
+
+## [0.4.0] — 2026-03-18
+
+### Security
+- **Error classification**: 12 regex patterns classify agent errors (model_not_found, auth_error, rate_limit, etc.) with `error_category` and `retryable` on exit events.
+- **Project root validation**: Reject sensitive dirs, path traversal, filesystem root.
+- **iptables isolation**: Linux inter-container lateral movement blocked.
+- **Startup crash detection**: Zero tokens + minimal output heuristic.
+- **Timestamp fix**: WS events now always carry timestamps.
+
+### Session Improvements
+- **Runtime metrics API**: last_activity, tokens, cost, tool calls, uptime on `/sessions/:id/info`.
+- **`--effort` flag** for Claude agent.
+- **NO_PROXY `host-gateway`** for Linux Docker.
+
 ## [0.3.0] — 2026-03-17
 
 ### Plumbing Gap Audit & Fixes
