@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -15,17 +16,34 @@ func main() {
 	agent := flag.String("agent", "claude", "Agent for --create (claude, codex)")
 	idleTimeout := flag.String("idle-timeout", "5m", "Idle timeout for --create")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: agentd-tui <chat-name|session-id> [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: agentd-tui [options] <chat-name|session-id>\n\n")
 		fmt.Fprintf(os.Stderr, "Attach to a running agentd chat or session with a rich terminal UI.\n\n")
 		flag.PrintDefaults()
 	}
+
+	// Go's flag package stops at the first non-flag arg.
+	// Manually extract the target from os.Args so flags work in any position.
+	var target string
+	var filtered []string
+	filtered = append(filtered, os.Args[0])
+	for _, arg := range os.Args[1:] {
+		if !strings.HasPrefix(arg, "-") && target == "" {
+			target = arg
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	os.Args = filtered
 	flag.Parse()
 
-	if flag.NArg() < 1 {
+	// Also check flag.Args() in case target came after flags.
+	if target == "" && flag.NArg() > 0 {
+		target = flag.Arg(0)
+	}
+	if target == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	target := flag.Arg(0)
 
 	// Resolve target to a session ID + chat metadata.
 	conn, meta, err := connect(target, *port, *noReplay, connectOpts{
