@@ -217,6 +217,7 @@ func (m *Manager) SendMessage(name, message string) (*SendResult, error) {
 
 	case ChatStateRunning:
 		if rec.PendingMessage != "" {
+			// Queue depth is 1 — reject if slot is already taken.
 			return nil, ErrChatBusy
 		}
 		// Inject via stdin to the running session.
@@ -228,6 +229,9 @@ func (m *Manager) SendMessage(name, message string) (*SendResult, error) {
 		if err := m.injectStdin(sess, message); err != nil {
 			return nil, fmt.Errorf("inject stdin: %w", err)
 		}
+		// Mark pending so the next concurrent caller hits ErrChatBusy.
+		// Cleared by handleSessionExit when the turn completes.
+		rec.PendingMessage = message
 		rec.LastActiveAt = &now
 		rec.UpdatedAt = now
 		if err := m.registry.Save(rec); err != nil {
