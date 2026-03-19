@@ -294,8 +294,8 @@ func TestHealth(t *testing.T) {
 	if body["status"] != "ok" {
 		t.Fatalf("expected status ok, got %v", body["status"])
 	}
-	if body["runtime"] != "test" {
-		t.Fatalf("expected runtime 'test', got %v", body["runtime"])
+	if body["default_runtime"] != "test" {
+		t.Fatalf("expected default_runtime 'test', got %v", body["default_runtime"])
 	}
 }
 

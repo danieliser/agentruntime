@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -36,10 +37,24 @@ func main() {
 	log.Printf("data dir: %s", *dataDir)
 	logDir := filepath.Join(*dataDir, "logs")
 
-	// Initialize runtime.
+	// Initialize runtimes. The --runtime flag sets the default; both local
+	// and docker are always available so callers can select per-session.
 	rt, err := newRuntime(*rtName, *dataDir, *dockerHost)
 	if err != nil {
 		log.Fatalf("failed to initialize runtime: %v", err)
+	}
+	var extraRuntimes []runtime.Runtime
+	if *rtName != "local" {
+		extraRuntimes = append(extraRuntimes, runtime.NewLocalSidecarRuntime())
+	}
+	if *rtName != "docker" {
+		// Docker runtime init is lazy: if Docker isn't available, log a warning
+		// but don't fail startup. The runtime will return an error on Spawn().
+		dockerRT := runtime.NewDockerRuntime(runtime.DockerConfig{
+			DataDir: *dataDir,
+			Host:    *dockerHost,
+		})
+		extraRuntimes = append(extraRuntimes, dockerRT)
 	}
 
 	// Initialize session manager and recover orphaned sessions.
@@ -48,14 +63,26 @@ func main() {
 		sessions.SetMaxSessions(*maxSessions)
 		log.Printf("max sessions: %d", *maxSessions)
 	}
-	recovered, err := rt.Recover(context.Background())
-	if err != nil {
-		log.Printf("warning: runtime recovery failed: %v", err)
+
+	// Recover from primary runtime and all extra runtimes.
+	allRuntimes := []runtime.Runtime{rt}
+	allRuntimes = append(allRuntimes, extraRuntimes...)
+
+	totalRecovered := 0
+	for _, r := range allRuntimes {
+		recovered, err := r.Recover(context.Background())
+		if err != nil {
+			log.Printf("warning: %s runtime recovery failed: %v", r.Name(), err)
+			continue
+		}
+		if len(recovered) > 0 {
+			orphaned := sessions.Recover(recovered, r.Name())
+			restoreRecoveredSessions(logDir, orphaned)
+			totalRecovered += len(orphaned)
+		}
 	}
-	if len(recovered) > 0 {
-		orphaned := sessions.Recover(recovered, rt.Name())
-		restoreRecoveredSessions(logDir, orphaned)
-		log.Printf("recovered %d orphaned sessions", len(orphaned))
+	if totalRecovered > 0 {
+		log.Printf("recovered %d orphaned sessions from all runtimes", totalRecovered)
 	}
 
 	// Optional credential sync.
@@ -64,7 +91,8 @@ func main() {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		creds.Watch(ctx, 30*time.Second)
-		log.Println("credential sync enabled (30s interval)")
+		creds.CodexWatch(ctx, 12*time.Hour)
+		log.Println("credential sync enabled (Claude: 30s, Codex: 12h)")
 	}
 
 	// Initialize agent registry.
@@ -73,8 +101,9 @@ func main() {
 	// Start HTTP server.
 	addr := fmt.Sprintf(":%d", *port)
 	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{
-		DataDir: *dataDir,
-		LogDir:  logDir,
+		DataDir:       *dataDir,
+		LogDir:        logDir,
+		ExtraRuntimes: extraRuntimes,
 	})
 
 	// Graceful shutdown on SIGINT/SIGTERM.
@@ -88,9 +117,18 @@ func main() {
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("shutdown error: %v", err)
 		}
-		// Tear down runtime infrastructure (proxy container, network).
-		if err := rt.Cleanup(ctx); err != nil {
-			log.Printf("runtime cleanup error: %v", err)
+
+		// Tear down runtime infrastructure (proxy containers, networks) from all runtimes.
+		var cleanupErrs []error
+		allRuntimes := []runtime.Runtime{rt}
+		allRuntimes = append(allRuntimes, extraRuntimes...)
+		for _, r := range allRuntimes {
+			if err := r.Cleanup(ctx); err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("%s runtime cleanup: %w", r.Name(), err))
+			}
+		}
+		if len(cleanupErrs) > 0 {
+			log.Printf("runtime cleanup errors: %v", errors.Join(cleanupErrs...))
 		}
 	}()
 
