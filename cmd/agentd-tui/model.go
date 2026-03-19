@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -45,6 +46,9 @@ type model struct {
 	costUSD      float64
 	toolCalls    int
 
+	// Scroll tracking.
+	followMode bool // auto-scroll when at bottom
+
 	// Layout.
 	width  int
 	height int
@@ -66,8 +70,18 @@ func newModel(conn *websocket.Conn, meta chatMeta) model {
 		renderer: newRenderer(80),
 		viewport: vp,
 		input:    ta,
-		lines:    make([]string, 0, 256),
+		lines:      make([]string, 0, 256),
+		followMode: true,
 	}
+}
+
+// renderTickMsg triggers periodic glamour re-render during streaming.
+type renderTickMsg struct{}
+
+func renderTick() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+		return renderTickMsg{}
+	})
 }
 
 func (m model) Init() tea.Cmd {
@@ -114,9 +128,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "pgup", "pgdown":
+			// Manual scroll — disable follow mode.
+			m.followMode = false
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			cmds = append(cmds, cmd)
+			// Re-enable follow if user scrolled back to bottom.
+			if m.viewport.AtBottom() {
+				m.followMode = true
+			}
 			return m, tea.Batch(cmds...)
 		}
 
@@ -153,8 +173,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 
 	case agentEventMsg:
-		m.handleAgentEvent(msg.event, msg.replay)
+		cmd := m.handleAgentEvent(msg.event, msg.replay)
 		m.updateViewport()
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case sessionExitMsg:
 		m.flushStream()
@@ -163,6 +186,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendLine("")
 		m.appendLine(resultStyle.Render(fmt.Sprintf("── session exited (code %d) — esc to quit ──", msg.code)))
 		m.updateViewport()
+
+	case renderTickMsg:
+		if m.streaming && m.streamBuf.Len() > 0 {
+			// Periodic glamour re-render of accumulated stream content.
+			content := m.streamBuf.String()
+			rendered, err := m.renderer.glamour.Render(content)
+			if err != nil {
+				rendered = agentStyle.Render(content)
+			} else {
+				rendered = strings.TrimSpace(rendered)
+			}
+			m.replaceOrAppendStream(rendered)
+			m.updateViewport()
+			return m, renderTick() // schedule next tick
+		}
+		// Not streaming — no more ticks needed.
+		return m, nil
 
 	case wsErrorMsg:
 		m.appendLine(errorStyle.Render(fmt.Sprintf("WS error: %v", msg.err)))
@@ -173,20 +213,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) {
+func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) tea.Cmd {
 	switch ev.Type {
 	case "agent_message":
 		isDelta, _ := ev.Data["delta"].(bool)
 		text, _ := ev.Data["text"].(string)
 		if text == "" {
-			return
+			return nil
 		}
 
 		if isDelta {
+			wasStreaming := m.streaming
 			m.streaming = true
 			m.streamBuf.WriteString(text)
 			m.replaceStreamLine()
-			return
+			if !wasStreaming {
+				return renderTick() // start the render tick cycle
+			}
+			return nil
 		}
 
 		// Complete message — render through glamour.
@@ -235,7 +279,7 @@ func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) {
 	case "system":
 		subtype, _ := ev.Data["subtype"].(string)
 		if subtype == "heartbeat" {
-			return // suppress
+			return nil
 		}
 		// Detect interactive prompts.
 		if subtype == "input_request" || subtype == "question" {
@@ -251,7 +295,7 @@ func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) {
 			m.mode = modePrompt
 			m.appendLine(m.renderer.renderPrompt(question, opts))
 			m.input.Placeholder = "Your response..."
-			return
+			return nil
 		}
 		rendered := m.renderer.renderEvent(ev, isReplay)
 		if rendered != "" {
@@ -265,6 +309,7 @@ func (m *model) handleAgentEvent(ev agentEvent, isReplay bool) {
 			m.appendLine(rendered)
 		}
 	}
+	return nil
 }
 
 const streamMarker = "<<STREAM>>"
@@ -326,7 +371,9 @@ func (m *model) appendLine(s string) {
 func (m *model) updateViewport() {
 	content := strings.Join(m.lines, "\n")
 	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+	if m.followMode {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m *model) sendStdin(text string) {
