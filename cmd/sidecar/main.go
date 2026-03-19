@@ -116,6 +116,11 @@ func newSidecarFromEnv() (sidecarServer, string, error) {
 		}
 
 		stallCfg := stallConfigFromAgentConfig(agentCfg)
+		// Interactive mode (no AGENT_PROMPT): disable result grace period —
+		// the agent sends "result" after each turn but stays alive for more.
+		if os.Getenv("AGENT_PROMPT") == "" {
+			stallCfg.ResultGrace = -1
+		}
 		server := NewExternalWSServer(agentType, backend, stallCfg)
 		if err := configureCleanupTimeout(server); err != nil {
 			return nil, "", err
