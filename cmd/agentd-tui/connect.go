@@ -37,10 +37,10 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 		meta.State = chatResp.State
 
 		if chatResp.State == "idle" || chatResp.State == "created" {
-			// Wake the chat.
-			sid, wakeErr := wakeChat(port, target)
+			// Spawn an interactive session via the sessions API.
+			sid, wakeErr := spawnInteractiveSession(port, chatResp)
 			if wakeErr != nil {
-				return nil, meta, fmt.Errorf("wake chat: %w", wakeErr)
+				return nil, meta, fmt.Errorf("spawn session: %w", wakeErr)
 			}
 			meta.SessionID = sid
 			meta.State = "running"
@@ -60,10 +60,12 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 		meta.Name = target
 		meta.Agent = opts.agent
 		meta.State = "created"
-		// Wake it immediately.
-		sid, wakeErr := wakeChat(port, target)
-		if wakeErr != nil {
-			return nil, meta, fmt.Errorf("wake chat: %w", wakeErr)
+		// Spawn an interactive session.
+		created := &chatAPIResponse{Name: target, State: "created"}
+		created.Config.Agent = opts.agent
+		sid, spawnErr := spawnInteractiveSession(port, created)
+		if spawnErr != nil {
+			return nil, meta, fmt.Errorf("spawn session: %w", spawnErr)
 		}
 		meta.SessionID = sid
 		meta.State = "running"
@@ -153,25 +155,36 @@ func isUUID(s string) bool {
 	return true
 }
 
-func wakeChat(port int, name string) (string, error) {
-	body := `{"message":"/resume"}`
+// spawnInteractiveSession creates a session via POST /sessions with interactive=true
+// and no prompt. The sidecar runs in interactive mode, staying alive for stdin.
+func spawnInteractiveSession(port int, chat *chatAPIResponse) (string, error) {
+	payload := map[string]interface{}{
+		"agent":       chat.Config.Agent,
+		"interactive": true,
+		"tags":        map[string]string{"chat_name": chat.Name},
+	}
+	data, _ := json.Marshal(payload)
 	resp, err := http.Post(
-		fmt.Sprintf("http://localhost:%d/chats/%s/messages", port, url.PathEscape(name)),
+		fmt.Sprintf("http://localhost:%d/sessions", port),
 		"application/json",
-		strings.NewReader(body),
+		strings.NewReader(string(data)),
 	)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
+	}
 	var result struct {
-		SessionID string `json:"session_id"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
-	if result.SessionID == "" {
-		return "", fmt.Errorf("no session_id in wake response")
+	if result.ID == "" {
+		return "", fmt.Errorf("no session id in response")
 	}
-	return result.SessionID, nil
+	return result.ID, nil
 }
