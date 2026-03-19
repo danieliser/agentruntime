@@ -141,7 +141,9 @@ async function fetchSessions() {
     try {
         const res = await fetch('/sessions');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        state.sessions = await res.json() || [];
+        const all = await res.json() || [];
+        // Active tab only shows non-terminal sessions
+        state.sessions = all.filter(s => !['completed', 'failed'].includes(s.status || s.state));
         updateSessionsTable();
     } catch (err) {
         console.error('Sessions fetch error:', err);
