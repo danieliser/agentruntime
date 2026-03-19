@@ -190,17 +190,14 @@ EOF
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>~/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 </dict>
 </plist>
 EOF
 
-    # Expand ~ in plist (launchd doesn't expand ~ so we need to replace with actual home)
-    HOME_EXPANDED=$(eval echo "$SERVICE_PLIST")
-    if [ "$HOME_EXPANDED" != "$SERVICE_PLIST" ]; then
-        sed -i '' "s|~|$HOME|g" "$SERVICE_PLIST"
-    fi
+    # Expand ~ in plist — launchd doesn't expand tilde in any field.
+    sed -i '' "s|~|$HOME|g" "$SERVICE_PLIST"
 
     echo "✓ created launchd plist: $SERVICE_PLIST"
 
