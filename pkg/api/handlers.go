@@ -38,6 +38,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 	for name := range s.runtimes {
 		available = append(available, name)
 	}
+	sort.Strings(available)
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "ok",
 		"default_runtime":  s.runtime.Name(),

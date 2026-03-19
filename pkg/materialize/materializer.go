@@ -83,7 +83,46 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 		return "", err
 	}
 
+	// Parse auto_discover configuration
+	var discoverOpts *DiscoverOptions
+	if req.AutoDiscover != nil {
+		discoverOpts = ParseAutoDiscover(req.AutoDiscover)
+	}
+	if discoverOpts == nil {
+		// Platform default: enable discovery for both local and docker
+		discoverOpts = &DiscoverOptions{
+			ClaudeMD:   true,
+			Settings:   true,
+			MCP:        true,
+			Rules:      true,
+			Agents:     true,
+			AgentsMD:   true,
+			ConfigTOML: true,
+		}
+	}
+
+	// Discover files if enabled
+	var discovered *ClaudeDiscovery
+	if req.WorkDir != "" && (discoverOpts.ClaudeMD || discoverOpts.Settings || discoverOpts.MCP || discoverOpts.Rules || discoverOpts.Agents) {
+		discovered, _ = DiscoverClaudeFiles(req.WorkDir, *discoverOpts)
+	}
+
+	// Merge CLAUDE.md: discovered first, then explicit
+	claudeMD := req.Claude.ClaudeMD
+	if claudeMD == "" && discovered != nil && discoverOpts.ClaudeMD && len(discovered.ClaudeMDFiles) > 0 {
+		claudeMD = mergeClaudeMD(discovered.ClaudeMDFiles)
+	}
+
+	// Merge settings: discovered as base, explicit wins
 	settings := req.Claude.SettingsJSON
+	if discovered != nil && discoverOpts.Settings && len(discovered.SettingsJSON) > 0 {
+		if settings == nil {
+			settings = discovered.SettingsJSON
+		} else {
+			// Deep merge: discovered fills gaps, explicit wins on conflicts
+			settings = deepMerge(discovered.SettingsJSON, settings)
+		}
+	}
 	if settings == nil {
 		settings = map[string]any{}
 	}
@@ -96,11 +135,22 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 		return "", err
 	}
 
-	if err := writeTextFile(filepath.Join(claudeDir, "CLAUDE.md"), req.Claude.ClaudeMD); err != nil {
+	if err := writeTextFile(filepath.Join(claudeDir, "CLAUDE.md"), claudeMD); err != nil {
 		return "", err
 	}
 
-	mcpJSON, err := buildClaudeMCPJSON(req.Claude.McpJSON, req.MCPServers)
+	// Merge MCP JSON: discovered as base, explicit wins
+	mcpJSONBase := req.Claude.McpJSON
+	if discovered != nil && discoverOpts.MCP && len(discovered.McpJSON) > 0 {
+		if mcpJSONBase == nil {
+			mcpJSONBase = discovered.McpJSON
+		} else {
+			// Deep merge: discovered fills gaps, explicit wins on conflicts
+			mcpJSONBase = deepMerge(discovered.McpJSON, mcpJSONBase)
+		}
+	}
+
+	mcpJSON, err := buildClaudeMCPJSON(mcpJSONBase, req.MCPServers)
 	if err != nil {
 		return "", err
 	}
@@ -172,9 +222,48 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 		return "", err
 	}
 
+	// Parse auto_discover configuration
+	var discoverOpts *DiscoverOptions
+	if req.AutoDiscover != nil {
+		discoverOpts = ParseAutoDiscover(req.AutoDiscover)
+	}
+	if discoverOpts == nil {
+		// Platform default: enable discovery for both local and docker
+		discoverOpts = &DiscoverOptions{
+			ClaudeMD:   true,
+			Settings:   true,
+			MCP:        true,
+			Rules:      true,
+			Agents:     true,
+			AgentsMD:   true,
+			ConfigTOML: true,
+		}
+	}
+
+	// Discover files if enabled
+	var discovered *CodexDiscovery
+	if req.WorkDir != "" && (discoverOpts.AgentsMD || discoverOpts.ConfigTOML) {
+		discovered, _ = DiscoverCodexFiles(req.WorkDir, *discoverOpts)
+	}
+
+	// Merge config.toml: discovered as base, explicit wins
 	config := req.Codex.ConfigTOML
+	if discovered != nil && discoverOpts.ConfigTOML && len(discovered.ConfigTOML) > 0 {
+		if config == nil {
+			config = discovered.ConfigTOML
+		} else {
+			// Deep merge: discovered fills gaps, explicit wins on conflicts
+			config = deepMerge(discovered.ConfigTOML, config)
+		}
+	}
 	if config == nil {
 		config = map[string]any{}
+	}
+
+	// Merge AGENTS.md: discovered first, then explicit
+	agentsMD := req.Codex.Instructions
+	if agentsMD == "" && discovered != nil && discoverOpts.AgentsMD && discovered.AgentsMD != "" {
+		agentsMD = discovered.AgentsMD
 	}
 	tomlData, err := marshalSimpleTOML(config)
 	if err != nil {
@@ -193,7 +282,7 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 		return "", err
 	}
 
-	if err := writeTextFile(filepath.Join(codexDir, "instructions.md"), req.Codex.Instructions); err != nil {
+	if err := writeTextFile(filepath.Join(codexDir, "instructions.md"), agentsMD); err != nil {
 		return "", err
 	}
 

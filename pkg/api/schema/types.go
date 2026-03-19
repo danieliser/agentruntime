@@ -44,6 +44,23 @@ type SessionRequest struct {
 	Claude *ClaudeConfig `json:"claude,omitempty" yaml:"claude,omitempty"`
 	Codex  *CodexConfig  `json:"codex,omitempty"  yaml:"codex,omitempty"`
 
+	// AutoDiscover controls configuration auto-discovery from the filesystem.
+	// Supports three forms:
+	//
+	// 1. bool (shorthand):
+	//    true  — enable ALL discovery categories
+	//    false — disable ALL discovery (explicit config only)
+	//    nil/unset — platform default (true for Docker, true for local)
+	//
+	// 2. map[string]bool (granular):
+	//    {"claude_md": true, "settings": false, ...}
+	//    All unspecified keys default to false (opt-in per category)
+	//
+	// Valid category keys:
+	//   Claude:  "claude_md", "settings", "mcp", "rules", "agents"
+	//   Codex:   "agents_md", "config_toml"
+	AutoDiscover interface{} `json:"auto_discover,omitempty" yaml:"auto_discover,omitempty"`
+
 	// MCP servers — materialized into agent's config at spawn time.
 	MCPServers []MCPServer `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 
