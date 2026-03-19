@@ -377,10 +377,14 @@ func (m *model) updateViewport() {
 }
 
 func (m *model) sendStdin(text string) {
-	_ = m.conn.WriteJSON(map[string]string{
+	debugLog.Printf("sendStdin: %q", text)
+	err := m.conn.WriteJSON(map[string]string{
 		"type": "stdin",
 		"data": text,
 	})
+	if err != nil {
+		debugLog.Printf("sendStdin error: %v", err)
+	}
 	m.appendLine(systemStyle.Render("⏳ thinking..."))
 }
 
