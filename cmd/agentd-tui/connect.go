@@ -43,9 +43,12 @@ func connect(target string, port int, noReplay bool) (*websocket.Conn, chatMeta,
 		} else {
 			return nil, meta, fmt.Errorf("chat %q is in state %q", target, chatResp.State)
 		}
-	} else {
-		// Assume it's a session ID.
+	} else if isUUID(target) {
+		// Looks like a raw session ID.
 		meta.SessionID = target
+	} else {
+		// Not a UUID and not a known chat — give a helpful error.
+		return nil, meta, fmt.Errorf("chat %q not found. Create it first:\n  agentd chat create %s --agent claude", target, target)
 	}
 
 	// Connect to the session WS.
@@ -91,6 +94,22 @@ func getChat(port int, name string) (*chatAPIResponse, error) {
 		return nil, err
 	}
 	return &cr, nil
+}
+
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func wakeChat(port int, name string) (string, error) {
