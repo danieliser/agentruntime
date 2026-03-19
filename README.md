@@ -94,6 +94,25 @@ If you prefer polling instead of WebSockets, read the NDJSON stream incrementall
 curl -sS "http://127.0.0.1:8090/sessions/$SESSION_ID/logs?cursor=0"
 ```
 
+Or, use the interactive `attach` command to connect to a running session with terminal I/O:
+
+```bash
+agentd attach $SESSION_ID
+```
+
+The attach command supports:
+
+- `--port` (default 8090): Daemon port
+- `--since N` (default 0): Replay offset to start from
+- `--no-replay`: Skip replay history and only show live output
+
+Stdin modes in attach:
+
+- Regular text lines are sent as stdin
+- Lines starting with `/steer ` are sent as steering commands
+- Lines starting with `/interrupt` send an interrupt signal
+- Ctrl+C sends interrupt (first time) or detaches (second time)
+
 ## Docker
 
 Build the bundled container images:
