@@ -19,8 +19,14 @@ type chatMeta struct {
 	State     string // "running", "idle", etc.
 }
 
+type connectOpts struct {
+	create      bool
+	agent       string
+	idleTimeout string
+}
+
 // connect resolves the target (chat name or session ID) and opens a WS connection.
-func connect(target string, port int, noReplay bool) (*websocket.Conn, chatMeta, error) {
+func connect(target string, port int, noReplay bool, opts connectOpts) (*websocket.Conn, chatMeta, error) {
 	meta := chatMeta{}
 
 	// Try to resolve as a chat name first.
@@ -46,9 +52,23 @@ func connect(target string, port int, noReplay bool) (*websocket.Conn, chatMeta,
 	} else if isUUID(target) {
 		// Looks like a raw session ID.
 		meta.SessionID = target
+	} else if opts.create {
+		// Auto-create the chat.
+		if err := createChat(port, target, opts.agent, opts.idleTimeout); err != nil {
+			return nil, meta, fmt.Errorf("create chat: %w", err)
+		}
+		meta.Name = target
+		meta.Agent = opts.agent
+		meta.State = "created"
+		// Wake it immediately.
+		sid, wakeErr := wakeChat(port, target)
+		if wakeErr != nil {
+			return nil, meta, fmt.Errorf("wake chat: %w", wakeErr)
+		}
+		meta.SessionID = sid
+		meta.State = "running"
 	} else {
-		// Not a UUID and not a known chat — give a helpful error.
-		return nil, meta, fmt.Errorf("chat %q not found. Create it first:\n  agentd chat create %s --agent claude", target, target)
+		return nil, meta, fmt.Errorf("chat %q not found. Create it with --create or:\n  agentd chat create %s --agent claude", target, target)
 	}
 
 	// Connect to the session WS.
@@ -94,6 +114,27 @@ func getChat(port int, name string) (*chatAPIResponse, error) {
 		return nil, err
 	}
 	return &cr, nil
+}
+
+func createChat(port int, name, agent, idleTimeout string) error {
+	body := fmt.Sprintf(`{"name":%q,"config":{"agent":%q,"idle_timeout":%q}}`, name, agent, idleTimeout)
+	resp, err := http.Post(
+		fmt.Sprintf("http://localhost:%d/chats", port),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 409 {
+		return nil // already exists, that's fine
+	}
+	if resp.StatusCode != 201 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
+	}
+	return nil
 }
 
 func isUUID(s string) bool {
