@@ -132,13 +132,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateViewport()
 			return m, nil
 
-		case "pgup", "pgdown":
+		case "pgup", "pgdown", "up", "down":
 			// Manual scroll — disable follow mode.
 			m.followMode = false
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			cmds = append(cmds, cmd)
-			// Re-enable follow if user scrolled back to bottom.
 			if m.viewport.AtBottom() {
 				m.followMode = true
 			}
@@ -149,6 +148,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+
+	case tea.MouseMsg:
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		cmds = append(cmds, cmd)
+		m.followMode = m.viewport.AtBottom()
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
