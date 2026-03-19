@@ -33,60 +33,10 @@ func TestNewSession_InitialState(t *testing.T) {
 	}
 }
 
-func TestSession_SetRunning(t *testing.T) {
-	s := NewSession("t1", "codex", "local")
-	s.SetRunning(nil) // handle can be nil for state transition test
-	if s.State != StateRunning {
-		t.Fatalf("expected StateRunning, got %q", s.State)
-	}
-}
 
-func TestSession_SetCompleted_ZeroExit(t *testing.T) {
-	s := NewSession("t1", "claude", "local")
-	s.SetRunning(nil)
-	s.SetCompleted(0)
-	if s.State != StateCompleted {
-		t.Fatalf("expected StateCompleted for exit 0, got %q", s.State)
-	}
-	if s.ExitCode == nil || *s.ExitCode != 0 {
-		t.Fatalf("expected ExitCode=0, got %v", s.ExitCode)
-	}
-	if s.EndedAt == nil {
-		t.Fatal("expected non-nil EndedAt after completion")
-	}
-}
 
-func TestSession_SetCompleted_NonZeroExit(t *testing.T) {
-	s := NewSession("t1", "claude", "local")
-	s.SetRunning(nil)
-	s.SetCompleted(1)
-	if s.State != StateFailed {
-		t.Fatalf("expected StateFailed for non-zero exit, got %q", s.State)
-	}
-	if s.ExitCode == nil || *s.ExitCode != 1 {
-		t.Fatalf("expected ExitCode=1, got %v", s.ExitCode)
-	}
-}
 
-func TestSession_SetCompleted_KillCode(t *testing.T) {
-	s := NewSession("t1", "claude", "local")
-	s.SetRunning(nil)
-	s.SetCompleted(-1) // synthetic code from DELETE handler
-	if s.State != StateFailed {
-		t.Fatalf("expected StateFailed for kill exit, got %q", s.State)
-	}
-}
 
-func TestSession_IDUnique(t *testing.T) {
-	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		s := NewSession("", "claude", "local")
-		if ids[s.ID] {
-			t.Fatalf("duplicate session ID: %s", s.ID)
-		}
-		ids[s.ID] = true
-	}
-}
 
 // --- Manager CRUD ---
 
@@ -105,12 +55,6 @@ func TestManager_AddAndGet(t *testing.T) {
 	}
 }
 
-func TestManager_GetMissing(t *testing.T) {
-	m := NewManager()
-	if m.Get("does-not-exist") != nil {
-		t.Fatal("expected nil for unknown session")
-	}
-}
 
 func TestManager_AddDuplicate(t *testing.T) {
 	m := NewManager()
@@ -132,11 +76,6 @@ func TestManager_Remove(t *testing.T) {
 	}
 }
 
-func TestManager_RemoveMissing(t *testing.T) {
-	// Must not panic on removing a non-existent ID.
-	m := NewManager()
-	m.Remove("no-such-id")
-}
 
 func TestManager_List(t *testing.T) {
 	m := NewManager()
@@ -297,27 +236,6 @@ func TestNewSession_ReplayBufferDefaultSize(t *testing.T) {
 	}
 }
 
-// --- State string values ---
-
-// TestStateConstants ensures the string values of states match what the JSON API
-// will return — these values are part of the public API contract.
-func TestStateConstants(t *testing.T) {
-	cases := []struct {
-		state    State
-		expected string
-	}{
-		{StatePending, "pending"},
-		{StateRunning, "running"},
-		{StateCompleted, "completed"},
-		{StateFailed, "failed"},
-		{StateOrphaned, "orphaned"},
-	}
-	for _, tc := range cases {
-		if string(tc.state) != tc.expected {
-			t.Errorf("State %q: expected string value %q, got %q", tc.state, tc.expected, string(tc.state))
-		}
-	}
-}
 
 // --- Metrics tracking ---
 

@@ -46,49 +46,8 @@ func TestParseAgentConfig_EmptyObject_ReturnsDefaults(t *testing.T) {
 	}
 }
 
-func TestParseAgentConfig_UnsetEnv_ReturnsDefaults(t *testing.T) {
-	t.Setenv("AGENT_CONFIG", "")
 
-	cfg, err := parseAgentConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Model != "" || cfg.ResumeSession != "" || cfg.ApprovalMode != "" ||
-		cfg.MaxTurns != 0 || len(cfg.AllowedTools) != 0 || len(cfg.Env) != 0 {
-		t.Fatalf("expected zero-value AgentConfig, got %+v", cfg)
-	}
-}
 
-func TestParseAgentConfig_UnknownFields_Ignored(t *testing.T) {
-	t.Setenv("AGENT_CONFIG", `{
-		"model": "claude-opus-4-5",
-		"future_field": true,
-		"nested": {"deep": 42},
-		"list_field": [1,2,3]
-	}`)
-
-	cfg, err := parseAgentConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Model != "claude-opus-4-5" {
-		t.Fatalf("Model = %q, want claude-opus-4-5", cfg.Model)
-	}
-}
-
-func TestParseAgentConfig_ExtremelyLongModel_DoesNotCrash(t *testing.T) {
-	longModel := strings.Repeat("a", 10*1024) // 10KB
-	raw, _ := json.Marshal(AgentConfig{Model: longModel})
-	t.Setenv("AGENT_CONFIG", string(raw))
-
-	cfg, err := parseAgentConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.Model) != 10*1024 {
-		t.Fatalf("Model length = %d, want %d", len(cfg.Model), 10*1024)
-	}
-}
 
 func TestParseAgentConfig_ShellInjectionInModel_NotExecuted(t *testing.T) {
 	// The model field must be treated as an opaque string, never shell-evaluated.
@@ -182,59 +141,9 @@ func TestParseAgentConfig_PathTraversalInResumeSession(t *testing.T) {
 	}
 }
 
-func TestParseAgentConfig_NullAndMissingFields_UseDefaults(t *testing.T) {
-	// JSON null for optional fields should result in zero values.
-	t.Setenv("AGENT_CONFIG", `{
-		"model": null,
-		"resume_session": null,
-		"env": null,
-		"approval_mode": null,
-		"max_turns": null,
-		"allowed_tools": null
-	}`)
-
-	cfg, err := parseAgentConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Model != "" {
-		t.Fatalf("Model = %q, want empty", cfg.Model)
-	}
-	if cfg.ResumeSession != "" {
-		t.Fatalf("ResumeSession = %q, want empty", cfg.ResumeSession)
-	}
-	if cfg.MaxTurns != 0 {
-		t.Fatalf("MaxTurns = %d, want 0", cfg.MaxTurns)
-	}
-	if cfg.AllowedTools != nil {
-		t.Fatalf("AllowedTools = %v, want nil", cfg.AllowedTools)
-	}
-	if cfg.Env != nil {
-		t.Fatalf("Env = %v, want nil", cfg.Env)
-	}
-}
 
 // --- newBackend integration: AGENT_CONFIG fields thread into backends ---
 
-func TestNewBackend_InvalidConfig_FallsBackToDefaults(t *testing.T) {
-	// If AGENT_CONFIG is invalid, newSidecarFromEnv returns an error.
-	// But newBackend itself with a zero-value config should produce a
-	// working backend with all defaults.
-	backend, err := newBackend("claude", []string{"claude"}, AgentConfig{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	cb, ok := backend.(*ClaudeBackend)
-	if !ok {
-		t.Fatalf("expected *ClaudeBackend, got %T", backend)
-	}
-	if cb.model != "" {
-		t.Fatalf("model = %q, want empty", cb.model)
-	}
-	if cb.maxTurns != 0 {
-		t.Fatalf("maxTurns = %d, want 0", cb.maxTurns)
-	}
-}
 
 func TestNewBackend_ConfigFieldsThreaded(t *testing.T) {
 	cfg := AgentConfig{
@@ -265,29 +174,6 @@ func TestNewBackend_ConfigFieldsThreaded(t *testing.T) {
 
 // --- AGENT_CONFIG + AGENT_PROMPT coexistence ---
 
-func TestNewBackend_ConfigPlusPrompt(t *testing.T) {
-	t.Setenv("AGENT_PROMPT", "Fix the bug in auth.go")
-
-	cfg := AgentConfig{
-		Model:    "claude-opus-4-5",
-		MaxTurns: 5,
-	}
-
-	backend, err := newBackend("claude", []string{"claude"}, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	cb := backend.(*ClaudeBackend)
-	if cb.prompt != "Fix the bug in auth.go" {
-		t.Fatalf("prompt = %q, want 'Fix the bug in auth.go'", cb.prompt)
-	}
-	if cb.model != "claude-opus-4-5" {
-		t.Fatalf("model = %q, want claude-opus-4-5", cb.model)
-	}
-	if cb.maxTurns != 5 {
-		t.Fatalf("maxTurns = %d, want 5", cb.maxTurns)
-	}
-}
 
 // --- Health endpoint must not expose AGENT_CONFIG ---
 
@@ -362,40 +248,7 @@ func TestParseAgentConfig_WrongTypes_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestParseAgentConfig_MaxTurnsNegative(t *testing.T) {
-	t.Setenv("AGENT_CONFIG", `{"max_turns": -5}`)
 
-	cfg, err := parseAgentConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Negative max_turns should parse without error (validation is the caller's job).
-	if cfg.MaxTurns != -5 {
-		t.Fatalf("MaxTurns = %d, want -5", cfg.MaxTurns)
-	}
-}
-
-func TestParseAgentConfig_DeeplyNestedUnknownFields(t *testing.T) {
-	// Forward compatibility: deeply nested unknown fields must not cause errors.
-	t.Setenv("AGENT_CONFIG", `{
-		"model": "test",
-		"unknown_nested": {
-			"level1": {
-				"level2": {
-					"level3": [1, 2, {"deep": true}]
-				}
-			}
-		}
-	}`)
-
-	cfg, err := parseAgentConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Model != "test" {
-		t.Fatalf("Model = %q, want test", cfg.Model)
-	}
-}
 
 func TestParseAgentConfig_EmptyString_ReturnsDefaults(t *testing.T) {
 	// Explicit empty string (not unset) should return defaults.

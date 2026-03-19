@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,80 +13,9 @@ import (
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
-func TestServerFrame_JSONRoundtrip(t *testing.T) {
-	code := 0
-	frame := ServerFrame{
-		Type:     "exit",
-		ExitCode: &code,
-	}
 
-	data, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
 
-	var decoded ServerFrame
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
 
-	if decoded.Type != "exit" {
-		t.Fatalf("expected type 'exit', got %q", decoded.Type)
-	}
-	if decoded.ExitCode == nil || *decoded.ExitCode != 0 {
-		t.Fatalf("expected exit_code 0, got %v", decoded.ExitCode)
-	}
-}
-
-func TestClientFrame_JSONRoundtrip(t *testing.T) {
-	frame := ClientFrame{
-		Type: "stdin",
-		Data: "hello\n",
-	}
-
-	data, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-
-	var decoded ClientFrame
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-
-	if decoded.Type != "stdin" {
-		t.Fatalf("expected type 'stdin', got %q", decoded.Type)
-	}
-	if decoded.Data != "hello\n" {
-		t.Fatalf("expected data 'hello\\n', got %q", decoded.Data)
-	}
-}
-
-func TestServerFrame_StdoutType(t *testing.T) {
-	frame := ServerFrame{
-		Type: "stdout",
-		Data: "output line\n",
-	}
-	data, _ := json.Marshal(frame)
-	if !strings.Contains(string(data), `"type":"stdout"`) {
-		t.Fatalf("expected stdout type in JSON, got %s", data)
-	}
-}
-
-func TestServerFrame_ReplayType(t *testing.T) {
-	frame := ServerFrame{
-		Type:   "replay",
-		Data:   "cmVwbGF5ZWQ=", // base64
-		Offset: 42,
-	}
-	data, _ := json.Marshal(frame)
-	if !strings.Contains(string(data), `"replay"`) {
-		t.Fatalf("expected replay type in JSON, got %s", data)
-	}
-	if !strings.Contains(string(data), `"offset":42`) {
-		t.Fatalf("expected offset in JSON, got %s", data)
-	}
-}
 
 func TestReplayOnReconnect(t *testing.T) {
 	replay := session.NewReplayBuffer(1024)

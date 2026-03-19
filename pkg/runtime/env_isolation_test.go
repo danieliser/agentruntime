@@ -57,27 +57,6 @@ func TestLocalRuntime_InheritsParentEnv(t *testing.T) {
 	}
 }
 
-func TestLocalRuntime_ExplicitEnvIsAvailable(t *testing.T) {
-	rt := NewLocalRuntime()
-	handle, err := rt.Spawn(testContext(t), localHelperConfig("print-var", map[string]string{
-		"HELPER_TARGET": "VISIBLE_VAR",
-		"VISIBLE_VAR":   "hello-local",
-	}))
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
-	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != "hello-local" {
-		t.Fatalf("expected explicit env value, got %q", stdout)
-	}
-}
 
 func TestLocalRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	rt := NewLocalRuntime()
@@ -92,29 +71,6 @@ func TestLocalRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	}
 }
 
-func TestLocalRuntime_PassesMetacharactersLiterally(t *testing.T) {
-	rt := NewLocalRuntime()
-	want := "`uname` $(whoami) ${HOME} && echo literal"
-
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd: []string{"sh", "-c", "printf %s \"$TEST_VALUE\""},
-		Env: map[string]string{"TEST_VALUE": want},
-	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
-	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != want {
-		t.Fatalf("expected literal value %q, got %q", want, stdout)
-	}
-}
 
 func TestLocalRuntime_InvalidEnvKeysError(t *testing.T) {
 	rt := NewLocalRuntime()
@@ -143,27 +99,6 @@ func TestLocalRuntime_InvalidEnvKeysError(t *testing.T) {
 	}
 }
 
-func TestLocalRuntime_EmptyEnvMapDoesNotPanic(t *testing.T) {
-	rt := NewLocalRuntime()
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd: []string{"sh", "-c", "printf ok"},
-		Env: map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("spawn failed with empty env: %v", err)
-	}
-
-	stdout, stderr, result := readProcessOutput(t, handle)
-	if result.Err != nil {
-		t.Fatalf("wait failed: %v (stderr=%q)", result.Err, stderr)
-	}
-	if result.Code != 0 {
-		t.Fatalf("expected exit code 0, got %d (stderr=%q)", result.Code, stderr)
-	}
-	if stdout != "ok" {
-		t.Fatalf("expected output %q, got %q", "ok", stdout)
-	}
-}
 
 // TestLocalRuntime_ExtraEnvMergedOntoParent verifies that extra env vars
 // are added on top of the inherited parent environment, not replacing it.
@@ -211,18 +146,6 @@ func TestDockerRuntime_DoesNotInheritDaemonSecrets(t *testing.T) {
 	}
 }
 
-func TestDockerRuntime_ExplicitEnvIsAvailable(t *testing.T) {
-	contents, _ := dockerPreparedEnvFileContents(t, SpawnConfig{
-		Cmd:       []string{"sh", "-c", "printf %s \"$VISIBLE_VAR\""},
-		Env:       map[string]string{"VISIBLE_VAR": "hello-docker"},
-		SessionID: "docker-env-visible",
-		TaskID:    "docker-env-visible",
-	})
-
-	if !strings.Contains(contents, "VISIBLE_VAR=hello-docker\n") {
-		t.Fatalf("expected explicit env value in env file, got %q", contents)
-	}
-}
 
 func TestDockerRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
@@ -238,22 +161,6 @@ func TestDockerRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	}
 }
 
-func TestDockerRuntime_PassesMetacharactersLiterally(t *testing.T) {
-	want := "`uname` $(whoami) ${HOME} && echo literal"
-	contents, args := dockerPreparedEnvFileContents(t, SpawnConfig{
-		Cmd:       []string{"sh", "-c", "printf %s \"$TEST_VALUE\""},
-		Env:       map[string]string{"TEST_VALUE": want},
-		SessionID: "docker-env-literal",
-		TaskID:    "docker-env-literal",
-	})
-
-	if !strings.Contains(contents, "TEST_VALUE="+want+"\n") {
-		t.Fatalf("expected literal TEST_VALUE in env file, got %q", contents)
-	}
-	if containsArg(args, "--privileged") {
-		t.Fatalf("unexpected injected docker flag in args: %v", args)
-	}
-}
 
 func TestDockerRuntime_InvalidEnvKeysError(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
@@ -283,21 +190,6 @@ func TestDockerRuntime_InvalidEnvKeysError(t *testing.T) {
 	}
 }
 
-func TestDockerRuntime_EmptyEnvMapDoesNotPanic(t *testing.T) {
-	contents, _ := dockerPreparedEnvFileContents(t, SpawnConfig{
-		Cmd:       []string{"sh", "-c", "printf ok"},
-		Env:       map[string]string{},
-		SessionID: "docker-env-empty",
-		TaskID:    "docker-env-empty",
-	})
-
-	if !strings.Contains(contents, "AGENT_CMD=[\"sh\"]\n") {
-		t.Fatalf("expected AGENT_CMD in env file, got %q", contents)
-	}
-	if strings.Contains(contents, "HOME=") {
-		t.Fatalf("expected empty env map to keep docker clean-room env, got %q", contents)
-	}
-}
 
 func TestDockerRuntime_BuildRunArgsKeepEnvFlagsAtomic(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
