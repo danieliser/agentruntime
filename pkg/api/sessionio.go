@@ -137,19 +137,31 @@ func parseAndTrackEvent(sess *session.Session, line []byte) {
 	case "tool_use":
 		sess.RecordToolCall()
 	case "result":
-		// Extract usage from result event.
+		// Extract usage and cost from result event.
 		if data, ok := event["data"].(map[string]interface{}); ok {
+			var inputToks, outputToks int
+			var costUSD float64
 			if usage, ok := data["usage"].(map[string]interface{}); ok {
-				inputToks := 0
-				outputToks := 0
 				if v, ok := usage["input_tokens"].(float64); ok {
 					inputToks = int(v)
 				}
 				if v, ok := usage["output_tokens"].(float64); ok {
 					outputToks = int(v)
 				}
-				sess.RecordUsage(inputToks, outputToks, 0)
 			}
+			if v, ok := data["cost_usd"].(float64); ok {
+				costUSD = v
+			}
+			// Fall back to token-based estimate if agent didn't report cost.
+			if costUSD == 0 && (inputToks > 0 || outputToks > 0) {
+				// Try model from result data, then session agent name.
+				model, _ := data["model"].(string)
+				if model == "" {
+					model = sess.AgentName
+				}
+				costUSD = session.EstimateCost(model, inputToks, outputToks)
+			}
+			sess.RecordUsage(inputToks, outputToks, costUSD)
 			// Capture Claude session ID for resume across respawns.
 			if sessionID, ok := data["session_id"].(string); ok && sessionID != "" {
 				sess.SetTag("claude_session_id", sessionID)
