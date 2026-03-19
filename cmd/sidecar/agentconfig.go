@@ -32,6 +32,9 @@ type AgentConfig struct {
 
 	// AllowedTools restricts which tools the agent can use (Claude --allowedTools).
 	AllowedTools []string `json:"allowed_tools,omitempty"`
+
+	// Effort controls the agent's effort level (Claude --effort).
+	Effort string `json:"effort,omitempty"`
 }
 
 // parseAgentConfig reads and parses the AGENT_CONFIG env var.

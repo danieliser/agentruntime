@@ -34,8 +34,9 @@ exit 2
 	if err != nil {
 		t.Fatalf("read log: %v", err)
 	}
-	if !strings.Contains(string(data), "network create "+defaultDockerNetworkName+"\n") {
-		t.Fatalf("expected docker network create call, got %q", string(data))
+	logContent := string(data)
+	if !strings.Contains(logContent, "network create") || !strings.Contains(logContent, defaultDockerNetworkName) {
+		t.Fatalf("expected docker network create call with network name, got %q", logContent)
 	}
 }
 
@@ -49,7 +50,7 @@ func TestNetworkManager_ProxyEnv(t *testing.T) {
 	if env["HTTPS_PROXY"] != "http://agentruntime-proxy:3128" {
 		t.Fatalf("unexpected HTTPS_PROXY: %q", env["HTTPS_PROXY"])
 	}
-	if env["NO_PROXY"] != "localhost,127.0.0.1,host.docker.internal" {
+	if env["NO_PROXY"] != "localhost,127.0.0.1,host.docker.internal,host-gateway" {
 		t.Fatalf("unexpected NO_PROXY: %q", env["NO_PROXY"])
 	}
 }

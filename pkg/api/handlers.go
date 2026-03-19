@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -57,11 +56,34 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	mounts := req.EffectiveMounts()
 	workDir := effectiveWorkDir(req.WorkDir, mounts)
 
+	// Validate the working directory
+	if workDir != "" {
+		if err := session.ValidateWorkDir(workDir); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_work_dir", "message": err.Error()})
+			return
+		}
+	}
+
 	// Look up the agent.
 	ag := s.agents.Get(req.Agent)
 	if ag == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unknown agent: %s", req.Agent)})
 		return
+	}
+
+	// Ensure the agent-specific config block exists so the materializer
+	// can set up credentials, config files, and MCP servers. Callers can
+	// send an empty block (e.g. "codex": {}) — omitting it entirely is
+	// also fine; we infer the default here.
+	switch req.Agent {
+	case "claude":
+		if req.Claude == nil {
+			req.Claude = &ClaudeConfig{}
+		}
+	case "codex":
+		if req.Codex == nil {
+			req.Codex = &CodexConfig{}
+		}
 	}
 
 	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession)
@@ -198,19 +220,36 @@ func (s *Server) handleGetSessionInfo(c *gin.Context) {
 	}
 
 	snap := sess.Snapshot()
+
+	// Calculate uptime duration.
+	uptime := ""
+	if snap.EndedAt != nil {
+		// Session is completed — use CreatedAt to EndedAt.
+		uptime = formatDuration(snap.EndedAt.Sub(snap.CreatedAt))
+	} else {
+		// Session is still running — use CreatedAt to now.
+		uptime = formatDuration(time.Since(snap.CreatedAt))
+	}
+
 	c.JSON(http.StatusOK, SessionInfo{
-		SessionID:  snap.ID,
-		TaskID:     snap.TaskID,
-		Agent:      snap.AgentName,
-		Runtime:    snap.RuntimeName,
-		Status:     string(snap.State),
-		CreatedAt:  snap.CreatedAt,
-		EndedAt:    snap.EndedAt,
-		ExitCode:   snap.ExitCode,
-		SessionDir: snap.SessionDir,
-		LogFile:    session.LogFilePath(s.logDir, snap.ID),
-		WSURL:      sessionWSURL(c, snap.ID),
-		LogURL:     sessionLogURL(c, snap.ID),
+		SessionID:     snap.ID,
+		TaskID:        snap.TaskID,
+		Agent:         snap.AgentName,
+		Runtime:       snap.RuntimeName,
+		Status:        string(snap.State),
+		CreatedAt:     snap.CreatedAt,
+		EndedAt:       snap.EndedAt,
+		ExitCode:      snap.ExitCode,
+		SessionDir:    snap.SessionDir,
+		LogFile:       session.LogFilePath(s.logDir, snap.ID),
+		WSURL:         sessionWSURL(c, snap.ID),
+		LogURL:        sessionLogURL(c, snap.ID),
+		Uptime:        uptime,
+		LastActivity:  snap.LastActivity,
+		InputTokens:   snap.InputTokens,
+		OutputTokens:  snap.OutputTokens,
+		CostUSD:       snap.CostUSD,
+		ToolCallCount: snap.ToolCallCount,
 	})
 }
 
@@ -311,6 +350,21 @@ func effectiveWorkDir(workDir string, mounts []Mount) string {
 	return ""
 }
 
+func formatDuration(d time.Duration) string {
+	totalSecs := int(d.Seconds())
+	hours := totalSecs / 3600
+	mins := (totalSecs % 3600) / 60
+	secs := totalSecs % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
+	}
+	if mins > 0 {
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	}
+	return fmt.Sprintf("%ds", secs)
+}
+
 func httpScheme(c *gin.Context) string {
 	if c.Request.TLS != nil {
 		return "https"
@@ -406,26 +460,3 @@ func (s *Server) prepareSessionDir(sess *session.Session, req *SessionRequest, w
 	return nil
 }
 
-// drainTo reads from r and writes all data to w (typically a MultiWriter
-// wrapping both the replay buffer and a log file).
-func drainTo(sessionID, stream string, r io.ReadCloser, w io.Writer) {
-	if r == nil || w == nil {
-		return
-	}
-	buf := make([]byte, 32*1024)
-	total := 0
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
-			total += n
-			if total == n {
-				log.Printf("[session %s] first %s data: %d bytes", sessionID, stream, n)
-			}
-		}
-		if err != nil {
-			log.Printf("[session %s] %s closed: total=%d err=%v", sessionID, stream, total, err)
-			return
-		}
-	}
-}

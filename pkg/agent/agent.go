@@ -44,6 +44,9 @@ type AgentConfig struct {
 
 	// Env provides additional environment variables.
 	Env map[string]string
+
+	// Effort controls the agent's effort level (e.g., "low", "medium", "high").
+	Effort string
 }
 
 // AgentResult holds structured output extracted from agent process output.

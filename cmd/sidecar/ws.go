@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	agentErrors "github.com/danieliser/agentruntime/pkg/errors"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
@@ -89,6 +90,13 @@ type ExternalWSServer struct {
 	cleanupID      uint64
 	agentExited    bool
 	shutdownFn     func()
+
+	// Session metrics for error classification at exit.
+	metricsMu       sync.Mutex
+	totalInputToks  int
+	totalOutputToks int
+	totalOutputBytes int
+	agentTextBuf    strings.Builder // agent_message text for error scanning
 }
 
 type wsClient struct {
@@ -123,8 +131,10 @@ type errorData struct {
 }
 
 type exitData struct {
-	Code        int    `json:"code"`
-	ErrorDetail string `json:"error_detail,omitempty"`
+	Code          int    `json:"code"`
+	ErrorDetail   string `json:"error_detail,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Retryable     bool   `json:"retryable,omitempty"`
 }
 
 type rawCommand struct {
@@ -288,9 +298,62 @@ func (s *ExternalWSServer) eventLoop() {
 				continue
 			}
 			event = s.normalizeEvent(event)
+			s.trackEventMetrics(event)
 			_ = s.recordAndBroadcast(event)
 		}
 	}
+}
+
+// trackEventMetrics accumulates session-level metrics for error classification at exit.
+func (s *ExternalWSServer) trackEventMetrics(event Event) {
+	data, _ := event.Data.(map[string]any)
+	if data == nil {
+		return
+	}
+
+	s.metricsMu.Lock()
+	defer s.metricsMu.Unlock()
+
+	switch event.Type {
+	case "agent_message":
+		if text, ok := data["text"].(string); ok {
+			s.agentTextBuf.WriteString(text)
+			s.agentTextBuf.WriteByte('\n')
+			s.totalOutputBytes += len(text)
+		}
+	case "result":
+		if usage, ok := data["usage"].(map[string]any); ok {
+			if v, ok := usage["input_tokens"].(float64); ok {
+				s.totalInputToks += int(v)
+			}
+			if v, ok := usage["output_tokens"].(float64); ok {
+				s.totalOutputToks += int(v)
+			}
+		}
+	}
+}
+
+// classifySessionError examines accumulated session metrics and agent text
+// to determine an error category. Called once at session exit.
+func (s *ExternalWSServer) classifySessionError() agentErrors.ErrorCategory {
+	s.metricsMu.Lock()
+	agentText := s.agentTextBuf.String()
+	inputToks := s.totalInputToks
+	outputToks := s.totalOutputToks
+	outputBytes := s.totalOutputBytes
+	s.metricsMu.Unlock()
+
+	// Pattern-based classification from agent output text.
+	if cat := agentErrors.Classify(agentText); cat != agentErrors.CategoryNone {
+		return cat
+	}
+
+	// Startup crash heuristic: zero tokens + tiny output.
+	if agentErrors.DetectStartupCrash(inputToks, outputToks, outputBytes) {
+		return agentErrors.CategoryStartupCrash
+	}
+
+	return agentErrors.CategoryNone
 }
 
 // normalizeEvent maps agent-specific data shapes to the standard schema.
@@ -356,13 +419,21 @@ func (s *ExternalWSServer) exitLoop() {
 			})
 		}
 		exitCode := result.Code
+
+		// Classify error from accumulated agent output at session end.
+		exitEvent := exitData{
+			Code:        result.Code,
+			ErrorDetail: result.ErrorDetail,
+		}
+		if cat := s.classifySessionError(); cat != agentErrors.CategoryNone {
+			exitEvent.ErrorCategory = string(cat)
+			exitEvent.Retryable = cat.Retryable()
+		}
+
 		_ = s.recordAndBroadcast(Event{
 			Type:     "exit",
 			ExitCode: &exitCode,
-			Data: exitData{
-				Code:        result.Code,
-				ErrorDetail: result.ErrorDetail,
-			},
+			Data:     exitEvent,
 		})
 		s.startCleanupTimer()
 	}
@@ -371,6 +442,13 @@ func (s *ExternalWSServer) exitLoop() {
 func (s *ExternalWSServer) recordAndBroadcast(event Event) error {
 	s.appendMu.Lock()
 	defer s.appendMu.Unlock()
+
+	// Set timestamp on the event struct itself so it's present in both
+	// the replay buffer encoding AND the live WebSocket broadcast.
+	// Previously this was only set inside encodeEventLine on a copy.
+	if event.Timestamp == 0 {
+		event.Timestamp = time.Now().UnixMilli()
+	}
 
 	line, _, err := encodeEventLine(s.replay.TotalBytes(), event)
 	if err != nil {

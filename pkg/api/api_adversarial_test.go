@@ -88,8 +88,9 @@ func TestAdversarialCreateSession_NonexistentMountHost(t *testing.T) {
 	})
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", resp.StatusCode)
+	// Nonexistent mount path should be rejected with 400 (bad request) since it's a client error
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 
 	listResp := get(t, ts, "/sessions")

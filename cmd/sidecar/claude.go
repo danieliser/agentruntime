@@ -28,6 +28,7 @@ type ClaudeBackendConfig struct {
 	Model        string            // --model flag (e.g. "claude-opus-4-5")
 	MaxTurns     int               // --max-turns flag
 	AllowedTools []string          // --allowedTools flag (repeatable)
+	Effort       string            // --effort flag
 	ExtraEnv     map[string]string // merged into buildCleanEnv
 }
 
@@ -58,6 +59,7 @@ type ClaudeBackend struct {
 	model        string
 	maxTurns     int
 	allowedTools []string
+	effort       string
 	extraEnv     map[string]string
 
 	startProcess ClaudeProcessStarter
@@ -145,6 +147,7 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 		model:        cfg.Model,
 		maxTurns:     cfg.MaxTurns,
 		allowedTools: cfg.AllowedTools,
+		effort:       cfg.Effort,
 		extraEnv:     cfg.ExtraEnv,
 		startProcess: startProcess,
 		events:       make(chan Event, 64),
@@ -213,6 +216,9 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 		}
 		for _, tool := range b.allowedTools {
 			args = append(args, "--allowedTools", tool)
+		}
+		if b.effort != "" {
+			args = append(args, "--effort", b.effort)
 		}
 
 		// Build a clean environment — DO NOT inherit host env wholesale.

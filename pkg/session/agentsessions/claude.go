@@ -73,15 +73,11 @@ func InitClaudeSessionDir(dataDir, sessionID, projectPath, credentialsPath strin
 		// the path before the file is synced from Keychain.
 	}
 
-	// Copy account state (~/.claude.json) so Claude skips onboarding/setup.
-	// Without this, interactive mode shows the theme selector instead of the REPL.
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		accountState := filepath.Join(home, ".claude.json")
-		if data, err := os.ReadFile(accountState); err == nil {
-			_ = os.WriteFile(filepath.Join(sessionDir, ".claude.json"), data, 0o644)
-		}
-	}
+	// NOTE: Do NOT copy the host's ~/.claude.json here. It contains personal
+	// account state (orgId, preferences, project trust for host paths) that
+	// should not leak into agent containers. The materializer writes a
+	// controlled .claude.json with only the fields needed to skip onboarding
+	// and pre-trust /workspace.
 
 	return sessionDir, nil
 }

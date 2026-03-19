@@ -137,18 +137,24 @@ type SessionSummary struct {
 
 // SessionInfo is returned by GET /sessions/:id/info.
 type SessionInfo struct {
-	SessionID  string     `json:"session_id"`
-	TaskID     string     `json:"task_id,omitempty"`
-	Agent      string     `json:"agent"`
-	Runtime    string     `json:"runtime"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	EndedAt    *time.Time `json:"ended_at,omitempty"`
-	ExitCode   *int       `json:"exit_code,omitempty"`
-	SessionDir string     `json:"session_dir,omitempty"`
-	LogFile    string     `json:"log_file,omitempty"`
-	WSURL      string     `json:"ws_url"`
-	LogURL     string     `json:"log_url"`
+	SessionID     string     `json:"session_id"`
+	TaskID        string     `json:"task_id,omitempty"`
+	Agent         string     `json:"agent"`
+	Runtime       string     `json:"runtime"`
+	Status        string     `json:"status"`
+	CreatedAt     time.Time  `json:"created_at"`
+	EndedAt       *time.Time `json:"ended_at,omitempty"`
+	ExitCode      *int       `json:"exit_code,omitempty"`
+	SessionDir    string     `json:"session_dir,omitempty"`
+	LogFile       string     `json:"log_file,omitempty"`
+	WSURL         string     `json:"ws_url"`
+	LogURL        string     `json:"log_url"`
+	Uptime        string     `json:"uptime,omitempty"`
+	LastActivity  *time.Time `json:"last_activity,omitempty"`
+	InputTokens   int        `json:"input_tokens,omitempty"`
+	OutputTokens  int        `json:"output_tokens,omitempty"`
+	CostUSD       float64    `json:"cost_usd,omitempty"`
+	ToolCallCount int        `json:"tool_call_count,omitempty"`
 }
 
 // EffectiveMounts resolves WorkDir shorthand into the Mounts list.

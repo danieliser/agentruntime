@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -15,6 +17,8 @@ const (
 	defaultDockerProxyImage  = "agentruntime-proxy:latest"
 	dockerProxyContainerName = "agentruntime-proxy"
 	dockerProxyPort          = "3128"
+	dockerBridgeName         = "br-agentruntime"
+	defaultAgentRuntimePort  = "8090"
 )
 
 // NetworkManager owns the Docker bridge network and Squid proxy sidecar used
@@ -59,13 +63,44 @@ func (m *NetworkManager) EnsureNetwork(ctx context.Context) error {
 	if dockerNetworkExists(ctx, m.dockerHost(), m.networkName()) {
 		return nil
 	}
-	if _, err := dockerOutputHost(ctx, m.dockerHost(), "network", "create", m.networkName()); err != nil {
+	if _, err := dockerOutputHost(ctx, m.dockerHost(), "network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.name="+dockerBridgeName, m.networkName()); err != nil {
 		// Race: another goroutine (or prior daemon) already created it.
 		if strings.Contains(err.Error(), "already exists") {
 			return nil
 		}
 		return fmt.Errorf("create docker network %q: %w", m.networkName(), err)
 	}
+	return nil
+}
+
+// ApplyIPTablesRules adds iptables rules to prevent inter-container lateral movement on Linux.
+// On non-Linux systems (macOS), this is a no-op since Docker Desktop provides isolation.
+// Best-effort: logs warnings on failure but does not block startup.
+func (m *NetworkManager) ApplyIPTablesRules(ctx context.Context) error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	port := os.Getenv("AGENTRUNTIME_PORT")
+	if port == "" {
+		port = defaultAgentRuntimePort
+	}
+
+	// Check if rule already exists
+	checkCmd := exec.CommandContext(ctx, "iptables", "-C", "DOCKER-USER", "-i", dockerBridgeName, "!", "-o", dockerBridgeName, "-p", "tcp", "!", "--dport", port, "-j", "DROP")
+	if err := checkCmd.Run(); err == nil {
+		// Rule already exists
+		return nil
+	}
+
+	// Insert the rule
+	insertCmd := exec.CommandContext(ctx, "iptables", "-I", "DOCKER-USER", "-i", dockerBridgeName, "!", "-o", dockerBridgeName, "-p", "tcp", "!", "--dport", port, "-j", "DROP")
+	if err := insertCmd.Run(); err != nil {
+		// Best-effort: log warning with manual command instead of blocking startup
+		manualCmd := fmt.Sprintf("sudo iptables -I DOCKER-USER -i %s ! -o %s -p tcp ! --dport %s -j DROP", dockerBridgeName, dockerBridgeName, port)
+		log.Printf("warning: failed to apply iptables rules: %v\nTo apply manually, run: %s", err, manualCmd)
+	}
+
 	return nil
 }
 
@@ -80,6 +115,10 @@ func (m *NetworkManager) EnsureProxy(ctx context.Context) error {
 
 func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	if err := m.EnsureNetwork(ctx); err != nil {
+		return err
+	}
+
+	if err := m.ApplyIPTablesRules(ctx); err != nil {
 		return err
 	}
 
@@ -121,7 +160,7 @@ func (m *NetworkManager) ProxyEnv() map[string]string {
 	return map[string]string{
 		"HTTP_PROXY":  url,
 		"HTTPS_PROXY": url,
-		"NO_PROXY":    "localhost,127.0.0.1,host.docker.internal",
+		"NO_PROXY":    "localhost,127.0.0.1,host.docker.internal,host-gateway",
 	}
 }
 

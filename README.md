@@ -188,6 +188,7 @@ Rules enforced by the daemon today:
 - `prompt` is required unless `interactive` is `true`.
 - `runtime`, if present, must match the daemon runtime selected at startup.
 - `work_dir` is shorthand for a writable mount to `/workspace`.
+- `work_dir` is validated: must be absolute, must exist, must be a directory, must not contain sensitive paths (`.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.config/gcloud`, `Library/Keychains`), must not contain `..` traversal, must not be `/`.
 
 ### `GET /sessions/:id`
 
@@ -359,6 +360,31 @@ Event envelope:
 }
 ```
 
+`exit` data:
+
+```json
+{
+  "code": 0,
+  "error_detail": "optional error message",
+  "error_category": "auth_error",
+  "retryable": false
+}
+```
+
+Error categories (set when the agent session ends with a detectable error):
+
+| Category | Meaning | Retryable |
+| --- | --- | --- |
+| `model_not_found` | Requested model does not exist or is inaccessible | No |
+| `auth_error` | Authentication or API key failure | No |
+| `permission_denied` | Insufficient permissions | No |
+| `rate_limit` | API rate limit exceeded | Yes |
+| `duplicate_session` | Session ID already in use | Yes |
+| `upstream_api_error` | Provider API error (500, 503, 529) | Yes |
+| `startup_crash` | Agent produced zero tokens and minimal output — likely crashed before doing work | No |
+
+`error_category` and `retryable` are omitted when the session exits cleanly.
+
 Notes:
 
 - `offset` is a replay byte offset. Reconnect with `?since=<offset>` to replay from that point.
@@ -497,8 +523,8 @@ Fields that matter most in practice:
 
 - `agent`: currently `claude` or `codex` for the v2 sidecar path.
 - `prompt` plus `interactive`: choose one-shot or interactive behavior.
-- `work_dir` or writable `mounts`: controls `/workspace`.
-- `claude` and `codex`: file materialization into `~/.claude` or `~/.codex`.
+- `work_dir` or writable `mounts`: controls `/workspace`. For Docker runtime, omitting `work_dir` means no host volume is mounted — the agent works inside the container's own filesystem.
+- `claude` and `codex`: file materialization into `~/.claude` or `~/.codex`. If omitted, the daemon infers a default empty config block from the `agent` field so credentials and config files are still materialized. Explicitly sending `"codex": {}` or `"claude": {}` is equivalent but makes the intent clear.
 - `mcp_servers`: merged into Claude MCP config and sanitized during materialization.
 - `env`: explicit env vars for the runtime.
 - `container.image`, `container.memory`, `container.cpus`, `container.security_opt`: Docker-specific controls that are applied today.

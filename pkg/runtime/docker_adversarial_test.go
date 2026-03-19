@@ -494,7 +494,7 @@ func TestDockerAdversarial_NilRequestFallsBackToSpawnConfig(t *testing.T) {
 	if !strings.Contains(contents, "HTTPS_PROXY=http://agentruntime-proxy:3128\n") {
 		t.Fatalf("expected proxy env in env file, got %q", contents)
 	}
-	if !strings.Contains(contents, "NO_PROXY=localhost,127.0.0.1,host.docker.internal\n") {
+	if !strings.Contains(contents, "NO_PROXY=localhost,127.0.0.1,host.docker.internal,host-gateway\n") {
 		t.Fatalf("expected spawn config env in env file, got %q", string(data))
 	}
 }

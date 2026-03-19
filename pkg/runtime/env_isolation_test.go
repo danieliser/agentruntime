@@ -337,7 +337,7 @@ func TestDockerRuntime_BuildRunArgsKeepEnvFlagsAtomic(t *testing.T) {
 	if !strings.Contains(string(data), "HTTPS_PROXY=http://agentruntime-proxy:3128\n") {
 		t.Fatalf("expected HTTPS_PROXY in env file, got %q", string(data))
 	}
-	if !strings.Contains(string(data), "NO_PROXY=localhost,127.0.0.1,host.docker.internal\n") {
+	if !strings.Contains(string(data), "NO_PROXY=localhost,127.0.0.1,host.docker.internal,host-gateway\n") {
 		t.Fatalf("expected NO_PROXY in env file, got %q", string(data))
 	}
 	if containsArg(args, "--privileged") {

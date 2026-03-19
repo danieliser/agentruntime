@@ -319,6 +319,147 @@ func TestStateConstants(t *testing.T) {
 	}
 }
 
+// --- Metrics tracking ---
+
+func TestSession_RecordActivity(t *testing.T) {
+	s := NewSession("", "claude", "local")
+	if s.LastActivity != nil {
+		t.Fatal("expected LastActivity to be nil initially")
+	}
+
+	before := time.Now()
+	s.RecordActivity()
+	after := time.Now()
+
+	if s.LastActivity == nil {
+		t.Fatal("LastActivity should be set after RecordActivity")
+	}
+	if s.LastActivity.Before(before) || s.LastActivity.After(after) {
+		t.Fatalf("LastActivity %v is outside expected range [%v, %v]", s.LastActivity, before, after)
+	}
+}
+
+func TestSession_RecordUsage(t *testing.T) {
+	s := NewSession("", "claude", "local")
+
+	s.RecordUsage(100, 200, 0.05)
+	if s.InputTokens != 100 {
+		t.Fatalf("expected InputTokens=100, got %d", s.InputTokens)
+	}
+	if s.OutputTokens != 200 {
+		t.Fatalf("expected OutputTokens=200, got %d", s.OutputTokens)
+	}
+	if s.CostUSD != 0.05 {
+		t.Fatalf("expected CostUSD=0.05, got %f", s.CostUSD)
+	}
+
+	// Accumulate more usage.
+	s.RecordUsage(50, 75, 0.02)
+	if s.InputTokens != 150 {
+		t.Fatalf("expected InputTokens=150 after accumulation, got %d", s.InputTokens)
+	}
+	if s.OutputTokens != 275 {
+		t.Fatalf("expected OutputTokens=275 after accumulation, got %d", s.OutputTokens)
+	}
+	if s.CostUSD != 0.07 {
+		t.Fatalf("expected CostUSD=0.07 after accumulation, got %f", s.CostUSD)
+	}
+}
+
+func TestSession_RecordToolCall(t *testing.T) {
+	s := NewSession("", "claude", "local")
+	if s.ToolCallCount != 0 {
+		t.Fatalf("expected ToolCallCount=0 initially, got %d", s.ToolCallCount)
+	}
+
+	s.RecordToolCall()
+	if s.ToolCallCount != 1 {
+		t.Fatalf("expected ToolCallCount=1 after first call, got %d", s.ToolCallCount)
+	}
+
+	s.RecordToolCall()
+	s.RecordToolCall()
+	if s.ToolCallCount != 3 {
+		t.Fatalf("expected ToolCallCount=3 after three calls, got %d", s.ToolCallCount)
+	}
+}
+
+func TestSession_Snapshot_IncludesMetrics(t *testing.T) {
+	s := NewSession("", "claude", "local")
+
+	// Record some metrics.
+	s.RecordActivity()
+	s.RecordUsage(100, 200, 0.05)
+	s.RecordToolCall()
+	s.RecordToolCall()
+
+	snap := s.Snapshot()
+
+	if snap.LastActivity == nil {
+		t.Fatal("expected LastActivity in snapshot")
+	}
+	if snap.InputTokens != 100 {
+		t.Fatalf("expected InputTokens=100 in snapshot, got %d", snap.InputTokens)
+	}
+	if snap.OutputTokens != 200 {
+		t.Fatalf("expected OutputTokens=200 in snapshot, got %d", snap.OutputTokens)
+	}
+	if snap.CostUSD != 0.05 {
+		t.Fatalf("expected CostUSD=0.05 in snapshot, got %f", snap.CostUSD)
+	}
+	if snap.ToolCallCount != 2 {
+		t.Fatalf("expected ToolCallCount=2 in snapshot, got %d", snap.ToolCallCount)
+	}
+}
+
+func TestSession_RecordMetrics_Concurrent(t *testing.T) {
+	s := NewSession("", "claude", "local")
+	var wg sync.WaitGroup
+
+	// 10 goroutines recording activity.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.RecordActivity()
+		}()
+	}
+
+	// 10 goroutines recording usage.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.RecordUsage(10, 20, 0.01)
+		}()
+	}
+
+	// 10 goroutines recording tool calls.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.RecordToolCall()
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify final metrics.
+	if s.InputTokens != 100 {
+		t.Fatalf("expected InputTokens=100, got %d", s.InputTokens)
+	}
+	if s.OutputTokens != 200 {
+		t.Fatalf("expected OutputTokens=200, got %d", s.OutputTokens)
+	}
+	if s.ToolCallCount != 10 {
+		t.Fatalf("expected ToolCallCount=10, got %d", s.ToolCallCount)
+	}
+	if s.LastActivity == nil {
+		t.Fatal("expected LastActivity to be set")
+	}
+}
+
 // --- Timing ---
 
 func TestSession_EndedAt_SetOnCompletion(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -61,10 +62,13 @@ func (r *LocalSidecarRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (Proce
 		return nil, &SpawnError{Reason: "marshal agent cmd", Err: err}
 	}
 
-	// Start sidecar subprocess
+	// Start sidecar subprocess with a clean environment.
+	// AI provider API keys are stripped so agents use OAuth credentials
+	// (materialized .credentials.json / auth.json) instead of hitting
+	// API rate limits from the operator's personal key.
 	sidecar := exec.CommandContext(ctx, r.sidecarBinary())
 	sidecar.Dir = cfg.WorkDir
-	sidecar.Env = append(os.Environ(),
+	sidecar.Env = append(cleanLocalEnv(),
 		fmt.Sprintf("AGENT_CMD=%s", agentCmd),
 		fmt.Sprintf("SIDECAR_PORT=%d", port),
 	)
@@ -155,6 +159,36 @@ func (r *LocalSidecarRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (Proce
 // Recover returns empty — local sidecar processes don't survive daemon restart.
 func (r *LocalSidecarRuntime) Recover(_ context.Context) ([]ProcessHandle, error) {
 	return nil, nil
+}
+
+// strippedEnvKeys are environment variables that must NOT be inherited by
+// agent sidecar processes. AI provider API keys override OAuth credentials
+// in Claude Code and Codex, causing agents to hit API rate limits instead
+// of using subscription pricing. Agents authenticate via materialized
+// credential files (.credentials.json, auth.json), not env vars.
+var strippedEnvKeys = map[string]bool{
+	"ANTHROPIC_API_KEY": true,
+	"OPENAI_API_KEY":    true,
+	"CODEX_API_KEY":     true,
+}
+
+// cleanLocalEnv returns the host environment with AI provider API keys removed.
+// This matches the Docker runtime's clean-room model: agents use OAuth via
+// materialized credential files, never the operator's personal API keys.
+func cleanLocalEnv() []string {
+	env := os.Environ()
+	clean := make([]string, 0, len(env))
+	for _, entry := range env {
+		key := entry
+		if i := strings.IndexByte(entry, '='); i >= 0 {
+			key = entry[:i]
+		}
+		if strippedEnvKeys[key] {
+			continue
+		}
+		clean = append(clean, entry)
+	}
+	return clean
 }
 
 func findFreePort() (int, error) {

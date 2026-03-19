@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -215,6 +217,16 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	}
 
 	mounts := requestMounts(cfg)
+
+	// Validate all host mount paths
+	for _, mount := range mounts {
+		if mount.Host != "" {
+			if err := validateMountPath(mount.Host); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if req != nil && (req.Claude != nil || req.Codex != nil) {
 		result, err := r.materializer.Materialize(req, cfg.SessionID)
 		if err != nil {
@@ -225,6 +237,16 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		}
 		cleanups = append(cleanups, result.CleanupFn)
 		mounts = append(mounts, result.Mounts...)
+
+		// Validate materialized mounts
+		for _, mount := range result.Mounts {
+			if mount.Host != "" {
+				if err := validateMountPath(mount.Host); err != nil {
+					cleanup()
+					return nil, err
+				}
+			}
+		}
 	}
 
 	agentCmd, err := json.Marshal([]string{cfg.Cmd[0]})
@@ -273,6 +295,11 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		args = append(args, "-t")
 	}
 	for _, mount := range mounts {
+		// Ensure single-file mount sources exist on the host before docker run.
+		// If Docker encounters a host path that doesn't exist, it creates a
+		// directory at that path — which breaks file bind-mounts (e.g.
+		// .claude.json, credentials). Pre-creating the file prevents this.
+		ensureHostMountSource(mount.Host)
 		args = append(args, "-v", formatDockerMount(mount))
 	}
 
@@ -330,6 +357,33 @@ func requestMounts(cfg SpawnConfig) []apischema.Mount {
 		Container: "/workspace",
 		Mode:      "rw",
 	}}
+}
+
+// ensureHostMountSource pre-creates the host path if it doesn't exist.
+// For paths that look like files (have an extension), creates an empty file.
+// For paths that look like directories, creates the directory tree.
+// This prevents Docker from creating a directory when a file mount was intended.
+func ensureHostMountSource(hostPath string) {
+	if hostPath == "" {
+		return
+	}
+	if _, err := os.Stat(hostPath); err == nil {
+		return // already exists
+	}
+
+	// Heuristic: paths with a file extension are files, others are directories.
+	base := filepath.Base(hostPath)
+	if strings.Contains(base, ".") {
+		// File mount — ensure parent dir exists, then touch the file.
+		_ = os.MkdirAll(filepath.Dir(hostPath), 0o755)
+		f, err := os.OpenFile(hostPath, os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_ = f.Close()
+		}
+	} else {
+		// Directory mount.
+		_ = os.MkdirAll(hostPath, 0o755)
+	}
 }
 
 func formatDockerMount(mount apischema.Mount) string {
@@ -751,4 +805,25 @@ func newRecoveredDockerHandle(ctx context.Context, host, containerID, sessionID,
 		handle.done <- ExitResult{Code: code, Err: waitErr}
 	}()
 	return handle, nil
+}
+
+// validateMountPath validates a host mount path for security.
+// It checks that the path is absolute and exists.
+func validateMountPath(path string) error {
+	// Quick validation: path should be absolute and exist
+	// More thorough validation is done in session.ValidateWorkDir (API layer)
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid mount path (must be absolute): %s", path)
+	}
+
+	// Docker supports both file and directory bind-mount sources.
+	// Single-file mounts are used for .claude.json, credentials, etc.
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("mount path does not exist: %s", path)
+		}
+		return fmt.Errorf("cannot stat mount path: %s: %v", path, err)
+	}
+
+	return nil
 }

@@ -38,6 +38,13 @@ type Session struct {
 	Replay      *ReplayBuffer         `json:"-"`
 	Handle      runtime.ProcessHandle `json:"-"`
 
+	// Runtime metrics accumulated from the event stream.
+	LastActivity  *time.Time `json:"last_activity,omitempty"`
+	InputTokens   int        `json:"input_tokens,omitempty"`
+	OutputTokens  int        `json:"output_tokens,omitempty"`
+	CostUSD       float64    `json:"cost_usd,omitempty"`
+	ToolCallCount int        `json:"tool_call_count,omitempty"`
+
 	mu sync.Mutex
 }
 
@@ -92,22 +99,56 @@ func (s *Session) Kill() error {
 	return nil
 }
 
+// RecordActivity updates the LastActivity timestamp to now. Thread-safe.
+func (s *Session) RecordActivity() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	s.LastActivity = &now
+}
+
+// RecordUsage accumulates token counts and cost. Thread-safe.
+func (s *Session) RecordUsage(input, output int, cost float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.InputTokens += input
+	s.OutputTokens += output
+	s.CostUSD += cost
+}
+
+// RecordToolCall increments the tool call count. Thread-safe.
+func (s *Session) RecordToolCall() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ToolCallCount++
+}
+
 // Snapshot returns a copy of the session's fields, safe to read without holding the lock.
 // Use this before JSON serialization to avoid races with concurrent SetCompleted calls.
 func (s *Session) Snapshot() Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var lastActivity *time.Time
+	if s.LastActivity != nil {
+		t := *s.LastActivity
+		lastActivity = &t
+	}
 	return Session{
-		ID:          s.ID,
-		TaskID:      s.TaskID,
-		AgentName:   s.AgentName,
-		RuntimeName: s.RuntimeName,
-		SessionDir:  s.SessionDir,
-		Tags:        cloneTags(s.Tags),
-		State:       s.State,
-		ExitCode:    s.ExitCode,
-		CreatedAt:   s.CreatedAt,
-		EndedAt:     s.EndedAt,
+		ID:            s.ID,
+		TaskID:        s.TaskID,
+		AgentName:     s.AgentName,
+		RuntimeName:   s.RuntimeName,
+		SessionDir:    s.SessionDir,
+		Tags:          cloneTags(s.Tags),
+		State:         s.State,
+		ExitCode:      s.ExitCode,
+		CreatedAt:     s.CreatedAt,
+		EndedAt:       s.EndedAt,
+		LastActivity:  lastActivity,
+		InputTokens:   s.InputTokens,
+		OutputTokens:  s.OutputTokens,
+		CostUSD:       s.CostUSD,
+		ToolCallCount: s.ToolCallCount,
 	}
 }
 

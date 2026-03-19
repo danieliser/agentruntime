@@ -39,6 +39,9 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	for _, tool := range cfg.AllowedTools {
 		cmd = append(cmd, "--allowedTools", tool)
 	}
+	if cfg.Effort != "" {
+		cmd = append(cmd, "--effort", cfg.Effort)
+	}
 
 	return cmd, nil
 }

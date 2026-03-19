@@ -292,6 +292,7 @@ func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, 
 			Model:        cfg.Model,
 			MaxTurns:     cfg.MaxTurns,
 			AllowedTools: cfg.AllowedTools,
+			Effort:       cfg.Effort,
 			ExtraEnv:     cfg.Env,
 		}), nil
 	case "codex":
