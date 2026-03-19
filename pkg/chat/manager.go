@@ -207,6 +207,8 @@ func (m *Manager) SendMessage(name, message string) (*SendResult, error) {
 		if err := m.registry.Save(rec); err != nil {
 			return nil, fmt.Errorf("save after spawn: %w", err)
 		}
+		// Start watching the session for exit — transitions chat to idle when agent finishes.
+		m.WatchSession(rec.Name, sessID)
 		return &SendResult{
 			SessionID: sessID,
 			Spawned:   true,
