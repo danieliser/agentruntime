@@ -230,7 +230,13 @@ func (b *Bridge) stdinPump(ctx context.Context) {
 
 		switch frame.Type {
 		case "stdin":
-			if stdin := b.handle.Stdin(); stdin != nil {
+			// For steerable handles, route stdin as a prompt command
+			// so the sidecar's interactive mode receives it correctly.
+			if sh, ok := b.handle.(runtime.SteerableHandle); ok {
+				if err := sh.SendPrompt(frame.Data); err != nil {
+					_ = b.writeJSON(ServerFrame{Type: "error", Error: err.Error()})
+				}
+			} else if stdin := b.handle.Stdin(); stdin != nil {
 				if _, err := stdin.Write([]byte(frame.Data)); err != nil {
 					_ = b.writeJSON(ServerFrame{
 						Type:  "error",
@@ -239,6 +245,12 @@ func (b *Bridge) stdinPump(ctx context.Context) {
 					b.cancel()
 					return
 				}
+			}
+		case "prompt":
+			if err := b.sendSteerable(func(sh runtime.SteerableHandle) error {
+				return sh.SendPrompt(frame.Data)
+			}); err != nil {
+				_ = b.writeJSON(ServerFrame{Type: "error", Error: err.Error()})
 			}
 		case "steer":
 			if err := b.sendSteerable(func(sh runtime.SteerableHandle) error {

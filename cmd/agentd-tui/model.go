@@ -379,8 +379,9 @@ func (m *model) updateViewport() {
 func (m *model) sendStdin(text string) {
 	_ = m.conn.WriteJSON(map[string]string{
 		"type": "stdin",
-		"data": text + "\n",
+		"data": text,
 	})
+	m.appendLine(systemStyle.Render("⏳ thinking..."))
 }
 
 func (m *model) handleCommand(cmd string) {
