@@ -235,16 +235,17 @@ type ChatAPIConfig struct {
 
 // ChatResponse is returned by GET /chats/:name and POST /chats.
 type ChatResponse struct {
-	Name           string        `json:"name"`
-	Config         ChatAPIConfig `json:"config"`
-	State          string        `json:"state"`
-	VolumeName     string        `json:"volume_name,omitempty"`
-	CurrentSession string        `json:"current_session,omitempty"`
-	SessionChain   []string      `json:"session_chain"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-	LastActiveAt   *time.Time    `json:"last_active_at,omitempty"`
-	WSURL          string        `json:"ws_url,omitempty"`
+	Name             string            `json:"name"`
+	Config           ChatAPIConfig     `json:"config"`
+	State            string            `json:"state"`
+	VolumeName       string            `json:"volume_name,omitempty"`
+	CurrentSession   string            `json:"current_session,omitempty"`
+	SessionChain     []string          `json:"session_chain"`
+	ClaudeSessionIDs map[string]string `json:"claude_session_ids,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+	LastActiveAt     *time.Time        `json:"last_active_at,omitempty"`
+	WSURL            string            `json:"ws_url,omitempty"`
 }
 
 // ChatSummary is returned by GET /chats.

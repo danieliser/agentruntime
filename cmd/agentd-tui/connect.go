@@ -90,10 +90,12 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 }
 
 type chatAPIResponse struct {
-	Name           string `json:"name"`
-	State          string `json:"state"`
-	CurrentSession string `json:"current_session"`
-	Config         struct {
+	Name             string            `json:"name"`
+	State            string            `json:"state"`
+	CurrentSession   string            `json:"current_session"`
+	SessionChain     []string          `json:"session_chain"`
+	ClaudeSessionIDs map[string]string `json:"claude_session_ids"`
+	Config           struct {
 		Agent string `json:"agent"`
 	} `json:"config"`
 }
@@ -157,11 +159,20 @@ func isUUID(s string) bool {
 
 // spawnInteractiveSession creates a session via POST /sessions with interactive=true
 // and no prompt. The sidecar runs in interactive mode, staying alive for stdin.
+// If the chat has a prior Claude session ID, passes it as resume_session for context.
 func spawnInteractiveSession(port int, chat *chatAPIResponse) (string, error) {
 	payload := map[string]interface{}{
 		"agent":       chat.Config.Agent,
 		"interactive": true,
 		"tags":        map[string]string{"chat_name": chat.Name},
+	}
+
+	// Wire resume from the chat's last session's Claude session ID.
+	if len(chat.SessionChain) > 0 && len(chat.ClaudeSessionIDs) > 0 {
+		lastSess := chat.SessionChain[len(chat.SessionChain)-1]
+		if claudeID, ok := chat.ClaudeSessionIDs[lastSess]; ok && claudeID != "" {
+			payload["resume_session"] = claudeID
+		}
 	}
 	data, _ := json.Marshal(payload)
 	resp, err := http.Post(

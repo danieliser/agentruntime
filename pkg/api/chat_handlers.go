@@ -50,15 +50,16 @@ func chatConfigToAPI(c chat.ChatConfig) apischema.ChatAPIConfig {
 // chatRecordToResponse builds a ChatResponse from a ChatRecord.
 func chatRecordToResponse(rec *chat.ChatRecord, c *gin.Context) apischema.ChatResponse {
 	resp := apischema.ChatResponse{
-		Name:           rec.Name,
-		Config:         chatConfigToAPI(rec.Config),
-		State:          string(rec.State),
-		VolumeName:     rec.VolumeName,
-		CurrentSession: rec.CurrentSession,
-		SessionChain:   rec.SessionChain,
-		CreatedAt:      rec.CreatedAt,
-		UpdatedAt:      rec.UpdatedAt,
-		LastActiveAt:   rec.LastActiveAt,
+		Name:             rec.Name,
+		Config:           chatConfigToAPI(rec.Config),
+		State:            string(rec.State),
+		VolumeName:       rec.VolumeName,
+		CurrentSession:   rec.CurrentSession,
+		SessionChain:     rec.SessionChain,
+		ClaudeSessionIDs: rec.ClaudeSessionIDs,
+		CreatedAt:        rec.CreatedAt,
+		UpdatedAt:        rec.UpdatedAt,
+		LastActiveAt:     rec.LastActiveAt,
 	}
 	if rec.State == chat.ChatStateRunning && rec.CurrentSession != "" {
 		resp.WSURL = chatWSURL(c, rec.Name)
