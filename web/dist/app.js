@@ -1,10 +1,13 @@
 // Dashboard app state
 const state = {
     sessions: [],
+    history: [],
     health: null,
     currentSessionId: null,
+    currentTab: 'active',
     ws: null,
     refreshInterval: null,
+    historyRefreshInterval: null,
     eventLogs: {}, // keyed by sessionId
 };
 
@@ -13,12 +16,22 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     fetchHealth();
     fetchSessions();
+    fetchHistory();
 
-    // Auto-refresh every 3 seconds
+    // Auto-refresh active sessions every 3 seconds
     state.refreshInterval = setInterval(() => {
         fetchHealth();
-        fetchSessions();
+        if (state.currentTab === 'active') {
+            fetchSessions();
+        }
     }, 3000);
+
+    // Auto-refresh history every 10 seconds
+    state.historyRefreshInterval = setInterval(() => {
+        if (state.currentTab === 'history') {
+            fetchHistory();
+        }
+    }, 10000);
 });
 
 // Setup event listeners
@@ -36,6 +49,52 @@ function setupEventListeners() {
             }
         }
     });
+
+    const historyTable = document.getElementById('history-table');
+    historyTable.addEventListener('click', (e) => {
+        const row = e.target.closest('tbody tr');
+        if (row && !e.target.closest('.action-buttons')) {
+            const sessionId = row.dataset.sessionId;
+            if (sessionId) {
+                showDetailPanel(sessionId);
+            }
+        }
+    });
+
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const tabName = e.target.dataset.tab;
+            switchTab(tabName);
+        });
+    });
+}
+
+// Switch between tabs
+function switchTab(tabName) {
+    state.currentTab = tabName;
+
+    // Update active tab button
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        if (btn.dataset.tab === tabName) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+
+    // Show/hide tab content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`tab-${tabName}`).classList.add('active');
+
+    // Fetch data for the current tab
+    if (tabName === 'active') {
+        fetchSessions();
+    } else if (tabName === 'history') {
+        fetchHistory();
+    }
 }
 
 // Fetch health status
@@ -135,6 +194,81 @@ function updateSessionsTable() {
                 showDetailPanel(sessionId);
             } else if (action === 'delete') {
                 deleteSession(sessionId);
+            }
+        });
+    });
+}
+
+// Fetch session history
+async function fetchHistory() {
+    try {
+        const res = await fetch('/sessions/history?limit=50');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        state.history = await res.json() || [];
+        updateHistoryTable();
+    } catch (err) {
+        console.error('History fetch error:', err);
+    }
+}
+
+// Update history table
+function updateHistoryTable() {
+    const tbody = document.getElementById('history-body');
+
+    if (!state.history || state.history.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-message">No history</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = state.history.map(entry => {
+        const statusClass = getStatusClass(entry.status);
+        const sessionIdShort = entry.session_id.substring(0, 8);
+        const duration = entry.created_at && entry.ended_at
+            ? formatDuration(new Date(entry.ended_at) - new Date(entry.created_at))
+            : '-';
+        const totalTokens = (entry.input_tokens || 0) + (entry.output_tokens || 0);
+        const date = entry.ended_at
+            ? new Date(entry.ended_at).toLocaleString()
+            : '-';
+        const fileSize = entry.file_size > 1024 * 1024
+            ? `${(entry.file_size / 1024 / 1024).toFixed(1)}MB`
+            : entry.file_size > 1024
+            ? `${(entry.file_size / 1024).toFixed(1)}KB`
+            : `${entry.file_size}B`;
+        const cost = entry.cost_usd ? `$${entry.cost_usd.toFixed(4)}` : '-';
+
+        return `
+            <tr data-session-id="${escapeAttr(entry.session_id)}">
+                <td><span class="session-id">${escapeHtml(sessionIdShort)}…</span></td>
+                <td>${escapeHtml(entry.agent || '-')}</td>
+                <td>
+                    <span class="session-status ${statusClass}">
+                        ${escapeHtml(entry.status || '-')}
+                    </span>
+                </td>
+                <td>${escapeHtml(duration)}</td>
+                <td>${escapeHtml(String(totalTokens))}</td>
+                <td>${escapeHtml(String(entry.tool_calls || 0))}</td>
+                <td>${escapeHtml(cost)}</td>
+                <td>${escapeHtml(fileSize)}</td>
+                <td><span class="date-small">${escapeHtml(date)}</span></td>
+                <td>
+                    <div class="action-buttons">
+                        <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(entry.session_id)}">View</button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    // Add event listeners to action buttons
+    tbody.querySelectorAll('[data-action]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const action = btn.dataset.action;
+            const sessionId = btn.dataset.sessionId;
+            if (action === 'info') {
+                showDetailPanel(sessionId);
             }
         });
     });

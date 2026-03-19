@@ -1,14 +1,19 @@
 package api
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -400,6 +405,70 @@ func (s *Server) handleGetLogFile(c *gin.Context) {
 	c.File(logPath)
 }
 
+func (s *Server) handleSessionHistory(c *gin.Context) {
+	// Parse limit query parameter (default 50)
+	limit := 50
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	// Scan the log directory for *.ndjson files
+	entries, err := os.ReadDir(s.logDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusOK, []SessionHistoryEntry{})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read log directory"})
+		return
+	}
+
+	var historyEntries []SessionHistoryEntry
+
+	for _, entry := range entries {
+		// Only process NDJSON files
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".ndjson") {
+			continue
+		}
+
+		// Extract session ID from filename (remove .ndjson extension)
+		sessionID := strings.TrimSuffix(entry.Name(), ".ndjson")
+		logPath := filepath.Join(s.logDir, entry.Name())
+
+		// Get file info (size, mtime)
+		info, err := os.Stat(logPath)
+		if err != nil {
+			continue // Skip files we can't stat
+		}
+
+		// Parse the last few lines to extract result event data
+		histEntry := parseSessionLogTail(logPath, sessionID, info)
+		if histEntry != nil {
+			historyEntries = append(historyEntries, *histEntry)
+		}
+	}
+
+	// Sort by EndedAt descending (newest first)
+	sort.Slice(historyEntries, func(i, j int) bool {
+		if historyEntries[i].EndedAt == nil {
+			return false
+		}
+		if historyEntries[j].EndedAt == nil {
+			return true
+		}
+		return historyEntries[i].EndedAt.After(*historyEntries[j].EndedAt)
+	})
+
+	// Apply limit
+	if len(historyEntries) > limit {
+		historyEntries = historyEntries[:limit]
+	}
+
+	c.JSON(http.StatusOK, historyEntries)
+}
+
 func effectiveWorkDir(workDir string, mounts []Mount) string {
 	if workDir != "" {
 		return workDir
@@ -523,5 +592,113 @@ func (s *Server) prepareSessionDir(sess *session.Session, req *SessionRequest, w
 	}
 
 	return nil
+}
+
+// SessionHistoryEntry represents a completed/failed session in the history.
+type SessionHistoryEntry struct {
+	SessionID    string     `json:"session_id"`
+	Agent        string     `json:"agent,omitempty"`
+	Status       string     `json:"status,omitempty"`
+	ExitCode     *int       `json:"exit_code,omitempty"`
+	CreatedAt    *time.Time `json:"created_at,omitempty"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+	LogFile      string     `json:"log_file,omitempty"`
+	InputTokens  int        `json:"input_tokens,omitempty"`
+	OutputTokens int        `json:"output_tokens,omitempty"`
+	CostUSD      float64    `json:"cost_usd,omitempty"`
+	ToolCalls    int        `json:"tool_calls,omitempty"`
+	FileSize     int64      `json:"file_size,omitempty"`
+}
+
+// parseSessionLogTail parses the tail of an NDJSON log file to extract session metadata.
+func parseSessionLogTail(logPath, sessionID string, fileInfo os.FileInfo) *SessionHistoryEntry {
+	entry := &SessionHistoryEntry{
+		SessionID: sessionID,
+		LogFile:   logPath,
+		FileSize:  fileInfo.Size(),
+	}
+
+	// Open the file and read the last few lines
+	f, err := os.Open(logPath)
+	if err != nil {
+		return entry
+	}
+	defer f.Close()
+
+	// Read file in reverse to find the result event (should be near the end)
+	// For now, we'll scan forward and keep parsing lines until we find useful data
+	var lastResultEvent map[string]interface{}
+	var firstTimestamp *time.Time
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var evt map[string]interface{}
+		if err := json.Unmarshal(line, &evt); err != nil {
+			continue
+		}
+
+		// Extract timestamp from first event to set CreatedAt
+		if firstTimestamp == nil {
+			if timestampVal, ok := evt["timestamp"]; ok {
+				if timestampInt, ok := timestampVal.(float64); ok {
+					ts := time.UnixMilli(int64(timestampInt))
+					firstTimestamp = &ts
+					entry.CreatedAt = firstTimestamp
+				}
+			}
+		}
+
+		// Look for result events
+		if eventType, ok := evt["type"].(string); ok {
+			if eventType == "result" {
+				lastResultEvent = evt
+				// Update timestamp for EndedAt
+				if timestampVal, ok := evt["timestamp"]; ok {
+					if timestampInt, ok := timestampVal.(float64); ok {
+						ts := time.UnixMilli(int64(timestampInt))
+						entry.EndedAt = &ts
+					}
+				}
+			}
+		}
+	}
+
+	// Parse result event data if found
+	if lastResultEvent != nil {
+		if data, ok := lastResultEvent["data"].(map[string]interface{}); ok {
+			// Extract status
+			if status, ok := data["status"].(string); ok {
+				entry.Status = status
+			}
+			// Extract exit code
+			if exitCode, ok := data["exit_code"].(float64); ok {
+				code := int(exitCode)
+				entry.ExitCode = &code
+			}
+			// Extract usage metrics
+			if usage, ok := data["usage"].(map[string]interface{}); ok {
+				if input, ok := usage["input_tokens"].(float64); ok {
+					entry.InputTokens = int(input)
+				}
+				if output, ok := usage["output_tokens"].(float64); ok {
+					entry.OutputTokens = int(output)
+				}
+				if cost, ok := usage["cost_usd"].(float64); ok {
+					entry.CostUSD = cost
+				}
+			}
+			// Extract tool call count
+			if toolCalls, ok := data["tool_calls"].(float64); ok {
+				entry.ToolCalls = int(toolCalls)
+			}
+		}
+	}
+
+	return entry
 }
 

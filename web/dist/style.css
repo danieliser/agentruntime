@@ -135,6 +135,47 @@ body {
     width: 100%;
 }
 
+/* Tab Navigation */
+.tabs-nav {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.tab-btn {
+    padding: 0.75rem 1.5rem;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    text-transform: capitalize;
+    letter-spacing: 0.05em;
+}
+
+.tab-btn:hover {
+    color: var(--text-light);
+}
+
+.tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* Tab Content */
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
 /* Sessions Section */
 .sessions-section {
     margin-bottom: 2rem;
@@ -230,6 +271,13 @@ body {
     font-family: 'Courier New', monospace;
     color: var(--accent);
     font-size: 12px;
+}
+
+/* Small date display */
+.date-small {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
 }
 
 /* Detail Panel */
