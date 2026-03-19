@@ -159,7 +159,7 @@ func startBridgeServer(t *testing.T, handle runtime.ProcessHandle, replay *sessi
 		if err != nil {
 			return
 		}
-		b := bridgepkg.New(conn, handle, replay)
+		b := bridgepkg.New(conn, handle, replay, "", "resource-session")
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		b.Run(ctx, "resource-session", sinceOffset)

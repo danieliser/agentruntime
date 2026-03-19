@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/base64"
+	"log"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -25,19 +26,23 @@ const (
 // The bridge never reads process pipes directly — it subscribes to the replay
 // buffer via WaitFor, which blocks until new data arrives or the buffer is closed.
 type Bridge struct {
-	conn    *websocket.Conn
-	handle  runtime.ProcessHandle
-	replay  *session.ReplayBuffer
-	writeMu sync.Mutex
-	cancel  context.CancelFunc
+	conn      *websocket.Conn
+	handle    runtime.ProcessHandle
+	replay    *session.ReplayBuffer
+	logDir    string
+	sessionID string
+	writeMu   sync.Mutex
+	cancel    context.CancelFunc
 }
 
 // New creates a new bridge. Call Run() to start the I/O loops.
-func New(conn *websocket.Conn, handle runtime.ProcessHandle, replay *session.ReplayBuffer) *Bridge {
+func New(conn *websocket.Conn, handle runtime.ProcessHandle, replay *session.ReplayBuffer, logDir string, sessionID string) *Bridge {
 	return &Bridge{
-		conn:   conn,
-		handle: handle,
-		replay: replay,
+		conn:      conn,
+		handle:    handle,
+		replay:    replay,
+		logDir:    logDir,
+		sessionID: sessionID,
 	}
 }
 
@@ -54,16 +59,58 @@ func (b *Bridge) Run(ctx context.Context, sessionID string, sinceOffset int64) {
 	var streamOffset int64
 	if sinceOffset >= 0 {
 		streamOffset = sinceOffset
-		// Send initial replay chunk.
-		data, nextOffset := b.replay.ReadFrom(sinceOffset)
-		if len(data) > 0 {
-			_ = b.writeJSON(ServerFrame{
-				Type:   "replay",
-				Data:   base64.StdEncoding.EncodeToString(data),
-				Offset: nextOffset,
-			})
+
+		// Check if the replay buffer can satisfy the offset.
+		total := b.replay.TotalBytes()
+		bufCap := int64(b.replay.Cap())
+		oldest := total - bufCap
+		if oldest < 0 {
+			oldest = 0
 		}
-		streamOffset = nextOffset
+
+		if sinceOffset >= oldest {
+			// Fast path: buffer can satisfy the offset.
+			data, nextOffset := b.replay.ReadFrom(sinceOffset)
+			if len(data) > 0 {
+				_ = b.writeJSON(ServerFrame{
+					Type:   "replay",
+					Data:   base64.StdEncoding.EncodeToString(data),
+					Offset: nextOffset,
+				})
+			}
+			streamOffset = nextOffset
+		} else {
+			// Slow path: buffer wrapped past client offset. Try log file.
+			gap := false
+			logData, err := session.ReadLogRange(b.logDir, b.sessionID, sinceOffset, oldest)
+			if err != nil || len(logData) == 0 {
+				gap = true
+				if err != nil {
+					log.Printf("[bridge %s] log catch-up failed from offset %d: %v", b.sessionID, sinceOffset, err)
+				}
+			}
+			if len(logData) > 0 {
+				// Send log-sourced data.
+				_ = b.writeJSON(ServerFrame{
+					Type:   "replay",
+					Data:   base64.StdEncoding.EncodeToString(logData),
+					Offset: oldest,
+					Gap:    gap,
+				})
+			}
+			// Now send whatever the buffer has (from oldest onward).
+			bufData, nextOffset := b.replay.ReadFrom(oldest)
+			if len(bufData) > 0 || (len(logData) == 0 && gap) {
+				// Send buffer data, or if log was completely unavailable, mark with gap=true.
+				_ = b.writeJSON(ServerFrame{
+					Type:   "replay",
+					Data:   base64.StdEncoding.EncodeToString(bufData),
+					Offset: nextOffset,
+					Gap:    gap && len(logData) == 0,
+				})
+			}
+			streamOffset = nextOffset
+		}
 	} else {
 		// No replay requested — start streaming from current position.
 		streamOffset = b.replay.TotalBytes()

@@ -123,7 +123,7 @@ func bridgeServer(t *testing.T, handle *mockHandle, replay *session.ReplayBuffer
 		if err != nil {
 			return
 		}
-		b := New(conn, handle, replay)
+		b := New(conn, handle, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, "test-session", sinceOffset)
@@ -413,7 +413,7 @@ func TestBridge_OutputWrittenToReplayBuffer(t *testing.T) {
 		if err != nil {
 			return
 		}
-		b := New(conn, h, replay)
+		b := New(conn, h, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		b.Run(ctx, "sid", -1)
@@ -544,7 +544,7 @@ func TestBridge_WSDisconnectCancelsCleanly(t *testing.T) {
 		if err != nil {
 			return
 		}
-		b := New(conn, h, replay)
+		b := New(conn, h, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		b.Run(ctx, "sid", -1)

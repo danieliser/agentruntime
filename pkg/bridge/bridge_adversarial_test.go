@@ -29,7 +29,7 @@ func bridgeServerWithRunDone(t *testing.T, handle *mockHandle, replay *session.R
 		if err != nil {
 			return
 		}
-		b := New(conn, handle, replay)
+		b := New(conn, handle, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, sessionID, sinceOffset)
@@ -271,7 +271,7 @@ func TestBridge_RapidReconnectCyclesSameSession(t *testing.T) {
 		if err != nil {
 			return
 		}
-		b := New(conn, h, replay)
+		b := New(conn, h, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, "sticky-session", -1)
@@ -369,7 +369,7 @@ func steerableBridgeServerAdv(t *testing.T, handle *mockSteerableHandle, replay 
 		if err != nil {
 			return
 		}
-		b := New(conn, handle, replay)
+		b := New(conn, handle, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, "steerable-session", sinceOffset)
@@ -399,7 +399,7 @@ func steerableBridgeServerWithRunDoneAdv(t *testing.T, handle *mockSteerableHand
 		if err != nil {
 			return
 		}
-		b := New(conn, handle, replay)
+		b := New(conn, handle, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, sessionID, sinceOffset)
@@ -734,7 +734,7 @@ func TestBridge_DisconnectMidSteer(t *testing.T) {
 		if err != nil {
 			return
 		}
-		b := New(conn, h, replay)
+		b := New(conn, h, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, "disconnect-mid-steer", -1)

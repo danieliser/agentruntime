@@ -13,6 +13,8 @@ type ServerFrame struct {
 	SessionID string `json:"session_id,omitempty"` // set on connected frame
 	Mode      string `json:"mode,omitempty"`       // "pipe" or "pty" on connected frame
 	Error     string `json:"error,omitempty"`      // set on error frame
+	Gap       bool   `json:"gap,omitempty"`        // true if output was lost
+	Recovered bool   `json:"recovered,omitempty"`  // true if session was recovered after daemon restart
 }
 
 // ClientFrame is received from a WebSocket client.

@@ -91,6 +91,11 @@ func (r *ReplayBuffer) TotalBytes() int64 {
 	return r.Total
 }
 
+// Cap returns the buffer capacity in bytes.
+func (r *ReplayBuffer) Cap() int {
+	return r.size
+}
+
 // Close marks the buffer as done — no more writes will come.
 // Wakes all WaitFor callers so they can return.
 func (r *ReplayBuffer) Close() {

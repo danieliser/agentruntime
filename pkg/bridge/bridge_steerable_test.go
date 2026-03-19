@@ -93,7 +93,7 @@ func bridgeServerWithSteerableHandle(t *testing.T, handle *mockSteerableHandle, 
 			return
 		}
 		// Pass handle (which implements both ProcessHandle and SteerableHandle).
-		b := New(conn, handle, replay)
+		b := New(conn, handle, replay, "", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b.Run(ctx, "steerable-test", -1)
