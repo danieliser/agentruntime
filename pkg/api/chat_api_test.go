@@ -646,16 +646,17 @@ func TestUpdateChatConfig_404(t *testing.T) {
 	}
 }
 
-func TestUpdateChatConfig_400_MissingAgent(t *testing.T) {
+func TestUpdateChatConfig_PartialMerge(t *testing.T) {
 	ts, _, _, _ := newChatTestServer(t)
-	mustCreateChat(t, ts, "cfg-noagent", "echo-test")
+	mustCreateChat(t, ts, "cfg-merge", "echo-test")
 
-	resp := patchJSON(t, ts, "/chats/cfg-noagent/config", apischema.UpdateChatConfigRequest{
-		Config: apischema.ChatAPIConfig{},
+	// PATCH with only model — should merge, not replace
+	resp := patchJSON(t, ts, "/chats/cfg-merge/config", apischema.UpdateChatConfigRequest{
+		Config: apischema.ChatAPIConfig{Model: "claude-sonnet-4-6"},
 	})
 	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, string(body))
 	}
 }
 
@@ -667,8 +668,8 @@ func TestDeleteChat_204(t *testing.T) {
 
 	resp := httpDelete(t, ts, "/chats/del-test")
 	readBody(t, resp)
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
 	// Verify it's gone.
@@ -763,7 +764,7 @@ func TestChatLifecycle_CreateSendGetDelete(t *testing.T) {
 	// 5. Delete.
 	resp4 := httpDelete(t, ts, "/chats/lifecycle")
 	readBody(t, resp4)
-	if resp4.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", resp4.StatusCode)
+	if resp4.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp4.StatusCode)
 	}
 }

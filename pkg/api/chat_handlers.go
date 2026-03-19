@@ -309,12 +309,25 @@ func (s *Server) handleUpdateChatConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Config.Agent == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "config.agent is required"})
-		return
+	// Deep merge: only update fields that are provided.
+	if req.Config.Agent != "" {
+		rec.Config.Agent = req.Config.Agent
 	}
-
-	rec.Config = chatConfigFromAPI(req.Config)
+	if req.Config.Runtime != "" {
+		rec.Config.Runtime = req.Config.Runtime
+	}
+	if req.Config.Model != "" {
+		rec.Config.Model = req.Config.Model
+	}
+	if req.Config.Effort != "" {
+		rec.Config.Effort = req.Config.Effort
+	}
+	if req.Config.WorkDir != "" {
+		rec.Config.WorkDir = req.Config.WorkDir
+	}
+	if req.Config.IdleTimeout != "" {
+		rec.Config.IdleTimeout = req.Config.IdleTimeout
+	}
 	rec.UpdatedAt = time.Now()
 
 	if err := s.chatRegistry.Save(rec); err != nil {
@@ -345,7 +358,7 @@ func (s *Server) handleDeleteChat(c *gin.Context) {
 		return
 	}
 
-	c.Status(http.StatusNoContent)
+	c.JSON(http.StatusOK, gin.H{"name": name, "deleted": true})
 }
 
 // handleChatWS handles GET /ws/chats/:name.
