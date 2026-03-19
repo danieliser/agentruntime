@@ -8,9 +8,10 @@ cd "$(dirname "$0")/.."
 echo "Building..."
 go build -o agentd ./cmd/agentd
 go build -o agentruntime-sidecar ./cmd/sidecar
+go build -o agentd-tui ./cmd/agentd-tui
 
 echo "Installing to ~/.local/bin/"
-cp agentd agentruntime-sidecar ~/.local/bin/
+cp agentd agentruntime-sidecar agentd-tui ~/.local/bin/
 
 echo "Restarting agentd..."
 launchctl kickstart -k "gui/$(id -u)/com.agentruntime.agentd" 2>/dev/null || true
