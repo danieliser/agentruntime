@@ -84,8 +84,8 @@ func (r *renderer) renderEvent(ev agentEvent, isReplay bool) string {
 		out = toolStyle.Render(fmt.Sprintf("  ✓ %s", name))
 
 	case "result":
-		status, _ := ev.Data["status"].(string)
-		out = resultStyle.Render(fmt.Sprintf("── session complete: %s ──", status))
+		// Suppress in interactive mode — result fires after each turn, not session end.
+		return ""
 
 	case "error":
 		detail, _ := ev.Data["error_detail"].(string)

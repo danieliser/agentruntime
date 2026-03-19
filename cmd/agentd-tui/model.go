@@ -118,12 +118,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sendStdin(text)
 				m.mode = modeNormal
 				m.input.Placeholder = "Type a message..."
-				m.appendLine(userMsgStyle.Render("▶ " + text))
+				m.appendLine("")
+				m.appendLine(userMsgStyle.Render("You: " + text))
+				m.appendLine("")
 			} else if strings.HasPrefix(text, "/") {
 				m.handleCommand(text)
 			} else {
 				m.sendStdin(text)
-				m.appendLine(userMsgStyle.Render("▶ " + text))
+				m.appendLine("")
+				m.appendLine(userMsgStyle.Render("You: " + text))
+				m.appendLine("")
 			}
 			m.updateViewport()
 			return m, nil
@@ -184,8 +188,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.exited = true
 		m.exitCode = msg.code
-		m.appendLine("")
-		m.appendLine(resultStyle.Render(fmt.Sprintf("── session exited (code %d) — esc to quit ──", msg.code)))
+		// Don't show exit noise for interactive sessions — the session
+		// will be respawned on next attach. Only show for real failures.
+		if msg.code != 0 {
+			m.appendLine("")
+			m.appendLine(errorStyle.Render(fmt.Sprintf("session exited with code %d", msg.code)))
+		}
 		m.updateViewport()
 
 	case renderTickMsg:
