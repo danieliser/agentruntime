@@ -211,7 +211,7 @@ var messageEventTypeList = []string{
 	"tool_use",
 	"tool_result",
 	"result",
-	"system",
+	"error",
 }
 
 // handleGetChatMessages handles GET /chats/:name/messages.

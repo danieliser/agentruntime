@@ -75,6 +75,7 @@ func (r *LogReader) ReadMessages(
 			lineOffset++
 
 			// Apply before cursor: skip events at or past the cursor.
+			// before=0 or before<0 means no cursor (return all messages).
 			if before > 0 && globalOffset >= before {
 				continue
 			}
