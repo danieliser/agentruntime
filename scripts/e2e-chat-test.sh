@@ -140,7 +140,7 @@ done
 info "Step 10: Config mutation (idle only)"
 RESP=$(curl -sS -X PATCH "$BASE/chats/$CHAT/config" \
     -H 'content-type: application/json' \
-    -d '{"model":"claude-sonnet-4-6"}')
+    -d '{"config":{"model":"claude-sonnet-4-6"}}')
 if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'error' not in d" 2>/dev/null; then
     green "Step 10: Config patched while idle"
 else
@@ -157,7 +157,7 @@ curl -sS "$BASE/chats/$CHAT/messages" -H 'content-type: application/json' -d '{"
 sleep 1
 RESP=$(curl -sS -X PATCH "$BASE/chats/$CHAT/config" \
     -H 'content-type: application/json' \
-    -d '{"model":"claude-opus-4-6"}')
+    -d '{"config":{"model":"claude-opus-4-6"}}')
 if echo "$RESP" | grep -q "idle"; then
     green "Step 11: Config patch correctly blocked while running"
 else

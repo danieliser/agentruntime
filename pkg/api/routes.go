@@ -33,9 +33,8 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 
 	r.GET("/ws/chats/:name", s.handleChatWS)
 
-	// Static dashboard files (API routes take priority since registered first).
-	// Serves files from ./web/dist directory.
-	r.Static("/dashboard", "./web/dist")
+	// Embedded dashboard — baked into the binary, works from any working directory.
+	r.StaticFS("/dashboard", DashboardHandler())
 
 	// Redirect root and unmatched routes to dashboard.
 	r.NoRoute(func(c *gin.Context) {
