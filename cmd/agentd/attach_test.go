@@ -141,12 +141,7 @@ func TestAttachSendsStdinFrame(t *testing.T) {
 	defer stdinWrite.Close()
 
 	go func() {
-		// Redirect stdin
-		oldStdin := os.Stdin
-		os.Stdin = stdin
-		defer func() { os.Stdin = oldStdin }()
-
-		done <- attach("test-id", parsePort(port), 0, false)
+		done <- attach("test-id", parsePort(port), 0, false, stdin)
 	}()
 
 	select {
@@ -231,11 +226,7 @@ func TestAttachSendsSteerFrame(t *testing.T) {
 	defer stdinWrite.Close()
 
 	go func() {
-		oldStdin := os.Stdin
-		os.Stdin = stdin
-		defer func() { os.Stdin = oldStdin }()
-
-		done <- attach("test-id", parsePort(port), 0, false)
+		done <- attach("test-id", parsePort(port), 0, false, stdin)
 	}()
 
 	select {

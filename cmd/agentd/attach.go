@@ -52,7 +52,11 @@ func runAttachCommand(args []string) int {
 	return 0
 }
 
-func attach(sessionID string, port int, since int64, noReplay bool) error {
+func attach(sessionID string, port int, since int64, noReplay bool, stdinOverride ...*os.File) error {
+	stdinFile := os.Stdin
+	if len(stdinOverride) > 0 && stdinOverride[0] != nil {
+		stdinFile = stdinOverride[0]
+	}
 	wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, sessionID)
 
 	// Add replay offset unless --no-replay is set
@@ -101,7 +105,7 @@ func attach(sessionID string, port int, since int64, noReplay bool) error {
 	// Write loop: read from stdin and send to WebSocket
 	writeDone := make(chan error, 1)
 	go func() {
-		scanner := bufio.NewScanner(os.Stdin)
+		scanner := bufio.NewScanner(stdinFile)
 		for scanner.Scan() {
 			line := scanner.Text()
 
