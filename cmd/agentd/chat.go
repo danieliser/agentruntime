@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"gopkg.in/yaml.v3"
@@ -27,6 +29,8 @@ func runChatCommand(args []string) int {
 		return runChatCreate(args[1:])
 	case "send":
 		return runChatSend(args[1:])
+	case "attach":
+		return runChatAttach(args[1:])
 	case "list":
 		return runChatList(args[1:])
 	case "delete":
@@ -205,6 +209,170 @@ func runChatSend(args []string) int {
 	}
 
 	return 0
+}
+
+func runChatAttach(args []string) int {
+	fs := flag.NewFlagSet("chat attach", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	port := fs.Int("port", 8090, "Daemon port")
+	noReplay := fs.Bool("no-replay", false, "Skip replay and only show live output")
+
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: agentd chat attach <name> [options]\n\n")
+		fmt.Fprintf(fs.Output(), "Attach to a named chat. If running, connects to the live stream.\n")
+		fmt.Fprintf(fs.Output(), "If idle, wakes the chat with --resume and attaches.\n\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		fmt.Fprintln(os.Stderr, "chat attach: name is required")
+		return 2
+	}
+	name := fs.Arg(0)
+
+	// Check chat state.
+	resp, err := chatGet(*port, "/chats/"+name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chat attach: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		fmt.Fprintf(os.Stderr, "chat attach: chat %q not found\n", name)
+		return 1
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var chatResp apischema.ChatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		fmt.Fprintf(os.Stderr, "chat attach: decode: %v\n", err)
+		return 1
+	}
+
+	var sessionID string
+
+	// Resolve the Claude session ID from the chat record.
+	var claudeSessionID string
+	if chatResp.CurrentSession != "" {
+		// Running — get the Claude session ID from the active session.
+		infoResp, infoErr := chatGet(*port, "/sessions/"+chatResp.CurrentSession+"/info")
+		if infoErr == nil {
+			defer infoResp.Body.Close()
+			infoBody, _ := io.ReadAll(infoResp.Body)
+			var info struct {
+				Tags map[string]string `json:"tags"`
+			}
+			if json.Unmarshal(infoBody, &info) == nil {
+				claudeSessionID = info.Tags["claude_session_id"]
+			}
+		}
+	}
+
+	// Fall back to the last session in the chain's Claude session ID.
+	if claudeSessionID == "" && len(chatResp.SessionChain) > 0 {
+		// The chat response doesn't expose ClaudeSessionIDs directly, but
+		// the last completed session's log should have the session_id.
+		// For now, try the info endpoint for the last session in the chain.
+		lastSess := chatResp.SessionChain[len(chatResp.SessionChain)-1]
+		infoResp, infoErr := chatGet(*port, "/sessions/"+lastSess+"/info")
+		if infoErr == nil {
+			defer infoResp.Body.Close()
+			infoBody, _ := io.ReadAll(infoResp.Body)
+			var info struct {
+				Tags map[string]string `json:"tags"`
+			}
+			if json.Unmarshal(infoBody, &info) == nil {
+				claudeSessionID = info.Tags["claude_session_id"]
+			}
+		}
+	}
+
+	if claudeSessionID != "" {
+		// Exec into the agent's native TUI with resume for the full interactive experience.
+		agent := chatResp.Config.Agent
+		fmt.Fprintf(os.Stderr, "Launching %s TUI (session %s)...\n", agent, claudeSessionID[:8])
+		rc := execAgentTUI(agent, claudeSessionID)
+		if rc >= 0 {
+			return rc // -1 = fallback to WS attach
+		}
+	}
+
+	// Fallback: if we can't resolve the Claude session ID, use the WS attach.
+	switch chatResp.State {
+	case "running":
+		sessionID = chatResp.CurrentSession
+		if sessionID == "" {
+			fmt.Fprintf(os.Stderr, "chat attach: chat is running but has no session\n")
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "Attaching to running chat %q via WebSocket (session %s)\n", name, sessionID[:8])
+
+	case "idle", "created":
+		fmt.Fprintf(os.Stderr, "Chat %q is %s — waking...\n", name, chatResp.State)
+		wakeResp, wakeErr := chatPost(*port, "/chats/"+name+"/messages",
+			apischema.SendMessageRequest{Message: "/resume"})
+		if wakeErr != nil {
+			fmt.Fprintf(os.Stderr, "chat attach: wake: %v\n", wakeErr)
+			return 1
+		}
+		defer wakeResp.Body.Close()
+		wakeBody, _ := io.ReadAll(wakeResp.Body)
+
+		var sendResp apischema.SendMessageResponse
+		if err := json.Unmarshal(wakeBody, &sendResp); err != nil {
+			fmt.Fprintf(os.Stderr, "chat attach: decode wake response: %v\n", err)
+			return 1
+		}
+		sessionID = sendResp.SessionID
+		fmt.Fprintf(os.Stderr, "Session started: %s\n", sessionID[:8])
+
+	default:
+		fmt.Fprintf(os.Stderr, "chat attach: chat is in state %q, cannot attach\n", chatResp.State)
+		return 1
+	}
+
+	if err := attach(sessionID, *port, 0, *noReplay); err != nil {
+		fmt.Fprintf(os.Stderr, "chat attach: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// execAgentTUI replaces the current process with the agent's native TUI in resume mode.
+func execAgentTUI(agent, sessionID string) int {
+	switch agent {
+	case "claude":
+		return execInto("claude", []string{"claude", "--resume", sessionID})
+	case "codex":
+		// Codex CLI uses --session to resume.
+		return execInto("codex", []string{"codex", "--session", sessionID})
+	default:
+		fmt.Fprintf(os.Stderr, "chat attach: no TUI available for agent %q, falling back to WS\n", agent)
+		return -1 // signal fallback
+	}
+}
+
+func execInto(binName string, args []string) int {
+	bin, err := exec.LookPath(binName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chat attach: %s binary not found: %v\n", binName, err)
+		return 1
+	}
+	if err := syscall.Exec(bin, args, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "chat attach: exec %s: %v\n", binName, err)
+		return 1
+	}
+	return 0 // unreachable
 }
 
 func runChatList(args []string) int {
