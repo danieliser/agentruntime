@@ -282,6 +282,33 @@ func (s *Server) handleGetChatMessages(c *gin.Context) {
 }
 
 
+// handleChatAttach handles POST /chats/:name/attach.
+// Spawns an interactive session (no prompt) through the chat manager.
+func (s *Server) handleChatAttach(c *gin.Context) {
+	if s.chatManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "chat subsystem not initialized"})
+		return
+	}
+
+	name := c.Param("name")
+	result, err := s.chatManager.AttachSession(name)
+	if err != nil {
+		if errors.Is(err, chat.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "chat not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, apischema.SendMessageResponse{
+		SessionID: result.SessionID,
+		State:     "running",
+		Spawned:   result.Spawned,
+		WSURL:     chatWSURL(c, name),
+	})
+}
+
 // handleUpdateChatConfig handles PATCH /chats/:name/config.
 func (s *Server) handleUpdateChatConfig(c *gin.Context) {
 	if s.chatManager == nil {

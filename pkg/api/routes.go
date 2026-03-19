@@ -26,6 +26,7 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 		chats.GET("", s.handleListChats)
 		chats.GET("/:name", s.handleGetChat)
 		chats.POST("/:name/messages", s.handleSendMessage)
+		chats.POST("/:name/attach", s.handleChatAttach)
 		chats.GET("/:name/messages", s.handleGetChatMessages)
 		chats.PATCH("/:name/config", s.handleUpdateChatConfig)
 		chats.DELETE("/:name", s.handleDeleteChat)

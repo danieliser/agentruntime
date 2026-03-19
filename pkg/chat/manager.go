@@ -247,6 +247,59 @@ func (m *Manager) SendMessage(name, message string) (*SendResult, error) {
 	}
 }
 
+// AttachSession spawns an interactive session (no prompt) for the named chat.
+// If the chat is already running, returns the current session ID.
+// If idle/created, spawns a new interactive session with resume wired.
+// The session is tracked by the chat manager for lifecycle and resume support.
+func (m *Manager) AttachSession(name string) (*SendResult, error) {
+	lock := m.chatLock(name)
+	lock.Lock()
+	defer lock.Unlock()
+
+	rec, err := m.registry.Load(name)
+	if err != nil {
+		return nil, err
+	}
+	if rec.State == ChatStateDeleted {
+		return nil, ErrNotFound
+	}
+
+	now := time.Now()
+
+	switch rec.State {
+	case ChatStateRunning:
+		// Already running — return current session.
+		return &SendResult{
+			SessionID: rec.CurrentSession,
+			CreatedAt: now,
+		}, nil
+
+	case ChatStateCreated, ChatStateIdle:
+		// Spawn interactive session (empty prompt → sidecar interactive mode).
+		sessID, err := m.spawnSession(rec, "")
+		if err != nil {
+			return nil, fmt.Errorf("spawn session: %w", err)
+		}
+		rec.State = ChatStateRunning
+		rec.CurrentSession = sessID
+		rec.SessionChain = append(rec.SessionChain, sessID)
+		rec.LastActiveAt = &now
+		rec.UpdatedAt = now
+		if err := m.registry.Save(rec); err != nil {
+			return nil, fmt.Errorf("save after spawn: %w", err)
+		}
+		m.WatchSession(rec.Name, sessID)
+		return &SendResult{
+			SessionID: sessID,
+			Spawned:   true,
+			CreatedAt: now,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected chat state: %s", rec.State)
+	}
+}
+
 // WatchSession registers an exit watcher for a chat-backed session.
 // On exit: captures Claude session ID, then respawns if pending or transitions to idle.
 func (m *Manager) WatchSession(name, sessionID string) {

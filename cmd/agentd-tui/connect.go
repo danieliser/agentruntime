@@ -36,16 +36,15 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 		meta.Agent = chatResp.Config.Agent
 		meta.State = chatResp.State
 
-		if chatResp.State == "idle" || chatResp.State == "created" {
-			// Spawn an interactive session via the sessions API.
-			sid, wakeErr := spawnInteractiveSession(port, chatResp)
-			if wakeErr != nil {
-				return nil, meta, fmt.Errorf("spawn session: %w", wakeErr)
+		if chatResp.State == "idle" || chatResp.State == "created" || (chatResp.State == "running" && chatResp.CurrentSession != "") {
+			// Attach via the chat manager — spawns interactive session if needed,
+			// or returns the running session. Tracks lifecycle and resume.
+			sid, attachErr := attachChat(port, target)
+			if attachErr != nil {
+				return nil, meta, fmt.Errorf("attach: %w", attachErr)
 			}
 			meta.SessionID = sid
 			meta.State = "running"
-		} else if chatResp.State == "running" && chatResp.CurrentSession != "" {
-			meta.SessionID = chatResp.CurrentSession
 		} else {
 			return nil, meta, fmt.Errorf("chat %q is in state %q", target, chatResp.State)
 		}
@@ -60,12 +59,10 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 		meta.Name = target
 		meta.Agent = opts.agent
 		meta.State = "created"
-		// Spawn an interactive session.
-		created := &chatAPIResponse{Name: target, State: "created"}
-		created.Config.Agent = opts.agent
-		sid, spawnErr := spawnInteractiveSession(port, created)
-		if spawnErr != nil {
-			return nil, meta, fmt.Errorf("spawn session: %w", spawnErr)
+		// Attach via chat manager.
+		sid, attachErr := attachChat(port, target)
+		if attachErr != nil {
+			return nil, meta, fmt.Errorf("attach: %w", attachErr)
 		}
 		meta.SessionID = sid
 		meta.State = "running"
@@ -157,34 +154,19 @@ func isUUID(s string) bool {
 	return true
 }
 
-// spawnInteractiveSession creates a session via POST /sessions with interactive=true
-// and no prompt. The sidecar runs in interactive mode, staying alive for stdin.
-// If the chat has a prior Claude session ID, passes it as resume_session for context.
-func spawnInteractiveSession(port int, chat *chatAPIResponse) (string, error) {
-	payload := map[string]interface{}{
-		"agent":       chat.Config.Agent,
-		"interactive": true,
-		"tags":        map[string]string{"chat_name": chat.Name},
-	}
-
-	// Wire resume from the chat's last session's Claude session ID.
-	if len(chat.SessionChain) > 0 && len(chat.ClaudeSessionIDs) > 0 {
-		lastSess := chat.SessionChain[len(chat.SessionChain)-1]
-		if claudeID, ok := chat.ClaudeSessionIDs[lastSess]; ok && claudeID != "" {
-			payload["resume_session"] = claudeID
-		}
-	}
-	data, _ := json.Marshal(payload)
+// attachChat calls POST /chats/:name/attach to spawn (or reuse) an interactive
+// session through the chat manager. Tracks lifecycle and resume.
+func attachChat(port int, name string) (string, error) {
 	resp, err := http.Post(
-		fmt.Sprintf("http://localhost:%d/sessions", port),
+		fmt.Sprintf("http://localhost:%d/chats/%s/attach", port, url.PathEscape(name)),
 		"application/json",
-		strings.NewReader(string(data)),
+		strings.NewReader("{}"),
 	)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
 	}
