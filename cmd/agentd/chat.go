@@ -479,7 +479,7 @@ func runChatDelete(args []string) int {
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case http.StatusNoContent:
+	case http.StatusOK, http.StatusNoContent:
 		// success
 	case http.StatusNotFound:
 		fmt.Fprintf(os.Stderr, "chat delete: chat %q not found\n", name)

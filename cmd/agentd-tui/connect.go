@@ -178,13 +178,13 @@ func spawnInteractiveSession(port int, chat *chatAPIResponse) (string, error) {
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
 	}
 	var result struct {
-		ID string `json:"id"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
-	if result.ID == "" {
-		return "", fmt.Errorf("no session id in response")
+	if result.SessionID == "" {
+		return "", fmt.Errorf("no session_id in response")
 	}
-	return result.ID, nil
+	return result.SessionID, nil
 }
