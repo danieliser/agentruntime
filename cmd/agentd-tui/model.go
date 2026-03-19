@@ -37,8 +37,8 @@ type model struct {
 	connected  bool
 	exited     bool
 	exitCode   int
-	streaming  bool            // currently receiving delta chunks
-	streamBuf  strings.Builder // accumulated delta text
+	streaming  bool             // currently receiving delta chunks
+	streamBuf  *strings.Builder // pointer — Builder can't be copied by value
 
 	// Metrics from events.
 	inputTokens  int
@@ -71,6 +71,7 @@ func newModel(conn *websocket.Conn, meta chatMeta) model {
 		viewport: vp,
 		input:    ta,
 		lines:      make([]string, 0, 256),
+		streamBuf:  &strings.Builder{},
 		followMode: true,
 	}
 }
