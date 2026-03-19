@@ -1,0 +1,117 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/gorilla/websocket"
+)
+
+// chatMeta holds metadata about the connected chat/session.
+type chatMeta struct {
+	Name      string // chat name (empty if raw session)
+	SessionID string
+	Agent     string // "claude", "codex", etc.
+	State     string // "running", "idle", etc.
+}
+
+// connect resolves the target (chat name or session ID) and opens a WS connection.
+func connect(target string, port int, noReplay bool) (*websocket.Conn, chatMeta, error) {
+	meta := chatMeta{}
+
+	// Try to resolve as a chat name first.
+	chatResp, err := getChat(port, target)
+	if err == nil {
+		meta.Name = chatResp.Name
+		meta.Agent = chatResp.Config.Agent
+		meta.State = chatResp.State
+
+		if chatResp.State == "idle" || chatResp.State == "created" {
+			// Wake the chat.
+			sid, wakeErr := wakeChat(port, target)
+			if wakeErr != nil {
+				return nil, meta, fmt.Errorf("wake chat: %w", wakeErr)
+			}
+			meta.SessionID = sid
+			meta.State = "running"
+		} else if chatResp.State == "running" && chatResp.CurrentSession != "" {
+			meta.SessionID = chatResp.CurrentSession
+		} else {
+			return nil, meta, fmt.Errorf("chat %q is in state %q", target, chatResp.State)
+		}
+	} else {
+		// Assume it's a session ID.
+		meta.SessionID = target
+	}
+
+	// Connect to the session WS.
+	wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, meta.SessionID)
+	if !noReplay {
+		q := url.Values{}
+		q.Set("since", "0")
+		wsURL += "?" + q.Encode()
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return nil, meta, fmt.Errorf("connect WS: %w", err)
+	}
+
+	return conn, meta, nil
+}
+
+type chatAPIResponse struct {
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	CurrentSession string `json:"current_session"`
+	Config         struct {
+		Agent string `json:"agent"`
+	} `json:"config"`
+}
+
+func getChat(port int, name string) (*chatAPIResponse, error) {
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/chats/%s", port, url.PathEscape(name)))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("not found")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	var cr chatAPIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return nil, err
+	}
+	return &cr, nil
+}
+
+func wakeChat(port int, name string) (string, error) {
+	body := `{"message":"/resume"}`
+	resp, err := http.Post(
+		fmt.Sprintf("http://localhost:%d/chats/%s/messages", port, url.PathEscape(name)),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.SessionID == "" {
+		return "", fmt.Errorf("no session_id in wake response")
+	}
+	return result.SessionID, nil
+}
