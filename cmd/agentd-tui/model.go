@@ -37,8 +37,9 @@ type model struct {
 	connected  bool
 	exited     bool
 	exitCode   int
-	streaming  bool             // currently receiving delta chunks
-	streamBuf  *strings.Builder // pointer — Builder can't be copied by value
+	streaming      bool             // currently receiving delta chunks
+	streamBuf      *strings.Builder // pointer — Builder can't be copied by value
+	interruptSent  *bool            // pointer — survives model copy
 
 	// Metrics from events.
 	inputTokens  int
@@ -71,8 +72,9 @@ func newModel(conn *websocket.Conn, meta chatMeta) model {
 		viewport:   vp,
 		input:      ta,
 		lines:      make([]string, 0, 256),
-		streamBuf:  &strings.Builder{},
-		followMode: true,
+		streamBuf:     &strings.Builder{},
+		interruptSent: new(bool),
+		followMode:    true,
 	}
 
 	// Render conversation history from prior sessions.
@@ -114,9 +116,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.exited {
+			if m.exited || *m.interruptSent {
 				return m, tea.Quit
 			}
+			*m.interruptSent = true
 			_ = m.conn.WriteJSON(map[string]string{"type": "interrupt"})
 			m.appendLine(systemStyle.Render("sent interrupt (ctrl+c again to quit)"))
 			m.updateViewport()
@@ -201,6 +204,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 
 	case agentEventMsg:
+		*m.interruptSent = false // agent is active, reset interrupt state
 		cmd := m.handleAgentEvent(msg.event, msg.replay)
 		m.updateViewport()
 		if cmd != nil {
