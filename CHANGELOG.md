@@ -2,6 +2,34 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.6.3] — 2026-03-20
+
+### Bug Fixes
+- **Chat stuck "running" after session exit** (#7): Three recovery gaps in the chat manager —
+  `respawnAfterMissing` now starts a session watcher on the new session (was missing, leaving
+  chats permanently stuck); `watchSessionLoop` detects nil handles on running sessions and
+  treats them as exits; `injectStdin` failures now trigger a respawn instead of a 500 error.
+- **PendingMessage 30–45s clearing delay** (#6): Root cause was the same missing watcher —
+  result signals from the respawned session were never consumed, so PendingMessage only cleared
+  when the session fully exited. Now clears within one poll cycle (~2s).
+
+## [0.6.2] — 2026-03-20
+
+### Bug Fixes
+- **Result channel race condition** (#6): Replaced single-fire `NotifyResult` channel with
+  close-and-replace pattern. Each `NotifyResult()` call closes the current channel (waking all
+  watchers) and creates a fresh one for the next turn. `watchSessionLoop` re-fetches
+  `ResultCh()` each iteration to track the latest channel.
+
+## [0.6.1] — 2026-03-20
+
+### Bug Fixes
+- **PendingMessage not clearing on result event**: Added `NotifyResult` / `ResultCh` mechanism
+  on sessions. `parseAndTrackEvent` fires `NotifyResult()` on result events. `watchSessionLoop`
+  selects on `ResultCh()` to clear PendingMessage mid-session without waiting for full exit.
+- **Docker resume_session**: Session tags now carry `claude_session_id` for cross-respawn resume.
+  `handleSessionExit` captures it from the exiting session's tags.
+
 ## [0.6.0] — 2026-03-20
 
 ### Terminal UI (agentd-tui)
