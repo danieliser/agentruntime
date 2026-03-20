@@ -25,6 +25,7 @@ type model struct {
 	conn     *websocket.Conn
 	meta     chatMeta
 	renderer *renderer
+	program  **tea.Program // double pointer — survives model copy
 
 	viewport viewport.Model
 	input    textarea.Model
@@ -74,6 +75,7 @@ func newModel(conn *websocket.Conn, meta chatMeta) model {
 		lines:      make([]string, 0, 256),
 		streamBuf:     &strings.Builder{},
 		interruptSent: new(bool),
+		program:       new(*tea.Program),
 		followMode:    true,
 	}
 
@@ -145,6 +147,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if strings.HasPrefix(text, "/") {
 				m.handleCommand(text)
 			} else {
+				// If session is dead, reconnect before sending.
+				if m.exited && m.meta.Name != "" {
+					m.appendLine("")
+					m.appendLine(userMsgStyle.Render("You: " + text))
+					m.appendLine(systemStyle.Render("⏳ reconnecting..."))
+					m.updateViewport()
+					return m, m.reconnectAndSend(text)
+				}
 				m.sendStdin(text)
 				m.appendLine("")
 				m.appendLine(userMsgStyle.Render("You: " + text))
@@ -215,12 +225,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.exited = true
 		m.exitCode = msg.code
-		// Don't show exit noise for interactive sessions — the session
-		// will be respawned on next attach. Only show for real failures.
+		m.appendLine("")
 		if msg.code != 0 {
-			m.appendLine("")
-			m.appendLine(errorStyle.Render(fmt.Sprintf("session exited with code %d", msg.code)))
+			m.appendLine(errorStyle.Render(fmt.Sprintf("session exited with code %d — esc to quit", msg.code)))
+		} else {
+			m.appendLine(systemStyle.Render("session ended — type a message to start a new one, or esc to quit"))
 		}
+		m.input.Placeholder = "Type to start new session, or esc to quit..."
 		m.updateViewport()
 
 	case renderTickMsg:
@@ -239,6 +250,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Not streaming — no more ticks needed.
 		return m, nil
+
+	case reconnectedMsg:
+		if msg.err != nil {
+			m.appendLine(errorStyle.Render(fmt.Sprintf("reconnect failed: %v", msg.err)))
+			m.updateViewport()
+			return m, nil
+		}
+		// Swap connection, restart event pump.
+		m.conn = msg.conn
+		m.meta.SessionID = msg.sessionID
+		m.exited = false
+		*m.interruptSent = false
+		m.input.Placeholder = "Type a message..."
+		m.appendLine(systemStyle.Render("⏳ thinking..."))
+		m.updateViewport()
+
+		// Send the pending message on the new connection.
+		debugLog.Printf("reconnected: session=%s, sending: %q", msg.sessionID, msg.message)
+		_ = msg.conn.WriteJSON(map[string]string{"type": "stdin", "data": msg.message})
+
+		// Restart the event pump — needs tea.Program reference stored on model.
+		if *m.program != nil {
+			go pumpEvents(msg.conn, *m.program)
+		}
 
 	case wsErrorMsg:
 		m.appendLine(errorStyle.Render(fmt.Sprintf("WS error: %v", msg.err)))
@@ -409,6 +444,32 @@ func (m *model) updateViewport() {
 	m.viewport.SetContent(content)
 	if m.followMode {
 		m.viewport.GotoBottom()
+	}
+}
+
+// reconnectedMsg signals that a new session was spawned and WS reconnected.
+type reconnectedMsg struct {
+	conn      *websocket.Conn
+	sessionID string
+	message   string // pending message to send after reconnect
+	err       error
+}
+
+// reconnectAndSend spawns a new session via the attach endpoint and reconnects the WS.
+func (m *model) reconnectAndSend(message string) tea.Cmd {
+	port := 8090 // TODO: pass through from main
+	name := m.meta.Name
+	return func() tea.Msg {
+		sid, err := attachChat(port, name)
+		if err != nil {
+			return reconnectedMsg{err: err}
+		}
+		wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, sid)
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		if err != nil {
+			return reconnectedMsg{err: err}
+		}
+		return reconnectedMsg{conn: conn, sessionID: sid, message: message}
 	}
 }
 

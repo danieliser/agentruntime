@@ -61,6 +61,8 @@ func main() {
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
+	// Store program reference for reconnect pump (double pointer survives model copy).
+	*m.program = p
 
 	// Pump WS events into the Bubble Tea program.
 	go pumpEvents(conn, p)
