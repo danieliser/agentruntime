@@ -11,7 +11,9 @@ go build -o agentruntime-sidecar ./cmd/sidecar
 go build -o agentd-tui ./cmd/agentd-tui
 
 echo "Installing to ~/.local/bin/"
+rm -f ~/.local/bin/agentd ~/.local/bin/agentruntime-sidecar ~/.local/bin/agentd-tui
 cp agentd agentruntime-sidecar agentd-tui ~/.local/bin/
+xattr -cr ~/.local/bin/agentd ~/.local/bin/agentruntime-sidecar ~/.local/bin/agentd-tui 2>/dev/null || true
 
 echo "Restarting agentd..."
 launchctl kickstart -k "gui/$(id -u)/com.agentruntime.agentd" 2>/dev/null || true
