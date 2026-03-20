@@ -317,15 +317,19 @@ func (m *Manager) watchSessionLoop(name, sessionID string) {
 		m.handleSessionExit(name, sessionID, nil)
 		return
 	}
-	resultCh := sess.ResultCh()
 
 	for {
+		// Refresh the result channel each iteration — NotifyResult closes the
+		// current channel and replaces it, so we must re-fetch to watch the
+		// latest one.
+		resultCh := sess.ResultCh()
+
 		select {
 		case <-resultCh:
 			// Turn completed within a live session — clear PendingMessage.
 			m.clearPendingMessage(name, sessionID)
 		case <-ticker.C:
-			sess := m.sessions.Get(sessionID)
+			sess = m.sessions.Get(sessionID)
 			if sess == nil {
 				m.handleSessionExit(name, sessionID, nil)
 				return

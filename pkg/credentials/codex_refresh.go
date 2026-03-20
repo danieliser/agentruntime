@@ -134,7 +134,7 @@ func RefreshCodexToken(authPath string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logRefreshWarning(fmt.Sprintf("HTTP %d", resp.StatusCode), fmt.Errorf(string(body)))
+		logRefreshWarning(fmt.Sprintf("HTTP %d", resp.StatusCode), fmt.Errorf("%s", string(body)))
 		return fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
 

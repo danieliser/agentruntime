@@ -156,17 +156,21 @@ func (s *Session) RecordToolCall() {
 }
 
 // NotifyResult signals that a result event was received for this session.
-// Non-blocking — drops the signal if the channel already has one pending.
+// Closes the current result channel (waking all watchers) and replaces it with
+// a fresh one for the next result. Thread-safe; the mutex prevents double-close.
 func (s *Session) NotifyResult() {
-	select {
-	case s.resultCh <- struct{}{}:
-	default:
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	close(s.resultCh)
+	s.resultCh = make(chan struct{})
 }
 
-// ResultCh returns a channel that receives a signal when a result event arrives.
-// Used by watchers (e.g. chat manager) to detect turn completion within a live session.
+// ResultCh returns the current result channel. The channel is closed when a
+// result event arrives, unblocking all readers. Callers must re-fetch via
+// ResultCh() after each receive to get the replacement channel.
 func (s *Session) ResultCh() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.resultCh
 }
 

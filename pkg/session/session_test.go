@@ -383,42 +383,57 @@ func TestSession_RecordMetrics_Concurrent(t *testing.T) {
 func TestSession_NotifyResult_SignalsChannel(t *testing.T) {
 	s := NewSession("", "claude", "local")
 
-	// Channel should be empty initially.
+	// Grab the channel before signaling.
+	ch := s.ResultCh()
+
+	// Channel should be open (blocking) initially.
 	select {
-	case <-s.ResultCh():
-		t.Fatal("ResultCh should be empty before NotifyResult")
+	case <-ch:
+		t.Fatal("ResultCh should be open before NotifyResult")
 	default:
 	}
 
 	s.NotifyResult()
 
-	// Channel should now have a signal.
+	// The channel we grabbed should now be closed (readable).
 	select {
-	case <-s.ResultCh():
-		// expected
+	case <-ch:
+		// expected — channel was closed by NotifyResult
 	default:
-		t.Fatal("ResultCh should have a signal after NotifyResult")
+		t.Fatal("ResultCh should be closed after NotifyResult")
 	}
 }
 
-func TestSession_NotifyResult_NonBlocking(t *testing.T) {
+func TestSession_NotifyResult_MultipleFires(t *testing.T) {
 	s := NewSession("", "claude", "local")
 
-	// Calling NotifyResult twice should not block (buffer=1, second is dropped).
+	// Each NotifyResult closes the current channel and creates a new one.
+	// Both calls should succeed without blocking or panicking.
+	ch1 := s.ResultCh()
 	s.NotifyResult()
-	s.NotifyResult() // should not block
 
-	// Drain the one signal.
+	// ch1 should be closed.
 	select {
-	case <-s.ResultCh():
+	case <-ch1:
 	default:
-		t.Fatal("expected one signal")
+		t.Fatal("first channel should be closed")
 	}
 
-	// No more signals.
+	// Second fire on the replacement channel.
+	ch2 := s.ResultCh()
+	s.NotifyResult()
+
 	select {
-	case <-s.ResultCh():
-		t.Fatal("expected no second signal")
+	case <-ch2:
+	default:
+		t.Fatal("second channel should be closed")
+	}
+
+	// The current channel should be open (no pending result).
+	ch3 := s.ResultCh()
+	select {
+	case <-ch3:
+		t.Fatal("third channel should still be open")
 	default:
 	}
 }
