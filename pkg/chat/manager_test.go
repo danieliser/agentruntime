@@ -788,3 +788,134 @@ func TestSendMessage_EffortTag(t *testing.T) {
 		t.Errorf("effort tag = %q, want high", req.Tags["effort"])
 	}
 }
+
+func TestRespawnAfterMissing_StartsWatcher(t *testing.T) {
+	// When a running chat's session disappears and respawnAfterMissing fires,
+	// the new session must be watched for exit. Otherwise the chat stays
+	// running forever after the respawned session completes.
+	sess1 := makeSession("orig-sess", nil)
+	sess1.SetRunning(newFakeHandle())
+	sess2 := makeSession("respawn-sess", nil)
+	sess2.SetRunning(nil)
+
+	spawner := newFakeSpawner(sess2)
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
+	sessMgr.Add(sess1)
+	sessMgr.Add(sess2)
+
+	mgr.CreateChat("respawn-watch", ChatConfig{Agent: "claude"})
+	rec, _ := mgr.GetChat("respawn-watch")
+	rec.State = ChatStateRunning
+	rec.CurrentSession = "orig-sess"
+	rec.SessionChain = []string{"orig-sess"}
+	mgr.registry.Save(rec)
+
+	// Remove the original session from the manager so SendMessage triggers
+	// respawnAfterMissing.
+	sessMgr.Remove("orig-sess")
+
+	_, err := mgr.SendMessage("respawn-watch", "trigger respawn")
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Verify the chat is now running with the respawned session.
+	loaded, _ := mgr.GetChat("respawn-watch")
+	if loaded.CurrentSession != "respawn-sess" {
+		t.Fatalf("CurrentSession = %q, want respawn-sess", loaded.CurrentSession)
+	}
+
+	// Now complete the respawned session — the watcher should detect it
+	// and transition the chat to idle.
+	sess2.SetCompleted(0)
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout: watcher never detected respawned session exit")
+		default:
+		}
+		loaded, _ = mgr.GetChat("respawn-watch")
+		if loaded.State == ChatStateIdle {
+			return // success — watcher is working
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func TestWatchSession_NilHandle_TreatedAsExit(t *testing.T) {
+	// If a session exists in running state but Handle is nil, the watcher
+	// should treat it as an exit rather than polling forever.
+	sess := makeSession("nil-handle", nil)
+	sess.SetRunning(nil) // state=running, handle=nil
+
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), newFakeSpawner())
+	sessMgr.Add(sess)
+
+	mgr.CreateChat("nil-handle-test", ChatConfig{Agent: "claude"})
+	rec, _ := mgr.GetChat("nil-handle-test")
+	rec.State = ChatStateRunning
+	rec.CurrentSession = "nil-handle"
+	rec.SessionChain = []string{"nil-handle"}
+	mgr.registry.Save(rec)
+
+	mgr.WatchSession("nil-handle-test", "nil-handle")
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout: watcher never detected nil handle")
+		default:
+		}
+		loaded, _ := mgr.GetChat("nil-handle-test")
+		if loaded.State == ChatStateIdle {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// failingSteerableHandle returns an error from SendPrompt.
+type failingSteerableHandle struct {
+	fakeHandle
+}
+
+func (h *failingSteerableHandle) SendPrompt(string) error   { return fmt.Errorf("ws disconnected") }
+func (h *failingSteerableHandle) SendInterrupt() error       { return nil }
+func (h *failingSteerableHandle) SendSteer(string) error     { return nil }
+func (h *failingSteerableHandle) SendContext(string, string) error  { return nil }
+func (h *failingSteerableHandle) SendMention(string, int, int) error { return nil }
+
+func TestSendMessage_BrokenHandle_Respawns(t *testing.T) {
+	// When injectStdin fails (broken WS, dead handle), SendMessage should
+	// respawn instead of returning a 500 error.
+	brokenSess := makeSession("broken-sess", nil)
+	brokenSess.SetRunning(&failingSteerableHandle{fakeHandle: *newFakeHandle()})
+
+	freshSess := makeSession("fresh-sess", nil)
+
+	spawner := newFakeSpawner(freshSess)
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
+	sessMgr.Add(brokenSess)
+	sessMgr.Add(freshSess)
+
+	mgr.CreateChat("broken-test", ChatConfig{Agent: "claude"})
+	rec, _ := mgr.GetChat("broken-test")
+	rec.State = ChatStateRunning
+	rec.CurrentSession = "broken-sess"
+	rec.SessionChain = []string{"broken-sess"}
+	mgr.registry.Save(rec)
+
+	result, err := mgr.SendMessage("broken-test", "hello after crash")
+	if err != nil {
+		t.Fatalf("SendMessage should respawn, got error: %v", err)
+	}
+	if !result.Spawned {
+		t.Error("expected Spawned=true from respawn")
+	}
+	if result.SessionID != "fresh-sess" {
+		t.Errorf("SessionID = %q, want fresh-sess", result.SessionID)
+	}
+}

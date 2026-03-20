@@ -227,7 +227,9 @@ func (m *Manager) SendMessage(name, message string) (*SendResult, error) {
 			return m.respawnAfterMissing(rec, message, now)
 		}
 		if err := m.injectStdin(sess, message); err != nil {
-			return nil, fmt.Errorf("inject stdin: %w", err)
+			// Handle is broken — respawn instead of returning a 500.
+			log.Printf("[chat %s] inject stdin failed, respawning: %v", name, err)
+			return m.respawnAfterMissing(rec, message, now)
 		}
 		// Mark pending so the next concurrent caller hits ErrChatBusy.
 		// Cleared by handleSessionExit when the turn completes.
@@ -336,6 +338,13 @@ func (m *Manager) watchSessionLoop(name, sessionID string) {
 			}
 			snap := sess.Snapshot()
 			if isTerminalState(snap.State) {
+				m.handleSessionExit(name, sessionID, &snap)
+				return
+			}
+			// Detect broken sessions: state is running but handle is nil
+			// (process exited without SetCompleted being called).
+			if snap.State == session.StateRunning && sess.Handle == nil {
+				log.Printf("[chat %s] watch: session %s running but handle is nil, treating as exit", name, sessionID)
 				m.handleSessionExit(name, sessionID, &snap)
 				return
 			}
@@ -544,6 +553,7 @@ func (m *Manager) respawnAfterMissing(rec *ChatRecord, message string, now time.
 	if err := m.registry.Save(rec); err != nil {
 		return nil, fmt.Errorf("save after respawn: %w", err)
 	}
+	m.WatchSession(rec.Name, sessID)
 	return &SendResult{
 		SessionID: sessID,
 		Spawned:   true,
