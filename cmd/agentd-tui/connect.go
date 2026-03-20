@@ -13,10 +13,11 @@ import (
 
 // chatMeta holds metadata about the connected chat/session.
 type chatMeta struct {
-	Name      string // chat name (empty if raw session)
+	Name      string         // chat name (empty if raw session)
 	SessionID string
-	Agent     string // "claude", "codex", etc.
-	State     string // "running", "idle", etc.
+	Agent     string         // "claude", "codex", etc.
+	State     string         // "running", "idle", etc.
+	History   []chatMessage  // prior conversation messages
 }
 
 type connectOpts struct {
@@ -71,12 +72,13 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 	}
 
 	// Connect to the session WS.
-	wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, meta.SessionID)
-	if !noReplay {
-		q := url.Values{}
-		q.Set("since", "0")
-		wsURL += "?" + q.Encode()
+	// Load conversation history from prior sessions' logs.
+	if meta.Name != "" && !noReplay {
+		meta.History = loadChatHistory(port, meta.Name)
 	}
+
+	// Connect WS — skip replay since we loaded history from logs.
+	wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, meta.SessionID)
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
@@ -152,6 +154,34 @@ func isUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+// chatMessage is a message from GET /chats/:name/messages.
+type chatMessage struct {
+	SessionID string                 `json:"session_id"`
+	Type      string                 `json:"type"`
+	Data      map[string]interface{} `json:"data"`
+	Offset    int64                  `json:"offset"`
+	Timestamp int64                  `json:"timestamp"`
+}
+
+// loadChatHistory fetches prior conversation messages for display on connect.
+func loadChatHistory(port int, name string) []chatMessage {
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/chats/%s/messages?limit=100", port, url.PathEscape(name)))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil
+	}
+	var result struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+	return result.Messages
 }
 
 // attachChat calls POST /chats/:name/attach to spawn (or reuse) an interactive

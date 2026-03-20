@@ -64,16 +64,34 @@ func newModel(conn *websocket.Conn, meta chatMeta) model {
 
 	vp := viewport.New(80, 20)
 
-	return model{
-		conn:     conn,
-		meta:     meta,
-		renderer: newRenderer(80),
-		viewport: vp,
-		input:    ta,
+	m := model{
+		conn:       conn,
+		meta:       meta,
+		renderer:   newRenderer(80),
+		viewport:   vp,
+		input:      ta,
 		lines:      make([]string, 0, 256),
 		streamBuf:  &strings.Builder{},
 		followMode: true,
 	}
+
+	// Render conversation history from prior sessions.
+	if len(meta.History) > 0 {
+		m.appendLine(systemStyle.Render(fmt.Sprintf("── %d messages from prior sessions ──", len(meta.History))))
+		m.appendLine("")
+		for _, msg := range meta.History {
+			ev := agentEvent{Type: msg.Type, Data: msg.Data}
+			rendered := m.renderer.renderEvent(ev, true)
+			if rendered != "" {
+				m.appendLine(rendered)
+			}
+		}
+		m.appendLine("")
+		m.appendLine(systemStyle.Render("── end of history ──"))
+		m.appendLine("")
+	}
+
+	return m
 }
 
 // renderTickMsg triggers periodic glamour re-render during streaming.
