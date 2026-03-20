@@ -46,7 +46,8 @@ type Session struct {
 	CostUSD       float64    `json:"cost_usd,omitempty"`
 	ToolCallCount int        `json:"tool_call_count,omitempty"`
 
-	mu sync.Mutex
+	mu       sync.Mutex
+	resultCh chan struct{} // signals when a result event is received
 }
 
 // NewSession creates a session in the Pending state.
@@ -74,6 +75,7 @@ func NewSessionWithID(sessionID, taskID, agentName, runtimeName string, tags ...
 		State:       StatePending,
 		CreatedAt:   time.Now(),
 		Replay:      newLazyReplayBuffer(0),
+		resultCh:    make(chan struct{}, 1),
 	}
 }
 
@@ -151,6 +153,21 @@ func (s *Session) RecordToolCall() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ToolCallCount++
+}
+
+// NotifyResult signals that a result event was received for this session.
+// Non-blocking — drops the signal if the channel already has one pending.
+func (s *Session) NotifyResult() {
+	select {
+	case s.resultCh <- struct{}{}:
+	default:
+	}
+}
+
+// ResultCh returns a channel that receives a signal when a result event arrives.
+// Used by watchers (e.g. chat manager) to detect turn completion within a live session.
+func (s *Session) ResultCh() <-chan struct{} {
+	return s.resultCh
 }
 
 // Snapshot returns a copy of the session's fields, safe to read without holding the lock.

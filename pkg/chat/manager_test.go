@@ -513,6 +513,104 @@ func TestWatchSession_StaleWatcherIgnored(t *testing.T) {
 	}
 }
 
+func TestWatchSession_PendingClearedOnResultEvent(t *testing.T) {
+	handle := newFakeSteerableHandle()
+	sess := makeSession("result-sess", nil)
+	sess.SetRunning(handle)
+
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), newFakeSpawner())
+	sessMgr.Add(sess)
+
+	mgr.CreateChat("result-test", ChatConfig{Agent: "claude"})
+	rec, _ := mgr.GetChat("result-test")
+	rec.State = ChatStateRunning
+	rec.CurrentSession = "result-sess"
+	rec.SessionChain = []string{"result-sess"}
+	rec.PendingMessage = "queued follow-up"
+	mgr.registry.Save(rec)
+
+	// Start the watcher.
+	mgr.WatchSession("result-test", "result-sess")
+	time.Sleep(100 * time.Millisecond)
+
+	// Fire a result event (turn completed, session still alive).
+	sess.NotifyResult()
+
+	// Wait for PendingMessage to be cleared.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for PendingMessage to clear on result event")
+		default:
+		}
+		loaded, _ := mgr.GetChat("result-test")
+		if loaded.PendingMessage == "" {
+			// Session should still be running (not exited).
+			if loaded.State != ChatStateRunning {
+				t.Errorf("state = %q, want running (session still alive)", loaded.State)
+			}
+			if loaded.CurrentSession != "result-sess" {
+				t.Errorf("CurrentSession = %q, want result-sess", loaded.CurrentSession)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestWatchSession_PendingClearedAllowsNextMessage(t *testing.T) {
+	handle := newFakeSteerableHandle()
+	sess := makeSession("allow-sess", nil)
+	sess.SetRunning(handle)
+
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), newFakeSpawner())
+	sessMgr.Add(sess)
+
+	mgr.CreateChat("allow-test", ChatConfig{Agent: "claude"})
+	rec, _ := mgr.GetChat("allow-test")
+	rec.State = ChatStateRunning
+	rec.CurrentSession = "allow-sess"
+	rec.SessionChain = []string{"allow-sess"}
+	mgr.registry.Save(rec)
+
+	// First message injects stdin and sets PendingMessage.
+	_, err := mgr.SendMessage("allow-test", "first follow-up")
+	if err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	rec, _ = mgr.GetChat("allow-test")
+	if rec.PendingMessage != "first follow-up" {
+		t.Fatalf("PendingMessage = %q, want 'first follow-up'", rec.PendingMessage)
+	}
+
+	// Start watcher and fire result event.
+	mgr.WatchSession("allow-test", "allow-sess")
+	time.Sleep(100 * time.Millisecond)
+	sess.NotifyResult()
+
+	// Wait for PendingMessage to clear.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for PendingMessage to clear")
+		default:
+		}
+		loaded, _ := mgr.GetChat("allow-test")
+		if loaded.PendingMessage == "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Second message should succeed (not 429).
+	_, err = mgr.SendMessage("allow-test", "second follow-up")
+	if err != nil {
+		t.Fatalf("second SendMessage: %v (should not be ErrChatBusy)", err)
+	}
+}
+
 func TestDeleteChat_KillsRunningSession(t *testing.T) {
 	handle := newFakeHandle()
 	sess := makeSession("kill-sess", nil)

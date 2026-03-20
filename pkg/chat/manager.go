@@ -306,23 +306,58 @@ func (m *Manager) WatchSession(name, sessionID string) {
 	go m.watchSessionLoop(name, sessionID)
 }
 
-// watchSessionLoop polls session status and handles exit.
+// watchSessionLoop polls session status, clears PendingMessage on result events,
+// and handles session exit.
 func (m *Manager) watchSessionLoop(name, sessionID string) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		sess := m.sessions.Get(sessionID)
-		if sess == nil {
-			// Session removed from manager — treat as exited.
-			m.handleSessionExit(name, sessionID, nil)
-			return
+	sess := m.sessions.Get(sessionID)
+	if sess == nil {
+		m.handleSessionExit(name, sessionID, nil)
+		return
+	}
+	resultCh := sess.ResultCh()
+
+	for {
+		select {
+		case <-resultCh:
+			// Turn completed within a live session — clear PendingMessage.
+			m.clearPendingMessage(name, sessionID)
+		case <-ticker.C:
+			sess := m.sessions.Get(sessionID)
+			if sess == nil {
+				m.handleSessionExit(name, sessionID, nil)
+				return
+			}
+			snap := sess.Snapshot()
+			if isTerminalState(snap.State) {
+				m.handleSessionExit(name, sessionID, &snap)
+				return
+			}
 		}
-		snap := sess.Snapshot()
-		if isTerminalState(snap.State) {
-			m.handleSessionExit(name, sessionID, &snap)
-			return
-		}
+	}
+}
+
+// clearPendingMessage clears PendingMessage for the named chat if the session
+// still matches. Called when a result event fires mid-session (turn completed
+// but session still alive).
+func (m *Manager) clearPendingMessage(name, sessionID string) {
+	lock := m.chatLock(name)
+	lock.Lock()
+	defer lock.Unlock()
+
+	rec, err := m.registry.Load(name)
+	if err != nil || rec.CurrentSession != sessionID {
+		return
+	}
+	if rec.PendingMessage == "" {
+		return
+	}
+	rec.PendingMessage = ""
+	rec.UpdatedAt = time.Now()
+	if err := m.registry.Save(rec); err != nil {
+		log.Printf("[chat %s] watch: failed to clear pending message: %v", name, err)
 	}
 }
 

@@ -117,7 +117,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		}
 	}
 
-	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession)
+	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession, originalSession)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -502,7 +502,7 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 		}
 	}
 
-	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession)
+	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession, originalSession)
 	if err != nil {
 		return nil, fmt.Errorf("lookup resume session: %w", err)
 	}
@@ -630,11 +630,23 @@ func sessionLogURL(c *gin.Context, sessionID string) string {
 	return httpScheme(c) + "://" + c.Request.Host + "/sessions/" + url.PathEscape(sessionID) + "/logs"
 }
 
-func (s *Server) lookupResumeSessionID(agentName, sessionID string) (string, error) {
+func (s *Server) lookupResumeSessionID(agentName, sessionID string, original *session.Session) (string, error) {
 	if sessionID == "" {
 		return "", nil
 	}
 
+	// Prefer the claude_session_id tag captured from result events.
+	// This works for Docker where filesystem scanning can't reach the named volume.
+	if original != nil {
+		snap := original.Snapshot()
+		if snap.Tags != nil {
+			if claudeID, ok := snap.Tags["claude_session_id"]; ok && claudeID != "" {
+				return claudeID, nil
+			}
+		}
+	}
+
+	// Fall back to filesystem scanning (works for local runtime).
 	var (
 		args []string
 		err  error

@@ -1185,3 +1185,83 @@ func TestSessionState_TransitionsToCompleted(t *testing.T) {
 	}
 	t.Fatal("session never transitioned out of Running state")
 }
+
+// TestLookupResumeSessionID_PrefersTagOverFilesystem verifies that when
+// a completed session has claude_session_id in its tags, the resume lookup
+// uses that value instead of scanning the filesystem. This fixes Docker
+// resume where named volumes shadow host-side session directories (#5).
+func TestLookupResumeSessionID_PrefersTagOverFilesystem(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	// Create a completed session with claude_session_id tag.
+	sess := session.NewSessionWithID("orig-sess", "", "claude", "test")
+	sess.SetRunning(nil)
+	sess.SetTag("claude_session_id", "claude-uuid-from-tag")
+	sess.SetCompleted(0)
+	srv.sessions.Add(sess)
+
+	// Also set up a filesystem session with a different ID to prove tag wins.
+	agentsessions.InitClaudeSessionDir(srv.dataDir, "orig-sess", "/workspace", "")
+	sessionDir := filepath.Join(srv.dataDir, "claude-sessions", "orig-sess", "sessions")
+	writeJSONFile(t, filepath.Join(sessionDir, "1000.json"), map[string]any{
+		"pid": 1000, "sessionId": "claude-uuid-from-filesystem", "cwd": "/workspace", "startedAt": 100,
+	})
+
+	// lookupResumeSessionID should prefer the tag.
+	got, err := srv.lookupResumeSessionID("claude", "orig-sess", sess)
+	if err != nil {
+		t.Fatalf("lookupResumeSessionID: %v", err)
+	}
+	if got != "claude-uuid-from-tag" {
+		t.Fatalf("expected claude-uuid-from-tag, got %q (should prefer tag over filesystem)", got)
+	}
+}
+
+// TestLookupResumeSessionID_FallsBackToFilesystem verifies that when
+// no session tag exists, the lookup falls back to filesystem scanning.
+func TestLookupResumeSessionID_FallsBackToFilesystem(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	// Create a completed session WITHOUT claude_session_id tag.
+	sess := session.NewSessionWithID("no-tag-sess", "", "claude", "test")
+	sess.SetRunning(nil)
+	sess.SetCompleted(0)
+	srv.sessions.Add(sess)
+
+	// Set up filesystem session.
+	agentsessions.InitClaudeSessionDir(srv.dataDir, "no-tag-sess", "/workspace", "")
+	sessionDir := filepath.Join(srv.dataDir, "claude-sessions", "no-tag-sess", "sessions")
+	writeJSONFile(t, filepath.Join(sessionDir, "1000.json"), map[string]any{
+		"pid": 1000, "sessionId": "claude-uuid-from-filesystem", "cwd": "/workspace", "startedAt": 100,
+	})
+
+	got, err := srv.lookupResumeSessionID("claude", "no-tag-sess", sess)
+	if err != nil {
+		t.Fatalf("lookupResumeSessionID: %v", err)
+	}
+	if got != "claude-uuid-from-filesystem" {
+		t.Fatalf("expected claude-uuid-from-filesystem, got %q", got)
+	}
+}
+
+// TestLookupResumeSessionID_NilSession verifies graceful handling when
+// the original session is nil (not found in manager).
+func TestLookupResumeSessionID_NilSession(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	// Set up filesystem session.
+	agentsessions.InitClaudeSessionDir(srv.dataDir, "gone-sess", "/workspace", "")
+	sessionDir := filepath.Join(srv.dataDir, "claude-sessions", "gone-sess", "sessions")
+	writeJSONFile(t, filepath.Join(sessionDir, "1000.json"), map[string]any{
+		"pid": 1000, "sessionId": "claude-uuid-from-filesystem", "cwd": "/workspace", "startedAt": 100,
+	})
+
+	// nil original session — should fall back to filesystem.
+	got, err := srv.lookupResumeSessionID("claude", "gone-sess", nil)
+	if err != nil {
+		t.Fatalf("lookupResumeSessionID: %v", err)
+	}
+	if got != "claude-uuid-from-filesystem" {
+		t.Fatalf("expected claude-uuid-from-filesystem, got %q", got)
+	}
+}

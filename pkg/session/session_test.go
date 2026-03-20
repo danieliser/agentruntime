@@ -378,6 +378,51 @@ func TestSession_RecordMetrics_Concurrent(t *testing.T) {
 	}
 }
 
+// --- Result notification ---
+
+func TestSession_NotifyResult_SignalsChannel(t *testing.T) {
+	s := NewSession("", "claude", "local")
+
+	// Channel should be empty initially.
+	select {
+	case <-s.ResultCh():
+		t.Fatal("ResultCh should be empty before NotifyResult")
+	default:
+	}
+
+	s.NotifyResult()
+
+	// Channel should now have a signal.
+	select {
+	case <-s.ResultCh():
+		// expected
+	default:
+		t.Fatal("ResultCh should have a signal after NotifyResult")
+	}
+}
+
+func TestSession_NotifyResult_NonBlocking(t *testing.T) {
+	s := NewSession("", "claude", "local")
+
+	// Calling NotifyResult twice should not block (buffer=1, second is dropped).
+	s.NotifyResult()
+	s.NotifyResult() // should not block
+
+	// Drain the one signal.
+	select {
+	case <-s.ResultCh():
+	default:
+		t.Fatal("expected one signal")
+	}
+
+	// No more signals.
+	select {
+	case <-s.ResultCh():
+		t.Fatal("expected no second signal")
+	default:
+	}
+}
+
 // --- Timing ---
 
 func TestSession_EndedAt_SetOnCompletion(t *testing.T) {

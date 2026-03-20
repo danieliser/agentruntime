@@ -137,6 +137,8 @@ func parseAndTrackEvent(sess *session.Session, line []byte) {
 	case "tool_use":
 		sess.RecordToolCall()
 	case "result":
+		// Signal turn completion for watchers (e.g. chat manager PendingMessage).
+		sess.NotifyResult()
 		// Extract usage and cost from result event.
 		if data, ok := event["data"].(map[string]interface{}); ok {
 			var inputToks, outputToks int
