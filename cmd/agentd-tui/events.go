@@ -73,6 +73,7 @@ func pumpEvents(conn *websocket.Conn, p *tea.Program) {
 			if err != nil {
 				data = []byte(frame.Data)
 			}
+			var replayBuf strings.Builder
 			// Parse NDJSON lines.
 			for _, line := range strings.Split(string(data), "\n") {
 				line = strings.TrimSpace(line)
@@ -90,18 +91,44 @@ func pumpEvents(conn *websocket.Conn, p *tea.Program) {
 						continue
 					}
 				}
-				// Skip delta chunks during replay — only show final complete messages.
-				if isReplay && ev.Type == "agent_message" {
-					if isDelta, _ := ev.Data["delta"].(bool); isDelta {
-						continue
-					}
-				}
 				// Skip result events (turn-end noise in interactive mode).
 				if ev.Type == "result" {
 					continue
 				}
+
+				// During replay, coalesce delta chunks into one message
+				// instead of sending each individually (avoids 100s of Glamour renders).
+				if isReplay && ev.Type == "agent_message" {
+					if isDelta, _ := ev.Data["delta"].(bool); isDelta {
+						text, _ := ev.Data["text"].(string)
+						replayBuf.WriteString(text)
+						continue
+					}
+				}
+				// Flush any accumulated replay deltas before a non-delta event.
+				if isReplay && replayBuf.Len() > 0 {
+					p.Send(agentEventMsg{
+						event: agentEvent{
+							Type: "agent_message",
+							Data: map[string]interface{}{"text": replayBuf.String()},
+						},
+						replay: true,
+					})
+					replayBuf.Reset()
+				}
+
 				debugLog.Printf("event: type=%s replay=%v", ev.Type, isReplay)
 				p.Send(agentEventMsg{event: ev, replay: isReplay})
+			}
+			// Flush any remaining coalesced replay deltas.
+			if replayBuf.Len() > 0 {
+				p.Send(agentEventMsg{
+					event: agentEvent{
+						Type: "agent_message",
+						Data: map[string]interface{}{"text": replayBuf.String()},
+					},
+					replay: true,
+				})
 			}
 
 		case "exit":
