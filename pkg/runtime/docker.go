@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -333,9 +334,10 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	// Pass prompt via env so the sidecar knows this is fire-and-forget mode.
 	// Without this, the sidecar defaults to interactive (no -p flag) and
 	// Claude Code stays alive after emitting its result.
+	// Base64-encoded: Docker rejects env vars containing newlines.
 	interactive := cfg.Request != nil && cfg.Request.Interactive
 	if prompt := dockerPrompt(cfg); prompt != "" && !interactive {
-		envValues["AGENT_PROMPT"] = prompt
+		envValues["AGENT_PROMPT"] = base64.StdEncoding.EncodeToString([]byte(prompt))
 	}
 
 	envFile, err := writeDockerEnvFile(envValues)

@@ -2,6 +2,57 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.6.0] — 2026-03-20
+
+### Terminal UI (agentd-tui)
+- **Bubble Tea TUI client**: `agentd-tui` — full terminal client with glamour markdown rendering, debounced re-renders, and scroll-follow mode.
+- **Session history**: Loads prior chat history from the logs API on connect.
+- **Auto-reconnect**: Reconnects to dead sessions automatically on next message.
+- **--create flag**: Creates a new chat session if none exists.
+- **Session context**: TUI sessions resume with prior Claude session ID for continuity.
+- **Event filtering**: Suppresses result/exit noise; shows `You:` prefix on user turns.
+- Marked experimental; known gaps documented.
+
+### Named Persistent Chats
+- **Chat API**: Full REST API for named chat sessions — create, attach, delete, config PATCH.
+- **CLI commands**: `agentd chat` subcommands including `attach` for interactive TUI.
+- **Daemon wiring**: Chat registry and manager integrated into agentd lifecycle (Phases 1–7).
+- **Session respawn**: Automatic respawn on disconnect; WatchSession starts on initial spawn.
+- **Config deep-merge**: PATCH config deep-merges rather than replacing.
+- **Claude resume**: Session ID wired across chat respawns for conversation continuity.
+
+### Dashboard Embedded
+- **go:embed**: Dashboard assets embedded directly into the agentd binary — no external file dependency.
+- **Session history tab**: Log-based backend serving session history in the dashboard.
+- **Active tab fix**: Filters out completed/failed sessions from the Active view.
+
+### Cost Estimation
+- **Token-based cost**: Cost estimation from token counts on result events.
+- **cost_usd capture**: `cost_usd` captured from Claude's native event output when present.
+
+### Config Auto-Discovery
+- **Claude Code & Codex cascade**: Full replication of Claude Code and Codex CLI config discovery rules — project root walk, home dir, XDG, env overrides.
+
+### Install & Service Management
+- **Install scripts**: `install.sh` / `uninstall.sh` with launchd (macOS) and systemd (Linux) service wiring.
+- **PATH setup**: Expands `~` in launchd plist, adds `~/.local/bin` to PATH.
+- **Reinstall**: `rm` before `cp` to avoid macOS cached-binary kills; includes agentd-tui.
+
+### Interactive Session Fixes
+- **Stdin routing**: Route stdin through `SendPrompt` for interactive sidecar sessions.
+- **Result grace disabled**: Interactive sessions no longer hit the result grace-period kill.
+- **PendingMessage guard**: Marks pending on stdin injection to prevent concurrent floods.
+- **NDJSON in stdout**: Handle raw NDJSON in stdout frames, not just base64.
+
+### Bug Fixes
+- **AGENT_PROMPT newlines** (Docker): Base64-encode prompt in env var; sidecar decodes. Fixes Docker rejecting prompts containing newlines.
+- **Replay coalescing**: Coalesce replay deltas instead of skipping; filter heartbeat/hook noise.
+- **Delta skip during replay**: Skip delta chunks during replay and suppress duplicate result events.
+- **Arrow keys / mouse scroll**: TUI viewport now accepts arrow keys and mouse scroll.
+- **Codex bubblewrap**: Disable Codex bubblewrap sandbox inside Docker containers.
+- **Data race in attach tests**: Pass stdin explicitly instead of swapping global.
+- **PyPI workflow**: `skip-existing` to handle retagged releases.
+
 ## [0.5.0] — 2026-03-19
 
 ### Stall Detection

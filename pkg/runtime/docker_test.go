@@ -313,10 +313,10 @@ func TestDockerSpawn_V2_AgentCmdIsBinaryOnly(t *testing.T) {
 	if !strings.Contains(string(data), "AGENT_CMD=[\"claude\"]\n") {
 		t.Fatalf("expected binary-only AGENT_CMD, got %q", string(data))
 	}
-	// Prompt should be in AGENT_PROMPT for sidecar fire-and-forget mode,
-	// NOT embedded in AGENT_CMD args.
-	if !strings.Contains(string(data), "AGENT_PROMPT=fix the bug\n") {
-		t.Fatalf("expected AGENT_PROMPT in env file, got %q", string(data))
+	// Prompt should be in AGENT_PROMPT as base64 for sidecar fire-and-forget mode,
+	// NOT embedded in AGENT_CMD args. Base64("fix the bug") = "Zml4IHRoZSBidWc="
+	if !strings.Contains(string(data), "AGENT_PROMPT=Zml4IHRoZSBidWc=\n") {
+		t.Fatalf("expected base64-encoded AGENT_PROMPT in env file, got %q", string(data))
 	}
 }
 

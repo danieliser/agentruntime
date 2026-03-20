@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,9 +73,10 @@ func (r *LocalSidecarRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (Proce
 		fmt.Sprintf("AGENT_CMD=%s", agentCmd),
 		fmt.Sprintf("SIDECAR_PORT=%d", port),
 	)
-	// Pass prompt for fire-and-forget mode
+	// Pass prompt for fire-and-forget mode.
+	// Base64-encoded to match Docker runtime encoding (and sidecar decodes both).
 	if cfg.Prompt != "" {
-		sidecar.Env = append(sidecar.Env, fmt.Sprintf("AGENT_PROMPT=%s", cfg.Prompt))
+		sidecar.Env = append(sidecar.Env, fmt.Sprintf("AGENT_PROMPT=%s", base64.StdEncoding.EncodeToString([]byte(cfg.Prompt))))
 	}
 	// Pass agent config (model, resume_session, env, etc.) to sidecar
 	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {

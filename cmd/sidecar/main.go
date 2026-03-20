@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -286,7 +287,8 @@ func interruptServer(server sidecarServer) error {
 func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, error) {
 	// AGENT_PROMPT triggers fire-and-forget (-p) mode.
 	// If empty, the sidecar runs in interactive mode (default).
-	prompt := os.Getenv("AGENT_PROMPT")
+	// Value is base64-encoded to survive Docker env var restrictions (no newlines).
+	prompt := decodePromptEnv(os.Getenv("AGENT_PROMPT"))
 
 	switch agentType {
 	case "claude":
@@ -319,6 +321,21 @@ func stallConfigFromAgentConfig(cfg AgentConfig) StallConfig {
 		KillTimeout:    durationFromSeconds(cfg.StallKillTimeout, 3000),
 		ResultGrace:    durationFromSeconds(cfg.ResultGracePeriod, 10),
 	}
+}
+
+// decodePromptEnv decodes a base64-encoded AGENT_PROMPT value.
+// Prompts are base64-encoded by the runtime to survive Docker's no-newlines
+// restriction on env var values. Returns empty string on empty input.
+func decodePromptEnv(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		// Fallback: treat as plain text (supports old binaries / manual testing).
+		return raw
+	}
+	return string(decoded)
 }
 
 // durationFromSeconds converts integer seconds to time.Duration.
