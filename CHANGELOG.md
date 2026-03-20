@@ -2,6 +2,22 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.6.5] — 2026-03-20
+
+### Bug Fixes
+- **Chat resume not wired** (#8): `lookupResumeSessionID` dropped pre-resolved Claude session
+  IDs from the chat manager because no agentruntime session matched and the Docker volume
+  filesystem scan returned empty. Now passes the raw ID through as a fallback — the chat
+  manager already resolved it to the correct Claude session ID.
+
+## [0.6.4] — 2026-03-20
+
+### Bug Fixes
+- **Docker batch chats stuck "running" permanently** (#7): `watchSessionLoop` only transitioned
+  chats to idle on process exit, but chat sessions spawn interactive (process never exits between
+  turns). Now transitions to idle on result events (turn completion). The old interactive session
+  is killed after transitioning. The ticker remains as a safety net for crashes.
+
 ## [0.6.3] — 2026-03-20
 
 ### Bug Fixes
