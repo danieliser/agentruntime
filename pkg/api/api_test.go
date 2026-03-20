@@ -1265,3 +1265,21 @@ func TestLookupResumeSessionID_NilSession(t *testing.T) {
 		t.Fatalf("expected claude-uuid-from-filesystem, got %q", got)
 	}
 }
+
+// TestLookupResumeSessionID_Passthrough verifies that a pre-resolved Claude
+// session ID is passed through when no agentruntime session or filesystem
+// match exists. This is the path used by the chat manager which stores
+// Claude session IDs in the ChatRecord and passes them directly.
+func TestLookupResumeSessionID_Passthrough(t *testing.T) {
+	_, srv := newTestServer(t)
+
+	// No session in registry, no filesystem data — the ID should pass through.
+	claudeID := "4e8f8c99-9191-4971-a972-cee11464ab41"
+	got, err := srv.lookupResumeSessionID("claude", claudeID, nil)
+	if err != nil {
+		t.Fatalf("lookupResumeSessionID: %v", err)
+	}
+	if got != claudeID {
+		t.Fatalf("expected passthrough %q, got %q", claudeID, got)
+	}
+}

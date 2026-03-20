@@ -664,7 +664,19 @@ func (s *Server) lookupResumeSessionID(agentName, sessionID string, original *se
 		return "", err
 	}
 
-	return resumeSessionIDFromArgs(args)
+	resolved, err := resumeSessionIDFromArgs(args)
+	if err != nil {
+		return "", err
+	}
+
+	// If no session was found in the registry and the filesystem scan returned
+	// nothing, the caller may have passed a pre-resolved Claude session ID
+	// directly (e.g., from the chat manager's ClaudeSessionIDs map). Pass it
+	// through — Claude will use it for --session-id, or ignore it if invalid.
+	if resolved == "" && original == nil {
+		return sessionID, nil
+	}
+	return resolved, nil
 }
 
 func resumeSessionIDFromArgs(args []string) (string, error) {
