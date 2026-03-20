@@ -513,9 +513,9 @@ func TestWatchSession_StaleWatcherIgnored(t *testing.T) {
 	}
 }
 
-func TestWatchSession_PendingClearedOnResultEvent(t *testing.T) {
+func TestWatchSession_ResultEventTransitionsToIdle(t *testing.T) {
 	handle := newFakeSteerableHandle()
-	sess := makeSession("result-sess", nil)
+	sess := makeSession("result-sess", map[string]string{"claude_session_id": "claude-res"})
 	sess.SetRunning(handle)
 
 	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), newFakeSpawner())
@@ -526,32 +526,31 @@ func TestWatchSession_PendingClearedOnResultEvent(t *testing.T) {
 	rec.State = ChatStateRunning
 	rec.CurrentSession = "result-sess"
 	rec.SessionChain = []string{"result-sess"}
-	rec.PendingMessage = "queued follow-up"
 	mgr.registry.Save(rec)
 
 	// Start the watcher.
 	mgr.WatchSession("result-test", "result-sess")
 	time.Sleep(100 * time.Millisecond)
 
-	// Fire a result event (turn completed, session still alive).
+	// Fire a result event (turn completed).
 	sess.NotifyResult()
 
-	// Wait for PendingMessage to be cleared.
+	// Wait for idle transition.
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			t.Fatal("timeout waiting for PendingMessage to clear on result event")
+			t.Fatal("timeout waiting for idle transition on result event")
 		default:
 		}
 		loaded, _ := mgr.GetChat("result-test")
-		if loaded.PendingMessage == "" {
-			// Session should still be running (not exited).
-			if loaded.State != ChatStateRunning {
-				t.Errorf("state = %q, want running (session still alive)", loaded.State)
+		if loaded.State == ChatStateIdle {
+			if loaded.CurrentSession != "" {
+				t.Errorf("CurrentSession = %q, want empty", loaded.CurrentSession)
 			}
-			if loaded.CurrentSession != "result-sess" {
-				t.Errorf("CurrentSession = %q, want result-sess", loaded.CurrentSession)
+			// Verify Claude session ID was captured.
+			if loaded.ClaudeSessionIDs == nil || loaded.ClaudeSessionIDs["result-sess"] != "claude-res" {
+				t.Errorf("ClaudeSessionIDs = %v, want result-sess→claude-res", loaded.ClaudeSessionIDs)
 			}
 			return
 		}
@@ -559,13 +558,18 @@ func TestWatchSession_PendingClearedOnResultEvent(t *testing.T) {
 	}
 }
 
-func TestWatchSession_PendingClearedAllowsNextMessage(t *testing.T) {
+func TestWatchSession_ResultWithPending_RespawnsAndAcceptsNext(t *testing.T) {
+	// When a result event fires with a PendingMessage set, the watcher
+	// should consume it by spawning a fresh session (not re-injecting stdin).
 	handle := newFakeSteerableHandle()
-	sess := makeSession("allow-sess", nil)
-	sess.SetRunning(handle)
+	sess1 := makeSession("allow-sess", nil)
+	sess1.SetRunning(handle)
+	sess2 := makeSession("respawn-sess", nil)
 
-	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), newFakeSpawner())
-	sessMgr.Add(sess)
+	spawner := newFakeSpawner(sess2)
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
+	sessMgr.Add(sess1)
+	sessMgr.Add(sess2)
 
 	mgr.CreateChat("allow-test", ChatConfig{Agent: "claude"})
 	rec, _ := mgr.GetChat("allow-test")
@@ -574,7 +578,7 @@ func TestWatchSession_PendingClearedAllowsNextMessage(t *testing.T) {
 	rec.SessionChain = []string{"allow-sess"}
 	mgr.registry.Save(rec)
 
-	// First message injects stdin and sets PendingMessage.
+	// Inject a follow-up via stdin — sets PendingMessage.
 	_, err := mgr.SendMessage("allow-test", "first follow-up")
 	if err != nil {
 		t.Fatalf("first SendMessage: %v", err)
@@ -587,29 +591,107 @@ func TestWatchSession_PendingClearedAllowsNextMessage(t *testing.T) {
 	// Start watcher and fire result event.
 	mgr.WatchSession("allow-test", "allow-sess")
 	time.Sleep(100 * time.Millisecond)
-	sess.NotifyResult()
+	sess1.NotifyResult()
 
-	// Wait for PendingMessage to clear.
+	// Wait for respawn with the pending message.
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			t.Fatal("timeout waiting for PendingMessage to clear")
+			t.Fatal("timeout waiting for respawn after result event")
 		default:
 		}
 		loaded, _ := mgr.GetChat("allow-test")
-		if loaded.PendingMessage == "" {
+		if loaded.CurrentSession == "respawn-sess" && loaded.PendingMessage == "" {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Second message should succeed (not 429).
-	_, err = mgr.SendMessage("allow-test", "second follow-up")
-	if err != nil {
-		t.Fatalf("second SendMessage: %v (should not be ErrChatBusy)", err)
+	// Verify spawn was called with the pending message.
+	req := spawner.lastRequest()
+	if req.Prompt != "first follow-up" {
+		t.Errorf("prompt = %q, want 'first follow-up'", req.Prompt)
 	}
 }
+
+func TestMultiMessageCycle_IdleBetweenTurns(t *testing.T) {
+	// Full cycle: message 1 → result → idle → message 2 → result → idle → message 3.
+	// This is the primary Docker batch chat pattern.
+	sess1 := makeSession("sess-1", map[string]string{"claude_session_id": "claude-1"})
+	sess1.SetRunning(newFakeSteerableHandle())
+	sess2 := makeSession("sess-2", map[string]string{"claude_session_id": "claude-2"})
+	sess2.SetRunning(newFakeSteerableHandle())
+	sess3 := makeSession("sess-3", nil)
+	sess3.SetRunning(newFakeSteerableHandle())
+
+	spawner := newFakeSpawner(sess1, sess2, sess3)
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
+	sessMgr.Add(sess1)
+	sessMgr.Add(sess2)
+	sessMgr.Add(sess3)
+
+	mgr.CreateChat("cycle", ChatConfig{Agent: "claude", Runtime: "docker"})
+
+	// --- Message 1 ---
+	res, err := mgr.SendMessage("cycle", "Hi")
+	if err != nil {
+		t.Fatalf("msg1: %v", err)
+	}
+	if res.SessionID != "sess-1" || !res.Spawned {
+		t.Fatalf("msg1: unexpected result %+v", res)
+	}
+
+	// Let the watcher goroutine start before firing the result event.
+	time.Sleep(100 * time.Millisecond)
+	sess1.NotifyResult()
+	waitForState(t, mgr, "cycle", ChatStateIdle, 5*time.Second)
+
+	// Verify resume is wired.
+	rec, _ := mgr.GetChat("cycle")
+	if rec.ClaudeSessionIDs["sess-1"] != "claude-1" {
+		t.Errorf("msg1: ClaudeSessionIDs = %v", rec.ClaudeSessionIDs)
+	}
+
+	// --- Message 2 ---
+	res, err = mgr.SendMessage("cycle", "Bye")
+	if err != nil {
+		t.Fatalf("msg2: %v", err)
+	}
+	if res.SessionID != "sess-2" || !res.Spawned {
+		t.Fatalf("msg2: unexpected result %+v", res)
+	}
+
+	// Verify resume was passed.
+	req2 := spawner.calls[1]
+	if req2.ResumeSession != "claude-1" {
+		t.Errorf("msg2: ResumeSession = %q, want claude-1", req2.ResumeSession)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	sess2.NotifyResult()
+	waitForState(t, mgr, "cycle", ChatStateIdle, 5*time.Second)
+
+	// --- Message 3 ---
+	res, err = mgr.SendMessage("cycle", "Again")
+	if err != nil {
+		t.Fatalf("msg3: %v", err)
+	}
+	if res.SessionID != "sess-3" || !res.Spawned {
+		t.Fatalf("msg3: unexpected result %+v", res)
+	}
+
+	req3 := spawner.calls[2]
+	if req3.ResumeSession != "claude-2" {
+		t.Errorf("msg3: ResumeSession = %q, want claude-2", req3.ResumeSession)
+	}
+
+	// 3 sessions spawned, no 429 errors.
+	if spawner.callCount() != 3 {
+		t.Errorf("spawn count = %d, want 3", spawner.callCount())
+	}
+}
+
 
 func TestDeleteChat_KillsRunningSession(t *testing.T) {
 	handle := newFakeHandle()

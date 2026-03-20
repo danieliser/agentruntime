@@ -308,8 +308,15 @@ func (m *Manager) WatchSession(name, sessionID string) {
 	go m.watchSessionLoop(name, sessionID)
 }
 
-// watchSessionLoop polls session status, clears PendingMessage on result events,
-// and handles session exit.
+// watchSessionLoop watches for turn completion (result events) and process
+// exit, transitioning the chat to idle or consuming pending messages.
+//
+// On result event: the agent finished a turn. Transition to idle (or respawn
+// with pending message) and kill the now-idle session. This is the primary
+// path for Docker batch sessions where the process stays alive between turns.
+//
+// On ticker: safety net for cases where the process exits without a result
+// event (crash, timeout, abnormal disconnect).
 func (m *Manager) watchSessionLoop(name, sessionID string) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -321,15 +328,14 @@ func (m *Manager) watchSessionLoop(name, sessionID string) {
 	}
 
 	for {
-		// Refresh the result channel each iteration — NotifyResult closes the
-		// current channel and replaces it, so we must re-fetch to watch the
-		// latest one.
 		resultCh := sess.ResultCh()
 
 		select {
 		case <-resultCh:
-			// Turn completed within a live session — clear PendingMessage.
-			m.clearPendingMessage(name, sessionID)
+			// Turn completed — transition to idle or consume pending.
+			snap := sess.Snapshot()
+			m.handleSessionExit(name, sessionID, &snap)
+			return
 		case <-ticker.C:
 			sess = m.sessions.Get(sessionID)
 			if sess == nil {
@@ -352,29 +358,7 @@ func (m *Manager) watchSessionLoop(name, sessionID string) {
 	}
 }
 
-// clearPendingMessage clears PendingMessage for the named chat if the session
-// still matches. Called when a result event fires mid-session (turn completed
-// but session still alive).
-func (m *Manager) clearPendingMessage(name, sessionID string) {
-	lock := m.chatLock(name)
-	lock.Lock()
-	defer lock.Unlock()
-
-	rec, err := m.registry.Load(name)
-	if err != nil || rec.CurrentSession != sessionID {
-		return
-	}
-	if rec.PendingMessage == "" {
-		return
-	}
-	rec.PendingMessage = ""
-	rec.UpdatedAt = time.Now()
-	if err := m.registry.Save(rec); err != nil {
-		log.Printf("[chat %s] watch: failed to clear pending message: %v", name, err)
-	}
-}
-
-// handleSessionExit processes a session exit for the named chat.
+// handleSessionExit processes a session exit or turn completion for the named chat.
 func (m *Manager) handleSessionExit(name, sessionID string, snap *session.Session) {
 	lock := m.chatLock(name)
 	lock.Lock()
@@ -413,6 +397,9 @@ func (m *Manager) handleSessionExit(name, sessionID string, snap *session.Sessio
 			return
 		}
 
+		// Kill the old session — it may still be alive (interactive mode).
+		m.killSession(sessionID)
+
 		newID, err := m.spawnSession(rec, pending)
 		if err != nil {
 			log.Printf("[chat %s] watch: failed to respawn with pending: %v", name, err)
@@ -438,13 +425,14 @@ func (m *Manager) handleSessionExit(name, sessionID string, snap *session.Sessio
 		return
 	}
 
-	// No pending — transition to idle.
+	// No pending — transition to idle and kill the old session.
 	rec.State = ChatStateIdle
 	rec.CurrentSession = ""
 	rec.UpdatedAt = now
 	if err := m.registry.Save(rec); err != nil {
 		log.Printf("[chat %s] watch: failed to save idle transition: %v", name, err)
 	}
+	m.killSession(sessionID)
 }
 
 // spawnSession builds a SessionRequest from the chat record and spawns it.
