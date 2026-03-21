@@ -325,8 +325,13 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 			}
 		}
 
-		// Create named volume for session persistence if requested
-		if req.PersistSession {
+		// Create named volume for session persistence if requested.
+		// Skip if a volume mount already targets the same container path
+		// (e.g., the chat manager's per-chat volume). Adding a second
+		// volume at the same path would shadow the first, breaking resume
+		// because the JSONL from the previous session lives on the chat
+		// volume while the new session reads from the per-session volume.
+		if req.PersistSession && !hasVolumeMountAt(mounts, "/home/agent/.claude/projects") {
 			var err error
 			// Use provided volume name (for resume) or create a new one
 			if cfg.VolumeName != "" {
@@ -507,6 +512,18 @@ func ensureHostMountSource(hostPath string) {
 		// Directory mount.
 		_ = os.MkdirAll(hostPath, 0o755)
 	}
+}
+
+// hasVolumeMountAt checks whether any existing mount targets the given
+// container path with type "volume". Used to avoid shadow-mounting a
+// per-session volume over a caller-supplied chat volume at the same path.
+func hasVolumeMountAt(mounts []apischema.Mount, containerPath string) bool {
+	for _, m := range mounts {
+		if m.Type == "volume" && m.Container == containerPath {
+			return true
+		}
+	}
+	return false
 }
 
 func formatDockerMount(mount apischema.Mount) string {

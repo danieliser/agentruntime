@@ -913,3 +913,51 @@ exit 99
 		t.Fatalf("should not fail for bind-only mounts: %v", err)
 	}
 }
+
+// TestDockerPrepareRun_NoDuplicateVolumeMount verifies that when the request
+// already has a volume mount at /home/agent/.claude/projects (e.g., from the
+// chat manager), PersistSession does NOT add a second one that would shadow it.
+func TestDockerPrepareRun_NoDuplicateVolumeMount(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then
+  exit 0
+fi
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "agentruntime-agent:latest"})
+	workDir := t.TempDir()
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:       []string{"claude"},
+		SessionID: "no-dup-vol",
+		Request: &apischema.SessionRequest{
+			WorkDir:        workDir,
+			PersistSession: true,
+			Claude:         &apischema.ClaudeConfig{},
+			Mounts: []apischema.Mount{
+				{Host: "agentruntime-chat-mybot", Container: "/home/agent/.claude/projects", Mode: "rw", Type: "volume"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	// Count how many -v flags target /home/agent/.claude/projects
+	count := 0
+	for i, arg := range spec.args {
+		if arg == "-v" && i+1 < len(spec.args) && strings.Contains(spec.args[i+1], "/home/agent/.claude/projects") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 volume mount at /home/agent/.claude/projects, got %d", count)
+	}
+
+	// The surviving mount should be the chat volume, not a per-session one
+	if !hasFlagValue(spec.args, "-v", "agentruntime-chat-mybot:/home/agent/.claude/projects:rw") {
+		t.Fatalf("expected chat volume mount to survive, got: %v", spec.args)
+	}
+}
