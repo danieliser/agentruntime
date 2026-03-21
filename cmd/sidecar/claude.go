@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,6 +219,13 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			} else {
 				args = append(args, "--session-id", b.sessionID)
 			}
+		}
+
+		// Load MCP servers from materialized .mcp.json if it exists.
+		// --ide mode doesn't auto-discover .mcp.json, so we pass it explicitly.
+		mcpConfigPath := filepath.Join(os.Getenv("HOME"), ".claude", ".mcp.json")
+		if _, err := os.Stat(mcpConfigPath); err == nil {
+			args = append(args, "--mcp-config", mcpConfigPath)
 		}
 
 		// Append AGENT_CONFIG passthrough flags (apply to both modes).

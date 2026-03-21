@@ -98,9 +98,13 @@ func TestMaterialize_ClaudeWritesMcpJSON_MergesServers(t *testing.T) {
 	if servers["replace"].(map[string]any)["url"] != "http://new" {
 		t.Fatalf("expected replacement server URL http://new, got %v", servers["replace"].(map[string]any)["url"])
 	}
-	addedCmd := servers["added"].(map[string]any)["cmd"].([]any)
-	if len(addedCmd) != 2 || addedCmd[0] != "mcp-added" || addedCmd[1] != "--serve" {
-		t.Fatalf("unexpected added cmd: %#v", addedCmd)
+	addedServer := servers["added"].(map[string]any)
+	if addedServer["command"] != "mcp-added" {
+		t.Fatalf("expected command 'mcp-added', got %v", addedServer["command"])
+	}
+	addedArgs := addedServer["args"].([]any)
+	if len(addedArgs) != 1 || addedArgs[0] != "--serve" {
+		t.Fatalf("unexpected added args: %#v", addedArgs)
 	}
 }
 

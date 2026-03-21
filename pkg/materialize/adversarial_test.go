@@ -154,9 +154,10 @@ func TestMaterialize_MCPServerCmdDoesNotResolveHostGateway(t *testing.T) {
 	defer result.CleanupFn()
 
 	servers := readMCPServers(t, result)
-	cmd := servers["stdio"].(map[string]any)["cmd"].([]any)
-	if got := cmd[1].(string); got != "${HOST_GATEWAY}" {
-		t.Fatalf("expected cmd placeholder to remain literal, got %q", got)
+	stdioServer := servers["stdio"].(map[string]any)
+	args := stdioServer["args"].([]any)
+	if got := args[0].(string); got != "${HOST_GATEWAY}" {
+		t.Fatalf("expected args placeholder to remain literal, got %q", got)
 	}
 }
 
