@@ -38,9 +38,11 @@ type ChatConfig struct {
 	AutoDiscover interface{}        `json:"auto_discover,omitempty"`
 	WorkDir      string             `json:"work_dir,omitempty"`
 	Mounts       []schema.Mount     `json:"mounts,omitempty"`
-	Env          map[string]string  `json:"env,omitempty"`
-	IdleTimeout  string             `json:"idle_timeout,omitempty"`
-	MaxTurns     int                `json:"max_turns,omitempty"`
+	Env          map[string]string   `json:"env,omitempty"`
+	IdleTimeout  string              `json:"idle_timeout,omitempty"`
+	MaxTurns     int                 `json:"max_turns,omitempty"`
+	Claude       *schema.ClaudeConfig `json:"claude,omitempty"`
+	Codex        *schema.CodexConfig  `json:"codex,omitempty"`
 }
 
 // EffectiveIdleTimeout parses IdleTimeout and returns the duration.

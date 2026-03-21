@@ -232,6 +232,8 @@ type ChatAPIConfig struct {
 	Env          map[string]string `json:"env,omitempty"`
 	IdleTimeout  string            `json:"idle_timeout,omitempty"`
 	MaxTurns     int               `json:"max_turns,omitempty"`
+	Claude       *ClaudeConfig     `json:"claude,omitempty"`
+	Codex        *CodexConfig      `json:"codex,omitempty"`
 }
 
 // ChatResponse is returned by GET /chats/:name and POST /chats.

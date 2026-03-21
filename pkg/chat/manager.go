@@ -464,10 +464,22 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 		req.PersistSession = true
 	}
 
-	// Set MaxTurns via Claude config if specified.
+	// Forward agent-specific config from the chat record.
+	if rec.Config.Claude != nil {
+		clone := *rec.Config.Claude
+		req.Claude = &clone
+	}
+	if rec.Config.Codex != nil {
+		clone := *rec.Config.Codex
+		req.Codex = &clone
+	}
+	// Merge MaxTurns into Claude config (backward compat with top-level field).
 	if rec.Config.MaxTurns > 0 && rec.Config.Agent == "claude" {
-		req.Claude = &apischema.ClaudeConfig{
-			MaxTurns: rec.Config.MaxTurns,
+		if req.Claude == nil {
+			req.Claude = &apischema.ClaudeConfig{}
+		}
+		if req.Claude.MaxTurns == 0 {
+			req.Claude.MaxTurns = rec.Config.MaxTurns
 		}
 	}
 

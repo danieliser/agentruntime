@@ -29,6 +29,8 @@ func chatConfigFromAPI(c apischema.ChatAPIConfig) chat.ChatConfig {
 		Env:          c.Env,
 		IdleTimeout:  c.IdleTimeout,
 		MaxTurns:     c.MaxTurns,
+		Claude:       c.Claude,
+		Codex:        c.Codex,
 	}
 }
 
@@ -46,6 +48,8 @@ func chatConfigToAPI(c chat.ChatConfig) apischema.ChatAPIConfig {
 		Env:          c.Env,
 		IdleTimeout:  c.IdleTimeout,
 		MaxTurns:     c.MaxTurns,
+		Claude:       c.Claude,
+		Codex:        c.Codex,
 	}
 }
 

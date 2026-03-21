@@ -764,6 +764,53 @@ func TestCreateChat_MountsPropagated(t *testing.T) {
 	}
 }
 
+// TestCreateChat_ClaudeConfigPropagated verifies that Claude config (including
+// claude_md) is stored in the chat record and forwarded to SpawnSession.
+func TestCreateChat_ClaudeConfigPropagated(t *testing.T) {
+	ts, _, chatMgr, sp := newChatTestServer(t)
+
+	claudeMD := "You are a helpful assistant. Use /workspace/persist for memory."
+	resp := postJSON(t, ts, "/chats", apischema.CreateChatRequest{
+		Name: "claude-config-chat",
+		Config: apischema.ChatAPIConfig{
+			Agent: "echo-test",
+			Claude: &apischema.ClaudeConfig{
+				ClaudeMD: claudeMD,
+				MaxTurns: 5,
+			},
+		},
+	})
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	// Verify Claude config is stored.
+	var chatResp apischema.ChatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if chatResp.Config.Claude == nil || chatResp.Config.Claude.ClaudeMD != claudeMD {
+		t.Fatalf("expected claude_md in response, got %+v", chatResp.Config.Claude)
+	}
+
+	// Send message — Claude config should be forwarded to spawner.
+	_, err := chatMgr.SendMessage("claude-config-chat", "hello")
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+
+	if sp.lastReq.Claude == nil {
+		t.Fatal("expected Claude config to be forwarded to SpawnSession")
+	}
+	if sp.lastReq.Claude.ClaudeMD != claudeMD {
+		t.Fatalf("expected claude_md %q, got %q", claudeMD, sp.lastReq.Claude.ClaudeMD)
+	}
+	if sp.lastReq.Claude.MaxTurns != 5 {
+		t.Fatalf("expected max_turns 5, got %d", sp.lastReq.Claude.MaxTurns)
+	}
+}
+
 func TestChatLifecycle_CreateSendGetDelete(t *testing.T) {
 	ts, _, _, _ := newChatTestServer(t)
 
