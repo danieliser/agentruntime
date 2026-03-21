@@ -86,12 +86,9 @@ func TestClaudeAgent_BuildCmd_WithSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Must include resume flags when a session is provided.
-	if !containsSequence(cmd, "--session-id", "abc-123") {
-		t.Fatalf("expected --session-id in cmd, got %v", cmd)
-	}
-	if !contains(cmd, "--resume") {
-		t.Fatalf("expected --resume in cmd, got %v", cmd)
+	// Must include --resume {id} when a session is provided.
+	if !containsSequence(cmd, "--resume", "abc-123") {
+		t.Fatalf("expected --resume abc-123 in cmd, got %v", cmd)
 	}
 }
 

@@ -10,11 +10,8 @@ func TestClaudeBuildCmd_WithResumeSession(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !contains(cmd, "--resume") {
-		t.Fatalf("expected --resume flag in cmd, got %v", cmd)
-	}
-	if !containsSequence(cmd, "--session-id", "claude-session-123") {
-		t.Fatalf("expected --session-id claude-session-123 in cmd, got %v", cmd)
+	if !containsSequence(cmd, "--resume", "claude-session-123") {
+		t.Fatalf("expected --resume claude-session-123 in cmd, got %v", cmd)
 	}
 }
 

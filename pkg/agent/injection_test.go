@@ -87,9 +87,9 @@ func TestBuildCmd_SessionIDPathTraversal_AllAgents(t *testing.T) {
 			}
 
 			if tc.supportsSessionID {
-				// Claude uses --session-id, Codex uses --session.
-				if contains(cmd, "--session-id") {
-					assertFlagValue(t, cmd, "--session-id", sessionID)
+				// Claude uses --resume {id}, Codex uses --session {id}.
+				if contains(cmd, "--resume") {
+					assertFlagValue(t, cmd, "--resume", sessionID)
 				} else if contains(cmd, "--session") {
 					assertFlagValue(t, cmd, "--session", sessionID)
 				} else {
