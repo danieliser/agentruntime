@@ -714,6 +714,56 @@ func TestChatWS_404_NotFound(t *testing.T) {
 
 // --- Full lifecycle: create → send message → get chat → delete ---
 
+// TestCreateChat_MountsPropagated verifies that Mounts in ChatAPIConfig are
+// stored in the chat record and forwarded to SpawnSession when a message is sent.
+func TestCreateChat_MountsPropagated(t *testing.T) {
+	ts, _, chatMgr, sp := newChatTestServer(t)
+
+	mounts := []apischema.Mount{
+		{Host: "my-workspace-vol", Container: "/workspace", Type: "volume", Mode: "rw"},
+	}
+	resp := postJSON(t, ts, "/chats", apischema.CreateChatRequest{
+		Name: "mounts-chat",
+		Config: apischema.ChatAPIConfig{
+			Agent:  "echo-test",
+			Mounts: mounts,
+		},
+	})
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	// Verify mounts are stored in the config.
+	var chatResp apischema.ChatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(chatResp.Config.Mounts) != 1 || chatResp.Config.Mounts[0].Host != "my-workspace-vol" {
+		t.Fatalf("expected mounts in response, got %+v", chatResp.Config.Mounts)
+	}
+
+	// Send a message — spawnSession should forward mounts to the spawner.
+	_, err := chatMgr.SendMessage("mounts-chat", "hello")
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+
+	if len(sp.lastReq.Mounts) == 0 {
+		t.Fatal("expected mounts to be forwarded to SpawnSession, got none")
+	}
+	found := false
+	for _, m := range sp.lastReq.Mounts {
+		if m.Host == "my-workspace-vol" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected my-workspace-vol in spawned session mounts, got %+v", sp.lastReq.Mounts)
+	}
+}
+
 func TestChatLifecycle_CreateSendGetDelete(t *testing.T) {
 	ts, _, _, _ := newChatTestServer(t)
 

@@ -582,13 +582,23 @@ func effectiveWorkDir(workDir string, mounts []Mount) string {
 	if workDir != "" {
 		return workDir
 	}
+	// Only derive workDir from bind-type mounts — volume mounts carry a volume
+	// name in Host, not a filesystem path, so they must never be stat-checked.
 	for _, mount := range mounts {
+		if mount.Type == "volume" {
+			continue
+		}
 		if mount.Mode != "ro" && mount.Host != "" {
 			return mount.Host
 		}
 	}
-	if len(mounts) > 0 {
-		return mounts[0].Host
+	for _, mount := range mounts {
+		if mount.Type == "volume" {
+			continue
+		}
+		if mount.Host != "" {
+			return mount.Host
+		}
 	}
 	return ""
 }

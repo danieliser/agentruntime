@@ -228,6 +228,7 @@ type ChatAPIConfig struct {
 	MCPServers   []MCPServer       `json:"mcp_servers,omitempty"`
 	AutoDiscover interface{}       `json:"auto_discover,omitempty"`
 	WorkDir      string            `json:"work_dir,omitempty"`
+	Mounts       []Mount           `json:"mounts,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`
 	IdleTimeout  string            `json:"idle_timeout,omitempty"`
 	MaxTurns     int               `json:"max_turns,omitempty"`

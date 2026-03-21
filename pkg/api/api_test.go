@@ -1283,3 +1283,30 @@ func TestLookupResumeSessionID_Passthrough(t *testing.T) {
 		t.Fatalf("expected passthrough %q, got %q", claudeID, got)
 	}
 }
+
+// TestEffectiveWorkDir_SkipsVolumeMounts verifies that effectiveWorkDir does
+// not return a volume name as a workDir when the mount is type "volume".
+// Volume names are not filesystem paths and must not be stat-checked.
+func TestEffectiveWorkDir_SkipsVolumeMounts(t *testing.T) {
+	mounts := []Mount{
+		{Host: "my-named-volume", Container: "/workspace", Type: "volume", Mode: "rw"},
+	}
+	got := effectiveWorkDir("", mounts)
+	if got != "" {
+		t.Fatalf("expected empty workDir for volume-only mounts, got %q", got)
+	}
+}
+
+// TestEffectiveWorkDir_BindMountIgnoresVolume verifies that when a volume
+// mount and a bind mount coexist, only the bind mount contributes to workDir.
+func TestEffectiveWorkDir_BindMountIgnoresVolume(t *testing.T) {
+	dir := t.TempDir()
+	mounts := []Mount{
+		{Host: "my-named-volume", Container: "/data", Type: "volume", Mode: "rw"},
+		{Host: dir, Container: "/workspace", Type: "bind", Mode: "rw"},
+	}
+	got := effectiveWorkDir("", mounts)
+	if got != dir {
+		t.Fatalf("expected bind mount path %q, got %q", dir, got)
+	}
+}

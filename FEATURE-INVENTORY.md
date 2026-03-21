@@ -149,3 +149,52 @@ These counts are source-counted from the repository on 2026-03-17 (post-hardenin
 - PTY-first terminal sessions as a first-class API mode
 - Generated OpenAPI spec
 - Multi-tenant auth and access controls
+
+## Security & Governance (inspired by NVIDIA OpenShell)
+
+Reference: [OpenShell GitHub](https://github.com/NVIDIA/OpenShell) · [Architecture](https://docs.nvidia.com/openshell/latest/about/architecture.html) · [Policy Schema](https://docs.nvidia.com/openshell/latest/reference/policy-schema.html)
+
+### Network Policy Engine
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| L7 HTTP method+path enforcement | Planned | Current Squid proxy operates at L4 (host:port allow/deny). Upgrade to TLS-terminating proxy that inspects HTTP method and URL path per policy rule. Enables "read this repo but don't push to it" granularity |
+| Binary-level policy binding | Planned | Bind network rules to the calling binary, not just destination. Prevents a compromised agent from using `curl` to bypass restrictions meant for `claude`. OpenShell matches `(binary_path, host, port)` tuples |
+| Declarative YAML network policies | Planned | Replace ad-hoc Squid ACLs with declarative YAML policy files. Named policy entries with endpoints, binaries, rules, and enforcement mode. Schema modeled on OpenShell's `network_policies` block |
+| Hot-reloadable network policies | Planned | Network policies update on running containers without restart. Static policies (filesystem, process) locked at creation. Clean split avoids "do I restart the container" ambiguity |
+| Audit mode (`enforcement: audit`) | Planned | Log policy violations without blocking. Dry-run mode for developing and tuning egress rules before enforcement. Essential for policy iteration workflow |
+| Wildcard host matching | Planned | Support `*.example.com` in endpoint host fields for CDN and multi-subdomain services |
+| Per-endpoint TLS modes | Planned | `terminate` (decrypt for L7 inspection) vs `passthrough` (raw TCP, no inspection). Not all endpoints need L7 — passthrough avoids overhead for trusted destinations |
+
+### Credential & Inference Isolation
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| `inference.local` proxy pattern | Planned | Well-known hostname that the proxy intercepts for model API calls. Strips agent-provided keys, injects real credentials from operator-configured providers. Agent never sees real API keys |
+| Credential provider system | Planned | Named credential bundles injected as env vars at sandbox creation. Provider types for GitHub, Anthropic, OpenAI, etc. Credentials never touch the container filesystem. Extends current `CredentialSync` |
+| Privacy router / model routing | Planned | Operator controls which model backend serves inference regardless of what the agent requests. Route sensitive prompts to local models, non-sensitive to frontier APIs. Policy-driven, not agent-driven |
+| Local model backend support | Planned | Point `inference.local` at any OpenAI-compatible server (Ollama, vLLM, etc.) via config. `host.openshell.internal` pattern for host-accessible endpoints |
+
+### Kernel-Level Isolation
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Landlock LSM filesystem enforcement | Planned | Kernel-level filesystem access control beyond Docker's default. Restrict reads/writes to approved paths. Absolute path allowlists with `read_only` and `read_write` semantics. Max 256 paths, no `..` traversal |
+| Seccomp BPF process constraints | Planned | Block dangerous syscalls at kernel level. Prevent privilege escalation. Complement Docker's default seccomp profile with agent-specific restrictions |
+| Non-root sandbox user | Done | Already have `--cap-drop ALL` + `no-new-privileges`. OpenShell enforces `run_as_user: sandbox` (rejects `root`/`0`). Our Docker hardening covers this |
+
+### Agent-Initiated Policy Proposals
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Agent permission escalation requests | Planned | Agent hits a policy wall → emits a structured escalation event → routed to human approval channel (Slack thread, web UI, CLI prompt). Approved changes hot-reload into the running sandbox. **OpenShell markets this but hasn't built it** — their flow is purely operator-driven via CLI. This is the PERSIST Slack Channel → Thread → User pattern |
+| Scoped approval grants | Planned | Approvals are time-limited and scope-limited (e.g., "push to this repo for the next 2 hours"). Prevents permanent escalation from one-time approvals |
+| Approval audit trail | Planned | Every escalation request, approval, denial, and resulting policy change is logged with timestamps, actor, and justification. Feeds into session audit logs |
+
+### Orchestration Architecture
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| K3s gateway cluster | Deferred | OpenShell runs a K3s cluster inside Docker as its control plane, giving pod-level isolation and Kubernetes scheduling for free. Heavyweight for single-host, but potentially superior to individual `docker run` at scale. Worth revisiting when managing 10+ concurrent agent containers or expanding to multi-node |
+| Pod-per-agent scheduling | Deferred | Kubernetes-native agent isolation. Each agent gets its own pod with resource limits, network policies, and sidecar injection via admission controllers. Natural evolution if K3s gateway is adopted |
+| Multi-platform runtime expansion | Deferred | K3s gateway could manage agents across cloud providers, bare metal, and edge nodes from one control plane. Pairs with planned SSH and Fly.io runtimes as alternative backends behind a unified scheduler |

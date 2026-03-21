@@ -455,6 +455,7 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 		MCPServers:   rec.Config.MCPServers,
 		AutoDiscover: rec.Config.AutoDiscover,
 		WorkDir:      rec.Config.WorkDir,
+		Mounts:       append([]apischema.Mount(nil), rec.Config.Mounts...),
 		Env:          rec.Config.Env,
 		Tags:         tags,
 	}
@@ -477,7 +478,8 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 		}
 	}
 
-	// Mount the chat volume for Docker.
+	// Append the auto-created chat volume for Docker (after config mounts so
+	// caller-supplied mounts take precedence in workdir resolution).
 	if isDocker && rec.VolumeName != "" {
 		req.Mounts = append(req.Mounts, apischema.Mount{
 			Host:      rec.VolumeName,

@@ -30,16 +30,17 @@ const defaultIdleTimeout = 30 * time.Minute
 // ChatConfig is the stored config applied to every spawned session.
 // Specified at creation and reused on respawn. PATCH-able only when idle.
 type ChatConfig struct {
-	Agent        string            `json:"agent"`
-	Runtime      string            `json:"runtime,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Effort       string            `json:"effort,omitempty"`
+	Agent        string             `json:"agent"`
+	Runtime      string             `json:"runtime,omitempty"`
+	Model        string             `json:"model,omitempty"`
+	Effort       string             `json:"effort,omitempty"`
 	MCPServers   []schema.MCPServer `json:"mcp_servers,omitempty"`
-	AutoDiscover interface{}       `json:"auto_discover,omitempty"`
-	WorkDir      string            `json:"work_dir,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	IdleTimeout  string            `json:"idle_timeout,omitempty"`
-	MaxTurns     int               `json:"max_turns,omitempty"`
+	AutoDiscover interface{}        `json:"auto_discover,omitempty"`
+	WorkDir      string             `json:"work_dir,omitempty"`
+	Mounts       []schema.Mount     `json:"mounts,omitempty"`
+	Env          map[string]string  `json:"env,omitempty"`
+	IdleTimeout  string             `json:"idle_timeout,omitempty"`
+	MaxTurns     int                `json:"max_turns,omitempty"`
 }
 
 // EffectiveIdleTimeout parses IdleTimeout and returns the duration.

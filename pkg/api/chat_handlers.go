@@ -25,6 +25,7 @@ func chatConfigFromAPI(c apischema.ChatAPIConfig) chat.ChatConfig {
 		MCPServers:   c.MCPServers,
 		AutoDiscover: c.AutoDiscover,
 		WorkDir:      c.WorkDir,
+		Mounts:       c.Mounts,
 		Env:          c.Env,
 		IdleTimeout:  c.IdleTimeout,
 		MaxTurns:     c.MaxTurns,
@@ -41,6 +42,7 @@ func chatConfigToAPI(c chat.ChatConfig) apischema.ChatAPIConfig {
 		MCPServers:   c.MCPServers,
 		AutoDiscover: c.AutoDiscover,
 		WorkDir:      c.WorkDir,
+		Mounts:       c.Mounts,
 		Env:          c.Env,
 		IdleTimeout:  c.IdleTimeout,
 		MaxTurns:     c.MaxTurns,
@@ -352,6 +354,9 @@ func (s *Server) handleUpdateChatConfig(c *gin.Context) {
 	}
 	if req.Config.WorkDir != "" {
 		rec.Config.WorkDir = req.Config.WorkDir
+	}
+	if len(req.Config.Mounts) > 0 {
+		rec.Config.Mounts = req.Config.Mounts
 	}
 	if req.Config.IdleTimeout != "" {
 		rec.Config.IdleTimeout = req.Config.IdleTimeout
