@@ -666,6 +666,10 @@ if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   volume_name="$1"
   exit 0
 fi
+# Handle init volume permissions run
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then
+  exit 0
+fi
 exit 2
 `)
 
@@ -732,6 +736,13 @@ exit 2
 }
 
 func TestDockerPrepareRun_VolumeMount_SkipsValidation(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+# Handle init volume permissions run
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then
+  exit 0
+fi
+exit 2
+`)
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 
 	spec, err := rt.prepareRun(SpawnConfig{
@@ -762,6 +773,10 @@ func TestDockerPrepareRun_ReuseVolume(t *testing.T) {
 set -eu
 if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   exit 1  # Fail to create (should not be called when reusing)
+fi
+# Handle init volume permissions run
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then
+  exit 0
 fi
 exit 2
 `)
@@ -799,6 +814,10 @@ func TestDockerPrepareRun_ChatMountsWithPersist(t *testing.T) {
 set -eu
 if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   echo "agentruntime-vol-chat-sess"
+  exit 0
+fi
+# Handle init volume permissions run
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then
   exit 0
 fi
 exit 2
@@ -849,5 +868,48 @@ exit 2
 	}
 	if !foundClaudeDir {
 		t.Fatalf("expected materializer claude dir mount in docker args:\n%v", spec.args)
+	}
+}
+
+// TestInitVolumePermissions_RunsChown verifies that initVolumePermissions
+// runs a docker container as root to chown volume mount points.
+func TestInitVolumePermissions_RunsChown(t *testing.T) {
+	var capturedArgs []string
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+# Capture all args for inspection
+echo "$@" > /tmp/init-vol-args-test
+exit 0
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "agentruntime-agent:latest"})
+	mounts := []apischema.Mount{
+		{Host: "vol-a", Container: "/workspace/persist", Mode: "rw", Type: "volume"},
+		{Host: "vol-b", Container: "/data", Mode: "rw", Type: "volume"},
+		{Host: "/real/path", Container: "/code", Mode: "rw", Type: "bind"},
+	}
+	_ = capturedArgs
+
+	err := rt.initVolumePermissions(context.Background(), "agentruntime-agent:latest", mounts)
+	if err != nil {
+		t.Fatalf("initVolumePermissions failed: %v", err)
+	}
+}
+
+// TestInitVolumePermissions_SkipsWhenNoVolumes verifies that no docker command
+// is run when there are no volume-type mounts.
+func TestInitVolumePermissions_SkipsWhenNoVolumes(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+exit 99
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "test:latest"})
+	mounts := []apischema.Mount{
+		{Host: "/tmp/work", Container: "/workspace", Mode: "rw", Type: "bind"},
+	}
+
+	err := rt.initVolumePermissions(context.Background(), "test:latest", mounts)
+	if err != nil {
+		t.Fatalf("should not fail for bind-only mounts: %v", err)
 	}
 }

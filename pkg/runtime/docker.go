@@ -235,6 +235,44 @@ func (r *DockerRuntime) RemoveSessionVolume(ctx context.Context, volumeName stri
 	return nil
 }
 
+// initVolumePermissions runs a short-lived container as root to chown volume
+// mount points so the non-root agent user can write to them. Only processes
+// volume-type mounts; bind mounts already have host-side permissions.
+// Idempotent — safe to call on volumes that are already correctly owned.
+func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string, mounts []apischema.Mount) error {
+	var volumeMounts []apischema.Mount
+	for _, m := range mounts {
+		if m.Type == "volume" {
+			volumeMounts = append(volumeMounts, m)
+		}
+	}
+	if len(volumeMounts) == 0 {
+		return nil
+	}
+
+	// Build a single init container that mounts all volumes at /mnt/0, /mnt/1, ...
+	// and chowns them to agent:agent in one pass.
+	args := []string{
+		"run", "--rm", "--user", "root",
+		"--entrypoint", "sh",
+	}
+	var chownPaths []string
+	for i, m := range volumeMounts {
+		mountPoint := fmt.Sprintf("/mnt/%d", i)
+		args = append(args, "-v", fmt.Sprintf("%s:%s:rw", m.Host, mountPoint))
+		chownPaths = append(chownPaths, mountPoint)
+	}
+	args = append(args, image, "-c", "chown agent:agent "+strings.Join(chownPaths, " "))
+
+	cmd := r.dockerCmd(ctx, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("init chown failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	req := cfg.Request
 	image := r.cfg.Image
@@ -312,6 +350,15 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 				Type:      "volume",
 			})
 		}
+	}
+
+	// Fix ownership on volume mounts so the non-root container user can write.
+	// Docker volumes are root-owned by default; the agent user (UID 1000)
+	// can't write to them without DAC_OVERRIDE (which requires root or
+	// ambient capabilities, neither of which non-root containers have).
+	if err := r.initVolumePermissions(context.Background(), image, mounts); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("volume permission init: %w", err)
 	}
 
 	agentCmd, err := json.Marshal([]string{cfg.Cmd[0]})
