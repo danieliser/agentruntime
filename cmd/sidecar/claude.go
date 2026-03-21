@@ -180,7 +180,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			}
 			if b.resume {
 				// --resume <session-id> continues a prior Claude session.
-				args = append(args, "--resume", b.sessionID)
+				args = append(args, "--resume", "--session-id", b.sessionID)
 			} else {
 				args = append(args, "--session-id", b.sessionID)
 			}
@@ -213,7 +213,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				"--ide",
 			}
 			if b.resume {
-				args = append(args, "--resume", b.sessionID)
+				args = append(args, "--resume", "--session-id", b.sessionID)
 			} else {
 				args = append(args, "--session-id", b.sessionID)
 			}
