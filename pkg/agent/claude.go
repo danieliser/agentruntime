@@ -34,7 +34,7 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 		resumeSessionID = cfg.SessionID
 	}
 	if resumeSessionID != "" {
-		cmd = append(cmd, "--resume", "--session-id", resumeSessionID)
+		cmd = append(cmd, "--resume", "--session-id", resumeSessionID, "--fork-session")
 	}
 	for _, tool := range cfg.AllowedTools {
 		cmd = append(cmd, "--allowedTools", tool)
