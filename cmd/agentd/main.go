@@ -102,7 +102,14 @@ func main() {
 	for _, r := range allRuntimes {
 		runtimeMap[r.Name()] = r
 	}
-	chatManager := chat.NewManager(chatRegistry, sessions, runtimeMap, *rtName, nil, nil)
+	// Wire the Docker runtime as the chat VolumeManager so chat volumes
+	// are created for Docker-backed chats. Falls back to nil (no volumes)
+	// when Docker isn't available.
+	var chatVolumes chat.VolumeManager
+	if dockerRT, ok := runtimeMap["docker"].(*runtime.DockerRuntime); ok {
+		chatVolumes = &dockerVolumeAdapter{rt: dockerRT}
+	}
+	chatManager := chat.NewManager(chatRegistry, sessions, runtimeMap, *rtName, chatVolumes, nil)
 	chatWatcher := chat.NewIdleWatcher(chatRegistry, sessions, chatManager)
 
 	chatCtx, chatCancel := context.WithCancel(context.Background())
@@ -231,6 +238,19 @@ func recoverRunningChats(reg *chat.Registry, sm *session.Manager) {
 		}
 		log.Printf("chat %q recovered to idle (session %s not found)", c.Name, oldSession)
 	}
+}
+
+// dockerVolumeAdapter adapts DockerRuntime to the chat.VolumeManager interface.
+type dockerVolumeAdapter struct {
+	rt *runtime.DockerRuntime
+}
+
+func (a *dockerVolumeAdapter) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
+	return a.rt.CreateNamedVolume(ctx, name, labels)
+}
+
+func (a *dockerVolumeAdapter) RemoveVolume(ctx context.Context, name string) error {
+	return a.rt.RemoveSessionVolume(ctx, name)
 }
 
 func newRuntime(name, dataDir, dockerHost string) (runtime.Runtime, error) {

@@ -226,6 +226,24 @@ func (r *DockerRuntime) createSessionVolume(ctx context.Context, sessionID strin
 	return volumeName, nil
 }
 
+// CreateNamedVolume creates a named Docker volume with optional labels.
+// Idempotent — does not fail if the volume already exists.
+func (r *DockerRuntime) CreateNamedVolume(ctx context.Context, name string, labels map[string]string) error {
+	args := []string{"volume", "create"}
+	for k, v := range labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", k, v))
+	}
+	args = append(args, name)
+	cmd := r.dockerCmd(ctx, args...)
+	if err := cmd.Run(); err != nil {
+		errStr := err.Error()
+		if !strings.Contains(errStr, "already exists") && !strings.Contains(errStr, "duplicates") {
+			return fmt.Errorf("docker volume create %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // RemoveSessionVolume removes a named Docker volume.
 func (r *DockerRuntime) RemoveSessionVolume(ctx context.Context, volumeName string) error {
 	cmd := r.dockerCmd(ctx, "volume", "rm", volumeName)
