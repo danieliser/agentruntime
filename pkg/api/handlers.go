@@ -568,7 +568,7 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 	}
 
 	sess.SetRunning(handle)
-	log.Printf("[session %s] spawned (chat): agent=%s pid=%d", sess.ID, req.Agent, handle.PID())
+	log.Printf("[session %s] spawned (chat): agent=%s pid=%d resume=%q", sess.ID, req.Agent, handle.PID(), req.ResumeSession)
 
 	if !req.Interactive && handle.Stdin() != nil {
 		handle.Stdin().Close()
