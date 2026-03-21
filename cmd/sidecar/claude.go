@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -241,6 +242,8 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			envExtra = append(envExtra, k+"="+v)
 		}
 		cleanEnv := buildCleanEnv(envExtra)
+
+		log.Printf("[claude] spawn: %s %v (resume=%v session=%s)", b.binary, args, b.resume, b.sessionID)
 
 		spec := ClaudeSpawnSpec{
 			Command: b.binary,
