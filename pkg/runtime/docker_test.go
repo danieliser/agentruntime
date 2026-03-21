@@ -790,3 +790,64 @@ exit 2
 		t.Fatalf("expected reused volume mount %q in args, got %v", expectedMount, spec.args)
 	}
 }
+
+// TestDockerPrepareRun_ChatMountsWithPersist exercises the full chat path:
+// user-supplied volume mounts + PersistSession + materializer. All three
+// should produce -v flags in the final docker run args.
+func TestDockerPrepareRun_ChatMountsWithPersist(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+  echo "agentruntime-vol-chat-sess"
+  exit 0
+fi
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "agentruntime-agent:latest"})
+
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd:        []string{"claude"},
+		SessionID:  "chat-sess-1234",
+		VolumeName: "agentruntime-chat-mybot",
+		Request: &apischema.SessionRequest{
+			Agent:          "claude",
+			Interactive:    true,
+			PersistSession: true,
+			Claude:         &apischema.ClaudeConfig{},
+			// Simulates what the chat manager sends: user workspace volume + chat volume
+			Mounts: []apischema.Mount{
+				{Host: "persist-workspace-test", Container: "/workspace/persist", Mode: "rw", Type: "volume"},
+				{Host: "agentruntime-chat-mybot", Container: "/home/agent/.claude/projects", Mode: "rw", Type: "volume"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	// User workspace volume must appear as a -v flag.
+	userMount := "persist-workspace-test:/workspace/persist:rw"
+	if !hasFlagValue(spec.args, "-v", userMount) {
+		t.Fatalf("expected user volume mount %q in docker args:\n%v", userMount, spec.args)
+	}
+
+	// Chat volume must appear as a -v flag.
+	chatMount := "agentruntime-chat-mybot:/home/agent/.claude/projects:rw"
+	if !hasFlagValue(spec.args, "-v", chatMount) {
+		t.Fatalf("expected chat volume mount %q in docker args:\n%v", chatMount, spec.args)
+	}
+
+	// Materializer's session dir mount must also be present.
+	foundClaudeDir := false
+	for i, arg := range spec.args {
+		if arg == "-v" && i+1 < len(spec.args) && strings.Contains(spec.args[i+1], ":/home/agent/.claude:rw") {
+			foundClaudeDir = true
+			break
+		}
+	}
+	if !foundClaudeDir {
+		t.Fatalf("expected materializer claude dir mount in docker args:\n%v", spec.args)
+	}
+}
