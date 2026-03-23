@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentruntime-agentd"
-version = "0.1.0"
+version = "0.7.1"
 description = "Pre-built agentd binary for running coding agents behind one API"
 readme = "README.md"
 requires-python = ">=3.9"
