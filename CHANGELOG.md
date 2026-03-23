@@ -2,6 +2,22 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.7.0] — 2026-03-22
+
+### Features
+- **Team spawning support**: New `TeamConfig` on `SessionRequest` enables Claude Code's Agent
+  Teams inbox protocol. When set, agentruntime passes `--agent-id`, `--agent-name`, `--team-name`
+  flags and sets `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` on the Claude process. Orchestrators
+  scaffold team directories; agentruntime validates and spawns.
+- **Docker team directory mount**: Team sessions on Docker automatically bind-mount
+  `~/.claude/teams/{name}/` into the container so the Claude binary can read/write inbox files.
+- **Session team metadata**: `SessionInfo` and `SessionSummary` expose team name and agent name.
+  Sessions are auto-tagged with `team:{name}` and `team_agent:{agent_name}` for filtering.
+- **Bare mode**: New `bare` field on `ClaudeConfig` passes `--bare` flag to Claude Code
+  (skip hooks, plugins, LSP, automem, CLAUDE.md — clean room mode).
+- **Validation**: Team sessions require `agent_name`, validate team directory exists on disk,
+  and auto-generate `agent_id` in `name@team` format if not provided.
+
 ## [0.6.5] — 2026-03-20
 
 ### Bug Fixes

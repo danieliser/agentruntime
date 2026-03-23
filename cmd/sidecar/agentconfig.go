@@ -47,6 +47,16 @@ type AgentConfig struct {
 	// ResultGracePeriod is seconds to wait after a result event for the process
 	// to exit before force-killing. Default: 10. 0 = use default. -1 = disabled.
 	ResultGracePeriod int `json:"result_grace_period,omitempty"`
+
+	// Team fields — enable Claude Code Agent Teams inbox protocol.
+	// When set, the Claude backend appends --agent-id, --agent-name, --team-name
+	// flags and sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 env var.
+	TeamName      string `json:"team_name,omitempty"`
+	TeamAgentName string `json:"team_agent_name,omitempty"`
+	TeamAgentID   string `json:"team_agent_id,omitempty"`
+
+	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
+	Bare bool `json:"bare,omitempty"`
 }
 
 // parseAgentConfig reads and parses the AGENT_CONFIG env var.

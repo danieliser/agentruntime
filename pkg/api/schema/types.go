@@ -73,6 +73,12 @@ type SessionRequest struct {
 	// Container settings — image, resource limits, network, security options.
 	// Renamed from "resources" because image isn't a resource — honest naming.
 	Container *ContainerConfig `json:"container,omitempty" yaml:"container,omitempty"`
+
+	// Team config — enables Claude Code's Agent Teams inbox protocol.
+	// When set, the agent is spawned with --agent-id, --agent-name, --team-name
+	// flags and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 env var.
+	// The orchestrator must scaffold the team directory before spawning.
+	Team *TeamConfig `json:"team,omitempty" yaml:"team,omitempty"`
 }
 
 // Mount describes a bind-mount or named volume mount between host/volume and container.
@@ -106,6 +112,9 @@ type ClaudeConfig struct {
 	// "stream-json" for structured event streaming. Retained in the schema
 	// for backward compatibility with existing request payloads but ignored.
 	OutputFormat string `json:"output_format,omitempty" yaml:"output_format,omitempty"`
+
+	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
+	Bare bool `json:"bare,omitempty" yaml:"bare,omitempty"`
 }
 
 // CodexConfig holds pre-materialized content/paths for Codex.
@@ -123,6 +132,21 @@ type MCPServer struct {
 	Cmd   []string          `json:"cmd,omitempty"   yaml:"cmd,omitempty"` // for stdio type
 	Env   map[string]string `json:"env,omitempty"   yaml:"env,omitempty"`
 	Token string            `json:"token,omitempty" yaml:"token,omitempty"`
+}
+
+// TeamConfig enables Claude Code's Agent Teams inbox protocol for a session.
+// The orchestrator scaffolds the team directory (~/.claude/teams/{name}/)
+// before spawning; agentruntime validates it exists and passes the flags.
+type TeamConfig struct {
+	// Name is the team name. Must match an existing team directory.
+	Name string `json:"name" yaml:"name"`
+
+	// AgentName is this agent's identity within the team. Required.
+	AgentName string `json:"agent_name" yaml:"agent_name"`
+
+	// AgentID is the full agent identifier in "name@team" format.
+	// Auto-generated as {AgentName}@{Name} if empty.
+	AgentID string `json:"agent_id,omitempty" yaml:"agent_id,omitempty"`
 }
 
 // ContainerConfig holds container image, resource limits, and security options.
@@ -156,29 +180,32 @@ type SessionSummary struct {
 	Status    string            `json:"status"`
 	CreatedAt time.Time         `json:"created_at"`
 	Tags      map[string]string `json:"tags,omitempty"`
+	TeamName  string            `json:"team_name,omitempty"`
+	TeamAgent string            `json:"team_agent,omitempty"`
 }
 
 // SessionInfo is returned by GET /sessions/:id/info.
 type SessionInfo struct {
-	SessionID     string     `json:"session_id"`
-	TaskID        string     `json:"task_id,omitempty"`
-	Agent         string     `json:"agent"`
-	Runtime       string     `json:"runtime"`
-	Status        string     `json:"status"`
-	CreatedAt     time.Time  `json:"created_at"`
-	EndedAt       *time.Time `json:"ended_at,omitempty"`
-	ExitCode      *int       `json:"exit_code,omitempty"`
-	SessionDir    string     `json:"session_dir,omitempty"`
-	VolumeName    string     `json:"volume_name,omitempty"`
-	LogFile       string     `json:"log_file,omitempty"`
-	WSURL         string     `json:"ws_url"`
-	LogURL        string     `json:"log_url"`
-	Uptime        string     `json:"uptime,omitempty"`
-	LastActivity  *time.Time `json:"last_activity,omitempty"`
-	InputTokens   int        `json:"input_tokens,omitempty"`
-	OutputTokens  int        `json:"output_tokens,omitempty"`
-	CostUSD       float64    `json:"cost_usd,omitempty"`
-	ToolCallCount int        `json:"tool_call_count,omitempty"`
+	SessionID     string      `json:"session_id"`
+	TaskID        string      `json:"task_id,omitempty"`
+	Agent         string      `json:"agent"`
+	Runtime       string      `json:"runtime"`
+	Status        string      `json:"status"`
+	CreatedAt     time.Time   `json:"created_at"`
+	EndedAt       *time.Time  `json:"ended_at,omitempty"`
+	ExitCode      *int        `json:"exit_code,omitempty"`
+	SessionDir    string      `json:"session_dir,omitempty"`
+	VolumeName    string      `json:"volume_name,omitempty"`
+	LogFile       string      `json:"log_file,omitempty"`
+	WSURL         string      `json:"ws_url"`
+	LogURL        string      `json:"log_url"`
+	Uptime        string      `json:"uptime,omitempty"`
+	LastActivity  *time.Time  `json:"last_activity,omitempty"`
+	InputTokens   int         `json:"input_tokens,omitempty"`
+	OutputTokens  int         `json:"output_tokens,omitempty"`
+	CostUSD       float64     `json:"cost_usd,omitempty"`
+	ToolCallCount int         `json:"tool_call_count,omitempty"`
+	Team          *TeamConfig `json:"team,omitempty"`
 }
 
 // EffectiveMounts resolves WorkDir shorthand into the Mounts list.

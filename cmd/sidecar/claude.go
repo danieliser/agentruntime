@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,14 @@ type ClaudeBackendConfig struct {
 	AllowedTools []string          // --allowedTools flag (repeatable)
 	Effort       string            // --effort flag
 	ExtraEnv     map[string]string // merged into buildCleanEnv
+
+	// Team fields — enable Claude Code Agent Teams inbox protocol.
+	TeamName      string // --team-name flag
+	TeamAgentName string // --agent-name flag
+	TeamAgentID   string // --agent-id flag
+
+	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
+	Bare bool
 }
 
 type ClaudeSpawnSpec struct {
@@ -64,6 +73,13 @@ type ClaudeBackend struct {
 	allowedTools []string
 	effort       string
 	extraEnv     map[string]string
+
+	// Team fields.
+	teamName      string
+	teamAgentName string
+	teamAgentID   string
+
+	bare bool
 
 	startProcess ClaudeProcessStarter
 
@@ -143,20 +159,24 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 	}
 
 	return &ClaudeBackend{
-		binary:       binary,
-		sessionID:    sessionID,
-		resume:       cfg.Resume,
-		workspace:    workspace,
-		prompt:       cfg.Prompt,
-		model:        cfg.Model,
-		maxTurns:     cfg.MaxTurns,
-		allowedTools: cfg.AllowedTools,
-		effort:       cfg.Effort,
-		extraEnv:     cfg.ExtraEnv,
-		startProcess: startProcess,
-		events:       make(chan Event, 64),
-		done:         make(chan struct{}),
-		waitCh:       make(chan backendExit, 1),
+		binary:        binary,
+		sessionID:     sessionID,
+		resume:        cfg.Resume,
+		workspace:     workspace,
+		prompt:        cfg.Prompt,
+		model:         cfg.Model,
+		maxTurns:      cfg.MaxTurns,
+		allowedTools:  cfg.AllowedTools,
+		effort:        cfg.Effort,
+		extraEnv:      cfg.ExtraEnv,
+		teamName:      cfg.TeamName,
+		teamAgentName: cfg.TeamAgentName,
+		teamAgentID:   cfg.TeamAgentID,
+		bare:          cfg.Bare,
+		startProcess:  startProcess,
+		events:        make(chan Event, 64),
+		done:          make(chan struct{}),
+		waitCh:        make(chan backendExit, 1),
 	}
 }
 
@@ -181,7 +201,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			}
 			if b.resume {
 				// --resume <session-id> continues a prior Claude session.
-				args = append(args, "--resume", "--session-id", b.sessionID, "--fork-session")
+				args = append(args, "--resume", b.sessionID)
 			} else {
 				args = append(args, "--session-id", b.sessionID)
 			}
@@ -214,10 +234,17 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				"--ide",
 			}
 			if b.resume {
-				args = append(args, "--resume", "--session-id", b.sessionID, "--fork-session")
+				args = append(args, "--resume", b.sessionID)
 			} else {
 				args = append(args, "--session-id", b.sessionID)
 			}
+		}
+
+		// Load MCP servers from materialized .mcp.json if it exists.
+		// --ide mode doesn't auto-discover .mcp.json, so we pass it explicitly.
+		mcpConfigPath := filepath.Join(os.Getenv("HOME"), ".claude", ".mcp.json")
+		if _, err := os.Stat(mcpConfigPath); err == nil {
+			args = append(args, "--mcp-config", mcpConfigPath)
 		}
 
 		// Append AGENT_CONFIG passthrough flags (apply to both modes).
@@ -232,6 +259,20 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 		}
 		if b.effort != "" {
 			args = append(args, "--effort", b.effort)
+		}
+
+		// Team flags — enable Agent Teams inbox protocol.
+		if b.teamName != "" {
+			args = append(args, "--agent-id", b.teamAgentID)
+			args = append(args, "--agent-name", b.teamAgentName)
+			args = append(args, "--team-name", b.teamName)
+			envExtra = append(envExtra, "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1")
+			envExtra = append(envExtra, "CLAUDECODE=1")
+		}
+
+		// Bare mode — clean room, skip hooks/plugins/LSP/automem/CLAUDE.md.
+		if b.bare {
+			args = append(args, "--bare")
 		}
 
 		// Build a clean environment — DO NOT inherit host env wholesale.

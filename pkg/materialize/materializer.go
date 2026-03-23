@@ -423,12 +423,16 @@ func mcpServerToMap(server apischema.MCPServer) map[string]any {
 	if server.URL != "" {
 		out["url"] = server.URL
 	}
+	// Claude Code .mcp.json expects "command" + "args", not a flat "cmd" array.
 	if len(server.Cmd) > 0 {
-		cmd := make([]any, 0, len(server.Cmd))
-		for _, part := range server.Cmd {
-			cmd = append(cmd, part)
+		out["command"] = server.Cmd[0]
+		if len(server.Cmd) > 1 {
+			args := make([]any, 0, len(server.Cmd)-1)
+			for _, part := range server.Cmd[1:] {
+				args = append(args, part)
+			}
+			out["args"] = args
 		}
-		out["cmd"] = cmd
 	}
 	if len(server.Env) > 0 {
 		env := make(map[string]any, len(server.Env))

@@ -273,3 +273,74 @@ func TestParseAgentConfig_WhitespaceOnly_ReturnsError(t *testing.T) {
 		t.Fatal("expected error for whitespace-only JSON, got nil")
 	}
 }
+
+// --- Team field threading ---
+
+func TestParseAgentConfig_TeamFields(t *testing.T) {
+	raw, _ := json.Marshal(AgentConfig{
+		TeamName:      "my-team",
+		TeamAgentName: "worker-1",
+		TeamAgentID:   "worker-1@my-team",
+	})
+	t.Setenv("AGENT_CONFIG", string(raw))
+
+	cfg, err := parseAgentConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TeamName != "my-team" {
+		t.Fatalf("TeamName = %q, want my-team", cfg.TeamName)
+	}
+	if cfg.TeamAgentName != "worker-1" {
+		t.Fatalf("TeamAgentName = %q, want worker-1", cfg.TeamAgentName)
+	}
+	if cfg.TeamAgentID != "worker-1@my-team" {
+		t.Fatalf("TeamAgentID = %q, want worker-1@my-team", cfg.TeamAgentID)
+	}
+}
+
+func TestNewBackend_TeamFieldsThreadedToClaude(t *testing.T) {
+	cfg := AgentConfig{
+		TeamName:      "test-team",
+		TeamAgentName: "reviewer",
+		TeamAgentID:   "reviewer@test-team",
+		Bare:          true,
+	}
+
+	backend, err := newBackend("claude", []string{"claude"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cb := backend.(*ClaudeBackend)
+	if cb.teamName != "test-team" {
+		t.Fatalf("teamName = %q, want test-team", cb.teamName)
+	}
+	if cb.teamAgentName != "reviewer" {
+		t.Fatalf("teamAgentName = %q, want reviewer", cb.teamAgentName)
+	}
+	if cb.teamAgentID != "reviewer@test-team" {
+		t.Fatalf("teamAgentID = %q, want reviewer@test-team", cb.teamAgentID)
+	}
+	if !cb.bare {
+		t.Fatal("bare should be true")
+	}
+}
+
+func TestNewBackend_NoTeamFields_OmittedFromClaude(t *testing.T) {
+	cfg := AgentConfig{Model: "sonnet"}
+
+	backend, err := newBackend("claude", []string{"claude"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cb := backend.(*ClaudeBackend)
+	if cb.teamName != "" {
+		t.Fatalf("teamName should be empty, got %q", cb.teamName)
+	}
+	if cb.teamAgentName != "" {
+		t.Fatalf("teamAgentName should be empty, got %q", cb.teamAgentName)
+	}
+	if cb.bare {
+		t.Fatal("bare should be false by default")
+	}
+}

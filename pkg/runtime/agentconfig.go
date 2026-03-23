@@ -12,6 +12,14 @@ type sidecarAgentConfig struct {
 	ApprovalMode  string            `json:"approval_mode,omitempty"`
 	MaxTurns      int               `json:"max_turns,omitempty"`
 	AllowedTools  []string          `json:"allowed_tools,omitempty"`
+
+	// Team fields — enable Claude Code Agent Teams inbox protocol.
+	TeamName      string `json:"team_name,omitempty"`
+	TeamAgentName string `json:"team_agent_name,omitempty"`
+	TeamAgentID   string `json:"team_agent_id,omitempty"`
+
+	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
+	Bare bool `json:"bare,omitempty"`
 }
 
 // buildAgentConfigJSON builds the AGENT_CONFIG JSON string from SpawnConfig.
@@ -41,6 +49,16 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 		}
 		if cfg.Request.Codex != nil && cfg.Request.Codex.ApprovalMode != "" {
 			ac.ApprovalMode = cfg.Request.Codex.ApprovalMode
+			hasContent = true
+		}
+		if cfg.Request.Team != nil && cfg.Request.Team.Name != "" {
+			ac.TeamName = cfg.Request.Team.Name
+			ac.TeamAgentName = cfg.Request.Team.AgentName
+			ac.TeamAgentID = cfg.Request.Team.AgentID
+			hasContent = true
+		}
+		if cfg.Request.Claude != nil && cfg.Request.Claude.Bare {
+			ac.Bare = true
 			hasContent = true
 		}
 	}

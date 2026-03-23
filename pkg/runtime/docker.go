@@ -375,6 +375,24 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		}
 	}
 
+	// Mount the team directory for Agent Teams inbox protocol.
+	// The Claude binary polls ~/.claude/teams/{name}/inboxes/{agent}.json
+	// for messages — the directory must be accessible inside the container.
+	if req != nil && req.Team != nil && req.Team.Name != "" {
+		home, _ := os.UserHomeDir()
+		teamDir := filepath.Join(home, ".claude", "teams", req.Team.Name)
+		containerTeamDir := "/home/agent/.claude/teams/" + req.Team.Name
+		if err := validateMountPath(teamDir); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("team directory: %w", err)
+		}
+		mounts = append(mounts, apischema.Mount{
+			Host:      teamDir,
+			Container: containerTeamDir,
+			Mode:      "rw",
+		})
+	}
+
 	// Fix ownership on volume mounts so the non-root container user can write.
 	// Docker volumes are root-owned by default; the agent user (UID 1000)
 	// can't write to them without DAC_OVERRIDE (which requires root or
