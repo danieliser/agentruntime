@@ -22,6 +22,9 @@ import (
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
+// Version is set at build time via -ldflags, or defaults to "dev".
+var Version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "dispatch" {
 		os.Exit(runDispatchCommand(os.Args[2:]))
@@ -33,6 +36,7 @@ func main() {
 		os.Exit(runChatCommand(os.Args[2:]))
 	}
 
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	port := flag.Int("port", 8090, "HTTP server port")
 	rtName := flag.String("runtime", "local", "Execution runtime (local, docker)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "Data directory for sessions, logs, credentials")
@@ -41,6 +45,12 @@ func main() {
 	dockerHost := flag.String("docker-host", "", "Remote Docker daemon (e.g., ssh://deploy@host, tcp://host:2376)")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
+
+	log.Printf("agentd %s starting", Version)
 	log.Printf("data dir: %s", *dataDir)
 	logDir := filepath.Join(*dataDir, "logs")
 
@@ -136,6 +146,7 @@ func main() {
 	// Start HTTP server.
 	addr := fmt.Sprintf(":%d", *port)
 	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{
+		Version:       Version,
 		DataDir:       *dataDir,
 		LogDir:        logDir,
 		ExtraRuntimes: extraRuntimes,

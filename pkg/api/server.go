@@ -23,6 +23,7 @@ type Server struct {
 	runtimes map[string]runtime.Runtime // keyed by name ("local", "docker")
 	runtime  runtime.Runtime            // default runtime (first registered or "local")
 	agents   *agent.Registry
+	version  string
 	dataDir  string
 	logDir   string // directory for persistent session NDJSON logs
 	srv      *http.Server
@@ -45,6 +46,9 @@ func (s *Server) RuntimeFor(name string) runtime.Runtime {
 
 // ServerConfig holds optional configuration for the server.
 type ServerConfig struct {
+	// Version is the agentd build version string (e.g., "0.7.1").
+	Version string
+
 	// DataDir stores agent session state, credentials, and logs.
 	// Defaults to the parent of LogDir, or "." if LogDir is also empty.
 	DataDir string
@@ -88,12 +92,18 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		}
 	}
 
+	version := "dev"
+	if len(cfgs) > 0 && cfgs[0].Version != "" {
+		version = cfgs[0].Version
+	}
+
 	s := &Server{
 		router:   router,
 		sessions: sessions,
 		runtimes: runtimes,
 		runtime:  rt,
 		agents:   agents,
+		version:  version,
 		dataDir:  dataDir,
 		logDir:   logDir,
 	}

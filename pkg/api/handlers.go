@@ -41,6 +41,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 	sort.Strings(available)
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "ok",
+		"version":          s.version,
 		"default_runtime":  s.runtime.Name(),
 		"runtimes":         available,
 	})
