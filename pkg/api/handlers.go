@@ -107,6 +107,42 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		}
 	}
 
+	// Validate and prepare team config.
+	if req.Team != nil {
+		if req.Team.Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "team.name is required"})
+			return
+		}
+		if req.Team.AgentName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "team.agent_name is required for team sessions"})
+			return
+		}
+		if req.Agent != "claude" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "team config is only supported for claude agent"})
+			return
+		}
+		// Validate team directory exists on disk.
+		teamConfigPath := filepath.Join(os.Getenv("HOME"), ".claude", "teams", req.Team.Name, "config.json")
+		if _, err := os.Stat(teamConfigPath); os.IsNotExist(err) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "team not found",
+				"team":    req.Team.Name,
+				"message": "orchestrator must scaffold team directory before spawning",
+			})
+			return
+		}
+		// Auto-generate agent_id if not provided.
+		if req.Team.AgentID == "" {
+			req.Team.AgentID = req.Team.AgentName + "@" + req.Team.Name
+		}
+		// Auto-tag session with team metadata.
+		if req.Tags == nil {
+			req.Tags = make(map[string]string)
+		}
+		req.Tags["team"] = req.Team.Name
+		req.Tags["team_agent"] = req.Team.AgentName
+	}
+
 	// Check if resuming a session with a persistent volume
 	var originalSession *session.Session
 	if req.ResumeSession != "" {
@@ -248,6 +284,8 @@ func (s *Server) handleListSessions(c *gin.Context) {
 			Status:    string(snap.State),
 			CreatedAt: snap.CreatedAt,
 			Tags:      snap.Tags,
+			TeamName:  snap.Tags["team"],
+			TeamAgent: snap.Tags["team_agent"],
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
@@ -287,7 +325,7 @@ func (s *Server) handleGetSessionInfo(c *gin.Context) {
 		uptime = formatDuration(time.Since(snap.CreatedAt))
 	}
 
-	c.JSON(http.StatusOK, SessionInfo{
+	info := SessionInfo{
 		SessionID:     snap.ID,
 		TaskID:        snap.TaskID,
 		Agent:         snap.AgentName,
@@ -307,7 +345,16 @@ func (s *Server) handleGetSessionInfo(c *gin.Context) {
 		OutputTokens:  snap.OutputTokens,
 		CostUSD:       snap.CostUSD,
 		ToolCallCount: snap.ToolCallCount,
-	})
+	}
+	// Reconstruct team config from session tags.
+	if teamName := snap.Tags["team"]; teamName != "" {
+		info.Team = &TeamConfig{
+			Name:      teamName,
+			AgentName: snap.Tags["team_agent"],
+			AgentID:   snap.Tags["team_agent"] + "@" + teamName,
+		}
+	}
+	c.JSON(http.StatusOK, info)
 }
 
 func (s *Server) handleDeleteSession(c *gin.Context) {

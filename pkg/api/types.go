@@ -13,3 +13,4 @@ type SessionResponse = apischema.SessionResponse
 type SessionSummary = apischema.SessionSummary
 type SessionInfo = apischema.SessionInfo
 type Resources = apischema.Resources
+type TeamConfig = apischema.TeamConfig
