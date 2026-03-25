@@ -108,3 +108,54 @@ func TestBuildAgentConfigJSON_EmptyRequestFields(t *testing.T) {
 		t.Fatalf("expected empty string for empty SessionRequest, got %q", got)
 	}
 }
+
+func TestBuildAgentConfigJSON_Lifecycle(t *testing.T) {
+	cfg := SpawnConfig{
+		Request: &apischema.SessionRequest{
+			Lifecycle: &apischema.LifecycleConfig{
+				PreInit:     "/hooks/setup.sh",
+				PostInit:    "/hooks/warmup.sh",
+				Sidecar:     "/hooks/watchdog.sh",
+				PostRun:     "/hooks/cleanup.sh",
+				HookTimeout: 15,
+			},
+		},
+	}
+	got := buildAgentConfigJSON(cfg)
+	if got == "" {
+		t.Fatal("expected non-empty JSON when lifecycle is set")
+	}
+	var ac sidecarAgentConfig
+	if err := json.Unmarshal([]byte(got), &ac); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ac.Lifecycle == nil {
+		t.Fatal("lifecycle is nil in agent config")
+	}
+	if ac.Lifecycle.PreInit != "/hooks/setup.sh" {
+		t.Errorf("PreInit = %q", ac.Lifecycle.PreInit)
+	}
+	if ac.Lifecycle.Sidecar != "/hooks/watchdog.sh" {
+		t.Errorf("Sidecar = %q", ac.Lifecycle.Sidecar)
+	}
+	if ac.Lifecycle.HookTimeout != 15 {
+		t.Errorf("HookTimeout = %d, want 15", ac.Lifecycle.HookTimeout)
+	}
+}
+
+func TestBuildAgentConfigJSON_NoLifecycle(t *testing.T) {
+	// Lifecycle nil — should not appear in JSON.
+	cfg := SpawnConfig{
+		Request: &apischema.SessionRequest{
+			Model: "claude-opus-4-5",
+		},
+	}
+	got := buildAgentConfigJSON(cfg)
+	var ac sidecarAgentConfig
+	if err := json.Unmarshal([]byte(got), &ac); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ac.Lifecycle != nil {
+		t.Error("lifecycle should be nil when not set")
+	}
+}

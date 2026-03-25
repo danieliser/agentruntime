@@ -82,6 +82,16 @@ func (r *LocalSidecarRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (Proce
 	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
 		sidecar.Env = append(sidecar.Env, fmt.Sprintf("AGENT_CONFIG=%s", acJSON))
 	}
+	// Pass session identity for lifecycle hooks.
+	if cfg.SessionID != "" {
+		sidecar.Env = append(sidecar.Env, "SESSION_ID="+cfg.SessionID)
+	}
+	if cfg.TaskID != "" {
+		sidecar.Env = append(sidecar.Env, "TASK_ID="+cfg.TaskID)
+	}
+	if cfg.WorkDir != "" {
+		sidecar.Env = append(sidecar.Env, "WORK_DIR="+cfg.WorkDir)
+	}
 	// Silence sidecar's own logging
 	sidecar.Stdout = os.Stderr
 	sidecar.Stderr = os.Stderr

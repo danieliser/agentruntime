@@ -20,6 +20,18 @@ type sidecarAgentConfig struct {
 
 	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
 	Bare bool `json:"bare,omitempty"`
+
+	// Lifecycle hooks — scripts executed at defined points in the session lifecycle.
+	Lifecycle *sidecarLifecycleConfig `json:"lifecycle,omitempty"`
+}
+
+// sidecarLifecycleConfig mirrors schema.LifecycleConfig for the sidecar.
+type sidecarLifecycleConfig struct {
+	PreInit     string `json:"pre_init,omitempty"`
+	PostInit    string `json:"post_init,omitempty"`
+	Sidecar     string `json:"sidecar,omitempty"`
+	PostRun     string `json:"post_run,omitempty"`
+	HookTimeout int    `json:"hook_timeout,omitempty"`
 }
 
 // buildAgentConfigJSON builds the AGENT_CONFIG JSON string from SpawnConfig.
@@ -59,6 +71,16 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 		}
 		if cfg.Request.Claude != nil && cfg.Request.Claude.Bare {
 			ac.Bare = true
+			hasContent = true
+		}
+		if cfg.Request.Lifecycle != nil {
+			ac.Lifecycle = &sidecarLifecycleConfig{
+				PreInit:     cfg.Request.Lifecycle.PreInit,
+				PostInit:    cfg.Request.Lifecycle.PostInit,
+				Sidecar:     cfg.Request.Lifecycle.Sidecar,
+				PostRun:     cfg.Request.Lifecycle.PostRun,
+				HookTimeout: cfg.Request.Lifecycle.HookTimeout,
+			}
 			hasContent = true
 		}
 	}

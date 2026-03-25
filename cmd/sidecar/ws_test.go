@@ -314,7 +314,7 @@ func TestSidecar_AutoCleanup_NoCleanupWhileRunning(t *testing.T) {
 func newTestExternalWSServer(t *testing.T, agentType string, backend AgentBackend) (*ExternalWSServer, *httptest.Server) {
 	t.Helper()
 
-	server := NewExternalWSServer(agentType, backend, StallConfig{})
+	server := NewExternalWSServer(agentType, backend, StallConfig{}, nil, LifecycleEnv{})
 	ts := httptest.NewServer(server.Routes())
 	t.Cleanup(ts.Close)
 	t.Cleanup(func() { _ = server.Close() })
@@ -324,7 +324,7 @@ func newTestExternalWSServer(t *testing.T, agentType string, backend AgentBacken
 func newAutoCleanupTestServer(t *testing.T, backend *mockBackend, timeout time.Duration) (*ExternalWSServer, *httptest.Server, <-chan struct{}) {
 	t.Helper()
 
-	server := NewExternalWSServer("claude", backend, StallConfig{})
+	server := NewExternalWSServer("claude", backend, StallConfig{}, nil, LifecycleEnv{})
 	server.SetCleanupTimeout(timeout)
 
 	shutdownCh := make(chan struct{}, 1)

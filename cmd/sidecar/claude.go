@@ -427,6 +427,17 @@ func (b *ClaudeBackend) Wait() <-chan backendExit {
 	return b.waitCh
 }
 
+// PID returns the agent process PID, or 0 if not started.
+func (b *ClaudeBackend) PID() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	type pider interface{ PID() int }
+	if p, ok := b.process.(pider); ok {
+		return p.PID()
+	}
+	return 0
+}
+
 func (b *ClaudeBackend) currentMCP() *MCPServer {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -782,6 +793,13 @@ func (p *execClaudeProcess) Kill() error {
 		return nil
 	}
 	return p.cmd.Process.Kill()
+}
+
+func (p *execClaudeProcess) PID() int {
+	if p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
 }
 
 // buildCleanEnv creates a minimal environment for the agent process.

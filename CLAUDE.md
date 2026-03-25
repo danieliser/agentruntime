@@ -48,6 +48,8 @@ client -> agentd -> runtime -> agentruntime-sidecar -> Claude/Codex
 
 Local and Docker both use the same sidecar v2 protocol. Docker adds a managed bridge network, Squid proxy sidecar, and config materialization into the agent container.
 
+The sidecar supports lifecycle hooks (pre_init, post_init, sidecar, post_run) configured via `AGENT_CONFIG` env var. Hook scripts run inside the sidecar process and emit output as `system` events in the NDJSON stream. See `cmd/sidecar/lifecycle.go`.
+
 ## Sidecar Binary
 
 `cmd/sidecar/` builds `agentruntime-sidecar`.

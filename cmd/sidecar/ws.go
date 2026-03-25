@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,6 +78,10 @@ type ExternalWSServer struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// Lifecycle hooks.
+	hooks         *HookRunner
+	sidecarCancel func() // cancel function for the background sidecar hook
 
 	startOnce sync.Once
 	startMu   sync.RWMutex
@@ -152,9 +158,16 @@ type rawCommand struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func NewExternalWSServer(agentType string, backend AgentBackend, stallCfg StallConfig) *ExternalWSServer {
+// LifecycleEnv holds the environment context needed for lifecycle hook execution.
+type LifecycleEnv struct {
+	SessionID string
+	TaskID    string
+	WorkDir   string
+}
+
+func NewExternalWSServer(agentType string, backend AgentBackend, stallCfg StallConfig, lifecycle *LifecycleConfig, hookEnv LifecycleEnv) *ExternalWSServer {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &ExternalWSServer{
+	s := &ExternalWSServer{
 		agentType:      agentType,
 		backend:        backend,
 		replay:         session.NewReplayBuffer(replayBufferSize),
@@ -164,6 +177,8 @@ func NewExternalWSServer(agentType string, backend AgentBackend, stallCfg StallC
 		cleanupTimeout: defaultCleanupTimeout,
 		stallConfig:    stallCfg,
 	}
+	s.hooks = NewHookRunner(lifecycle, hookEnv.SessionID, hookEnv.TaskID, agentType, hookEnv.WorkDir, s.recordAndBroadcast)
+	return s
 }
 
 func (s *ExternalWSServer) AgentType() string {
@@ -212,6 +227,15 @@ func (s *ExternalWSServer) Close() error {
 	}
 }
 
+// backendPID returns the agent process PID if the backend exposes it.
+func (s *ExternalWSServer) backendPID() int {
+	type pider interface{ PID() int }
+	if p, ok := s.backend.(pider); ok {
+		return p.PID()
+	}
+	return 0
+}
+
 func (s *ExternalWSServer) Interrupt() error {
 	if s.backend == nil {
 		return nil
@@ -251,14 +275,37 @@ func (s *ExternalWSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	client := &wsClient{conn: conn}
 	if err := s.ensureStarted(); err != nil {
-		_ = client.writeJSON(Event{
+		// Register the client first so recordAndBroadcast reaches it,
+		// then emit error + exit events, then close.
+		s.clientsMu.Lock()
+		s.clients[client] = struct{}{}
+		s.clientsMu.Unlock()
+
+		_ = s.recordAndBroadcast(Event{
 			Type: "error",
 			Data: errorData{
 				Message: err.Error(),
 				Code:    http.StatusInternalServerError,
 			},
 		})
+		// Emit an exit event with non-zero code so the daemon marks the
+		// session as failed. Without this, the session would show exit_code=0
+		// because the container exits cleanly even though the hook failed.
+		exitCode := 1
+		_ = s.recordAndBroadcast(Event{
+			Type:     "exit",
+			ExitCode: &exitCode,
+			Data: exitData{
+				Code:        1,
+				ErrorDetail: err.Error(),
+			},
+		})
+
+		s.clientsMu.Lock()
+		delete(s.clients, client)
+		s.clientsMu.Unlock()
 		client.close()
+		s.startCleanupTimer()
 		return
 	}
 
@@ -285,9 +332,41 @@ func (s *ExternalWSServer) ensureStarted() error {
 			return
 		}
 
+		// Lifecycle: run pre_init hook before starting the agent.
+		if s.hooks != nil {
+			timeout := s.hooks.config.BlockingTimeout()
+			if err := s.hooks.RunBlocking(s.ctx, "pre_init", s.hooks.config.PreInit, timeout, nil); err != nil {
+				s.setStartErr(fmt.Errorf("pre_init hook failed: %w", err))
+				return
+			}
+		}
+
 		if err := s.backend.Start(s.ctx); err != nil {
 			s.setStartErr(err)
 			return
+		}
+
+		// Lifecycle: run post_init hook after agent is alive.
+		if s.hooks != nil {
+			agentPIDEnv := map[string]string{}
+			if pid := s.backendPID(); pid > 0 {
+				agentPIDEnv["AGENT_PID"] = strconv.Itoa(pid)
+			}
+			timeout := s.hooks.config.BlockingTimeout()
+			if err := s.hooks.RunBlocking(s.ctx, "post_init", s.hooks.config.PostInit, timeout, agentPIDEnv); err != nil {
+				// Kill the agent — post_init failure is fatal.
+				s.backend.SendInterrupt()
+				s.setStartErr(fmt.Errorf("post_init hook failed: %w", err))
+				return
+			}
+
+			// Spawn background sidecar hook.
+			agentPIDEnv["AGENT_PID"] = strconv.Itoa(s.backendPID())
+			cancelFn, err := s.hooks.SpawnBackground(s.ctx, "sidecar", s.hooks.config.Sidecar, agentPIDEnv)
+			if err != nil {
+				log.Printf("[lifecycle] sidecar hook spawn failed: %v", err)
+			}
+			s.sidecarCancel = cancelFn
 		}
 
 		// Record start time for uptime calculation.
@@ -507,6 +586,19 @@ func (s *ExternalWSServer) exitLoop() {
 		if !ok {
 			return
 		}
+
+		// Lifecycle: kill sidecar hook, then run post_run.
+		if s.sidecarCancel != nil {
+			s.sidecarCancel()
+		}
+		if s.hooks != nil && s.hooks.config.PostRun != "" {
+			timeout := s.hooks.config.PostRunTimeout()
+			if err := s.hooks.RunBlocking(context.Background(), "post_run", s.hooks.config.PostRun, timeout, nil); err != nil {
+				// post_run failure is logged but doesn't affect session status.
+				log.Printf("[lifecycle] post_run hook error (non-fatal): %v", err)
+			}
+		}
+
 		if result.Code != 0 {
 			_ = s.recordAndBroadcast(Event{
 				Type: "system",

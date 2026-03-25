@@ -2,6 +2,29 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.8.0] — 2026-03-25
+
+### Features
+- **Container lifecycle hooks**: New `lifecycle` field on `SessionRequest` with four hook points —
+  `pre_init` (before agent start), `post_init` (after agent init), `sidecar` (background process),
+  and `post_run` (after agent exit). Hooks execute inside the sidecar process, emit output as
+  `system` events in the NDJSON stream, and support configurable timeouts. Pre-init and post-init
+  failures are fatal (session fails with exit code 1). Works on both local and Docker runtimes.
+- **Volumes convenience field**: New `volumes` string array on `SessionRequest` accepts Docker's
+  `host:container[:mode]` syntax. Parsed into `Mount` structs and merged with existing `mounts`
+  field. Simplifies bind-mount configuration for orchestrators.
+- **Hook environment variables**: All hooks receive `SESSION_ID`, `TASK_ID`, `AGENT`, and
+  `WORK_DIR`. Post-init and sidecar hooks also receive `AGENT_PID`.
+- **Sidecar hook process management**: Background sidecar hooks receive SIGTERM when the agent
+  exits, with a 5-second grace period before SIGKILL.
+- **Session identity env vars**: `SESSION_ID` and `TASK_ID` are now passed to both Docker and
+  local sidecar runtimes for use by hooks and agent configuration.
+
+### Documentation
+- New guide: [Container Lifecycle Hooks](docs/guides/lifecycle-hooks.md) — full reference with
+  lifecycle sequence, environment variables, use cases (workspace setup, cost watchdog, artifact
+  extraction, security sandbox), and error handling.
+
 ## [0.7.0] — 2026-03-22
 
 ### Features

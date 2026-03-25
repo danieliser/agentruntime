@@ -122,7 +122,16 @@ func newSidecarFromEnv() (sidecarServer, string, error) {
 		if os.Getenv("AGENT_PROMPT") == "" {
 			stallCfg.ResultGrace = -1
 		}
-		server := NewExternalWSServer(agentType, backend, stallCfg)
+		hookEnv := LifecycleEnv{
+			SessionID: os.Getenv("SESSION_ID"),
+			TaskID:    os.Getenv("TASK_ID"),
+			WorkDir:   os.Getenv("WORK_DIR"),
+		}
+		// Default WORK_DIR to /workspace if not set (Docker containers use this).
+		if hookEnv.WorkDir == "" {
+			hookEnv.WorkDir = "/workspace"
+		}
+		server := NewExternalWSServer(agentType, backend, stallCfg, agentCfg.Lifecycle, hookEnv)
 		if err := configureCleanupTimeout(server); err != nil {
 			return nil, "", err
 		}

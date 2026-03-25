@@ -129,6 +129,99 @@ func TestSessionRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseVolumes(t *testing.T) {
+	tests := []struct {
+		name    string
+		volumes []string
+		want    []Mount
+	}{
+		{"nil", nil, nil},
+		{"empty", []string{}, nil},
+		{"host:container", []string{"/host:/container"}, []Mount{
+			{Host: "/host", Container: "/container", Mode: "rw"},
+		}},
+		{"host:container:ro", []string{"/host:/container:ro"}, []Mount{
+			{Host: "/host", Container: "/container", Mode: "ro"},
+		}},
+		{"multiple", []string{"/a:/b:rw", "/c:/d:ro"}, []Mount{
+			{Host: "/a", Container: "/b", Mode: "rw"},
+			{Host: "/c", Container: "/d", Mode: "ro"},
+		}},
+		{"malformed skipped", []string{"no-colon", "/a:/b"}, []Mount{
+			{Host: "/a", Container: "/b", Mode: "rw"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := SessionRequest{Volumes: tt.volumes}
+			got := req.ParseVolumes()
+			if len(got) != len(tt.want) {
+				t.Fatalf("len = %d, want %d", len(got), len(tt.want))
+			}
+			for i, m := range got {
+				if m.Host != tt.want[i].Host || m.Container != tt.want[i].Container || m.Mode != tt.want[i].Mode {
+					t.Errorf("[%d] got %+v, want %+v", i, m, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestEffectiveMounts_IncludesVolumes(t *testing.T) {
+	req := SessionRequest{
+		WorkDir: "/project",
+		Volumes: []string{"/hooks:/hooks:ro"},
+	}
+	mounts := req.EffectiveMounts()
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(mounts))
+	}
+	// WorkDir first, then volume
+	if mounts[0].Container != "/workspace" {
+		t.Errorf("first mount = %q, want /workspace", mounts[0].Container)
+	}
+	if mounts[1].Host != "/hooks" || mounts[1].Container != "/hooks" || mounts[1].Mode != "ro" {
+		t.Errorf("volume mount = %+v", mounts[1])
+	}
+}
+
+func TestLifecycleConfig_JSONRoundTrip(t *testing.T) {
+	req := SessionRequest{
+		Agent:  "claude",
+		Prompt: "hello",
+		Lifecycle: &LifecycleConfig{
+			PreInit:     "/hooks/setup.sh",
+			PostInit:    "/hooks/warmup.sh",
+			Sidecar:     "/hooks/watchdog.sh",
+			PostRun:     "/hooks/cleanup.sh",
+			HookTimeout: 15,
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded SessionRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.Lifecycle == nil {
+		t.Fatal("lifecycle is nil after round-trip")
+	}
+	if decoded.Lifecycle.PreInit != "/hooks/setup.sh" {
+		t.Errorf("pre_init = %q", decoded.Lifecycle.PreInit)
+	}
+	if decoded.Lifecycle.Sidecar != "/hooks/watchdog.sh" {
+		t.Errorf("sidecar = %q", decoded.Lifecycle.Sidecar)
+	}
+	if decoded.Lifecycle.HookTimeout != 15 {
+		t.Errorf("hook_timeout = %d, want 15", decoded.Lifecycle.HookTimeout)
+	}
+}
+
 func TestResources_BackwardCompat(t *testing.T) {
 	// Resources is a type alias for ContainerConfig — verify it works
 	var r Resources

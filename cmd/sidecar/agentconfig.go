@@ -57,6 +57,45 @@ type AgentConfig struct {
 
 	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
 	Bare bool `json:"bare,omitempty"`
+
+	// Lifecycle hooks — scripts executed at defined points in the session lifecycle.
+	Lifecycle *LifecycleConfig `json:"lifecycle,omitempty"`
+}
+
+// LifecycleConfig specifies scripts to run at defined points in the session lifecycle.
+type LifecycleConfig struct {
+	// PreInit runs BEFORE the agent binary starts. Blocking.
+	PreInit string `json:"pre_init,omitempty"`
+
+	// PostInit runs AFTER the agent is alive but BEFORE the first prompt. Blocking.
+	PostInit string `json:"post_init,omitempty"`
+
+	// Sidecar is spawned as a background process alongside the agent.
+	Sidecar string `json:"sidecar,omitempty"`
+
+	// PostRun runs AFTER the agent exits. Blocking.
+	PostRun string `json:"post_run,omitempty"`
+
+	// HookTimeout is the timeout in seconds for blocking hooks. Default: 30.
+	HookTimeout int `json:"hook_timeout,omitempty"`
+}
+
+// HasHooks reports whether any lifecycle hooks are configured.
+func (c *LifecycleConfig) HasHooks() bool {
+	return c != nil && (c.PreInit != "" || c.PostInit != "" || c.Sidecar != "" || c.PostRun != "")
+}
+
+// BlockingTimeout returns the timeout for blocking hooks (pre_init, post_init).
+func (c *LifecycleConfig) BlockingTimeout() int {
+	if c != nil && c.HookTimeout > 0 {
+		return c.HookTimeout
+	}
+	return 30
+}
+
+// PostRunTimeout returns the timeout for the post_run hook (2x blocking timeout).
+func (c *LifecycleConfig) PostRunTimeout() int {
+	return c.BlockingTimeout() * 2
 }
 
 // parseAgentConfig reads and parses the AGENT_CONFIG env var.

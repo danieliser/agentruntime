@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,15 @@ type SessionRequest struct {
 	// WorkDir is shorthand: becomes {Host: val, Container: "/workspace", Mode: "rw"}.
 	WorkDir string  `json:"work_dir,omitempty" yaml:"work_dir,omitempty"`
 	Mounts  []Mount `json:"mounts,omitempty"   yaml:"mounts,omitempty"`
+
+	// Volumes is a convenience format for Docker bind mounts using the
+	// "host:container[:mode]" string syntax. Parsed into Mount structs
+	// and merged with Mounts in EffectiveMounts().
+	Volumes []string `json:"volumes,omitempty" yaml:"volumes,omitempty"`
+
+	// Lifecycle hooks — scripts that run at defined points in the session lifecycle.
+	// Scripts must exist at the specified paths (typically mounted via Volumes).
+	Lifecycle *LifecycleConfig `json:"lifecycle,omitempty" yaml:"lifecycle,omitempty"`
 
 	// Agent-specific config — caller provides content/paths, agentruntime places files.
 	// Only the block matching Agent is read; others are ignored.
@@ -87,6 +97,30 @@ type Mount struct {
 	Container string `json:"container" yaml:"container"`
 	Mode      string `json:"mode"      yaml:"mode"` // "rw" | "ro"
 	Type      string `json:"type"      yaml:"type"` // "bind" (default) | "volume"
+}
+
+// LifecycleConfig specifies scripts to run at defined points in the session lifecycle.
+// All fields are optional — missing hooks are silently skipped.
+type LifecycleConfig struct {
+	// PreInit runs BEFORE the agent binary starts. Blocking.
+	// Non-zero exit = session fails, agent never starts.
+	PreInit string `json:"pre_init,omitempty" yaml:"pre_init,omitempty"`
+
+	// PostInit runs AFTER the agent process is alive but BEFORE the first prompt.
+	// Blocking. Non-zero exit = agent killed, session fails.
+	PostInit string `json:"post_init,omitempty" yaml:"post_init,omitempty"`
+
+	// Sidecar is spawned as a background process alongside the agent.
+	// Receives SIGTERM when the agent exits, SIGKILL after 5s grace.
+	Sidecar string `json:"sidecar,omitempty" yaml:"sidecar,omitempty"`
+
+	// PostRun runs AFTER the agent exits, before container teardown.
+	// Blocking. Non-zero exit is logged but does not change session status.
+	PostRun string `json:"post_run,omitempty" yaml:"post_run,omitempty"`
+
+	// HookTimeout is the timeout in seconds for blocking hooks (pre_init, post_init).
+	// Default: 30. PostRun uses 2x this value (default: 60).
+	HookTimeout int `json:"hook_timeout,omitempty" yaml:"hook_timeout,omitempty"`
 }
 
 // ClaudeConfig holds pre-materialized content/paths for Claude Code.
@@ -208,10 +242,36 @@ type SessionInfo struct {
 	Team          *TeamConfig `json:"team,omitempty"`
 }
 
-// EffectiveMounts resolves WorkDir shorthand into the Mounts list.
+// ParseVolumes converts the Volumes string slice into typed Mount structs.
+// Each entry follows Docker's "host:container[:mode]" syntax.
+// Returns nil if Volumes is empty.
+func (r *SessionRequest) ParseVolumes() []Mount {
+	if len(r.Volumes) == 0 {
+		return nil
+	}
+	mounts := make([]Mount, 0, len(r.Volumes))
+	for _, v := range r.Volumes {
+		parts := strings.SplitN(v, ":", 3)
+		if len(parts) < 2 {
+			continue // malformed, skip
+		}
+		m := Mount{
+			Host:      parts[0],
+			Container: parts[1],
+			Mode:      "rw",
+		}
+		if len(parts) == 3 {
+			m.Mode = parts[2]
+		}
+		mounts = append(mounts, m)
+	}
+	return mounts
+}
+
+// EffectiveMounts resolves WorkDir shorthand and Volumes strings into the Mounts list.
 // Returns a new slice — does not modify the original request.
 func (r *SessionRequest) EffectiveMounts() []Mount {
-	mounts := make([]Mount, 0, len(r.Mounts)+1)
+	mounts := make([]Mount, 0, len(r.Mounts)+len(r.Volumes)+1)
 	if r.WorkDir != "" {
 		mounts = append(mounts, Mount{
 			Host:      r.WorkDir,
@@ -220,6 +280,7 @@ func (r *SessionRequest) EffectiveMounts() []Mount {
 		})
 	}
 	mounts = append(mounts, r.Mounts...)
+	mounts = append(mounts, r.ParseVolumes()...)
 	return mounts
 }
 

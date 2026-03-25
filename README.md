@@ -472,6 +472,8 @@ Current behavior:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture and design decisions
 - [docs/IMPLEMENTATION-GUIDE.md](docs/IMPLEMENTATION-GUIDE.md) — Developer reference (session lifecycle, event schema, field reference)
 - [docs/architecture-flows.md](docs/architecture-flows.md) — Detailed sequence diagrams
+- [docs/guides/lifecycle-hooks.md](docs/guides/lifecycle-hooks.md) — Container lifecycle hooks (pre_init, post_init, sidecar, post_run)
+- [docs/guides/hooks.md](docs/guides/hooks.md) — Claude Code tool-use hooks
 - [docs/specs/](docs/specs/) — Design specs (historical)
 - [docs/research/](docs/research/) — Protocol research references
 
@@ -503,6 +505,16 @@ Current behavior:
       "mode": "rw"
     }
   ],
+  "volumes": [
+    "/host/hooks:/hooks:ro"
+  ],
+  "lifecycle": {
+    "pre_init": "/hooks/setup.sh",
+    "post_init": "/hooks/warmup.sh",
+    "sidecar": "/hooks/watchdog.sh",
+    "post_run": "/hooks/cleanup.sh",
+    "hook_timeout": 30
+  },
   "claude": {
     "settings_json": {},
     "claude_md": "# extra instructions",
@@ -543,6 +555,8 @@ Fields that matter most in practice:
 - `agent`: currently `claude` or `codex` for the v2 sidecar path.
 - `prompt` plus `interactive`: choose one-shot or interactive behavior.
 - `work_dir` or writable `mounts`: controls `/workspace`. For Docker runtime, omitting `work_dir` means no host volume is mounted — the agent works inside the container's own filesystem.
+- `volumes`: convenience string array using Docker's `host:container[:mode]` syntax. Merged with `mounts`.
+- `lifecycle`: container lifecycle hooks — `pre_init`, `post_init`, `sidecar`, `post_run`. See [lifecycle hooks guide](docs/guides/lifecycle-hooks.md).
 - `claude` and `codex`: file materialization into `~/.claude` or `~/.codex`. If omitted, the daemon infers a default empty config block from the `agent` field so credentials and config files are still materialized. Explicitly sending `"codex": {}` or `"claude": {}` is equivalent but makes the intent clear.
 - `mcp_servers`: merged into Claude MCP config and sanitized during materialization.
 - `env`: explicit env vars for the runtime.

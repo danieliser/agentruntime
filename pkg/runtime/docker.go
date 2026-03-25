@@ -419,6 +419,13 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
 		envValues["AGENT_CONFIG"] = acJSON
 	}
+	// Pass session identity to sidecar for lifecycle hooks.
+	if cfg.SessionID != "" {
+		envValues["SESSION_ID"] = cfg.SessionID
+	}
+	if cfg.TaskID != "" {
+		envValues["TASK_ID"] = cfg.TaskID
+	}
 	// Pass prompt via env so the sidecar knows this is fire-and-forget mode.
 	// Without this, the sidecar defaults to interactive (no -p flag) and
 	// Claude Code stays alive after emitting its result.
