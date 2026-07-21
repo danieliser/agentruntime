@@ -262,6 +262,7 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 	// detached codex with an open stdin blocks forever — this is unconditional.
 	transport, err := b.spawner(b.ctx, cmd, env, false)
 	if err != nil {
+		b.removeCleanHome()
 		b.setRunning(false)
 		b.emitError(err.Error())
 		return err
@@ -372,6 +373,7 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	}
 	transport, err := b.spawner(b.ctx, spawnCmd, env, true)
 	if err != nil {
+		b.removeCleanHome()
 		b.setRunning(false)
 		b.emitError(err.Error())
 		return err
@@ -522,10 +524,8 @@ func (b *codexBackend) Close() error {
 		cancel := b.cancel
 		closeFn := b.closeFn
 		stdin := b.stdin
-		cleanHome := b.cleanHome
 		b.stdin = nil
 		b.closeFn = nil
-		b.cleanHome = ""
 		b.running = false
 		b.mu.Unlock()
 
@@ -538,15 +538,26 @@ func (b *codexBackend) Close() error {
 		if closeFn != nil {
 			closeErr = closeFn()
 		}
-		if cleanHome != "" {
-			_ = os.RemoveAll(cleanHome)
-		}
+		b.removeCleanHome()
 
 		b.failPending(errors.New("codex backend closed"))
 		close(b.done)
 		close(b.events)
 	})
 	return closeErr
+}
+
+// removeCleanHome tears down the ephemeral CODEX_HOME (it holds a copied
+// auth.json). Called from Close and from every spawn-failure path so a
+// failed or killed spawn never strands credentials in the temp dir.
+func (b *codexBackend) removeCleanHome() {
+	b.mu.Lock()
+	cleanHome := b.cleanHome
+	b.cleanHome = ""
+	b.mu.Unlock()
+	if cleanHome != "" {
+		_ = os.RemoveAll(cleanHome)
+	}
 }
 
 func (b *codexBackend) ensureThread() (string, error) {

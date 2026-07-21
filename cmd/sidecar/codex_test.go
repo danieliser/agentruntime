@@ -451,6 +451,43 @@ func TestCodexPromptMode_CleanHomeMaterialization(t *testing.T) {
 	}
 }
 
+// TestCodexPromptMode_SpawnFailureRemovesCleanHome: the ephemeral CODEX_HOME
+// holds a copied auth.json — a failed spawn must not strand it in /tmp.
+func TestCodexPromptMode_SpawnFailureRemovesCleanHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	if err := os.MkdirAll(home+"/.codex", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home+"/.codex/auth.json", []byte(`{"token":"secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var cleanHome string
+	spawner := func(_ context.Context, _ []string, env []string, _ bool) (*codexTransport, error) {
+		for _, entry := range env {
+			if strings.HasPrefix(entry, "CODEX_HOME=") {
+				cleanHome = strings.TrimPrefix(entry, "CODEX_HOME=")
+			}
+		}
+		return nil, os.ErrPermission
+	}
+
+	backend := newCodexBackendConfig("codex", "do the task", log.New(io.Discard, "", 0), spawner, AgentConfig{Context: "clean"})
+	t.Cleanup(func() { _ = backend.Close() })
+
+	if err := backend.Start(context.Background()); err == nil {
+		t.Fatal("Start() should fail when the spawner errors")
+	}
+	if cleanHome == "" {
+		t.Fatal("spawner never saw CODEX_HOME — materialization did not run")
+	}
+	if _, err := os.Stat(cleanHome); !os.IsNotExist(err) {
+		t.Fatalf("clean home %s not removed after spawn failure: %v", cleanHome, err)
+	}
+}
+
 // TestSpawnCodexAppServer_NoHostEnvMerge proves the REAL spawner passes the
 // provided env verbatim instead of merging os.Environ() — the P0 leak was a
 // full host-environment merge that fake-spawner tests could not see.
