@@ -117,12 +117,16 @@ Two claims here; they got different treatment:
 - Tests: `TestGrokBackend_CloseRacesNaturalExit`,
   `TestCursorBackend_CloseRacesNaturalExit` (50 iterations each), suite run
   under `-race`.
-- **Adjacent risk noted, not fixed:** all prompt-mode backends close the
-  events channel in `waitForExit` while reader goroutines may still be
-  draining buffered stdout lines; a mid-drain emit racing that close is a
-  theoretical send-on-closed-channel panic that predates this branch and
-  spans every backend. Fixing it properly means restructuring channel
-  ownership — flagged for follow-up rather than rushed here.
+- **Adjacent race found and fixed too:** running the suite under `-race`
+  surfaced a second lifecycle race in the same family — `emit()` sending on
+  the events channel while `Close()`/`waitForExit()` closes it (observed
+  live in the codex backend; the identical pattern existed in claude, grok,
+  and cursor, whose `emit` even had a nonsensical blocking-send `default`
+  branch). All four backends now guard channel sends and close with an
+  `eventsMu` + closed flag; the unblock order (context-cancel / `markDone`
+  before taking the lock) prevents deadlock on a full buffer. This race
+  predates the branch but was unreachable until the new tests exercised
+  teardown-during-read.
 
 ## 7 — P1: prompts logged in plaintext (FIXED)
 
@@ -180,3 +184,9 @@ mechanical PR so this branch's diff stays reviewable.
   Pre-existing — reproduced 0/10 on retry, unrelated to these changes, but
   it suggests the delete handler's remove path isn't atomic. Worth its own
   look.
+- The stall-detector tests had their own data race (the test-local `emitted`
+  slice appended by the detector goroutine and read unsynchronized —
+  12 `-race` warnings at the pre-fix branch tip, so pre-existing). Fixed
+  with a mutex-guarded event recorder so `go test -race ./cmd/sidecar/` is
+  fully green; the review's read-only sandbox could not have seen this
+  since it couldn't run the suite at all.

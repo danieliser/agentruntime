@@ -7,17 +7,35 @@ import (
 	"time"
 )
 
+// eventRecorder collects events emitted by the detector goroutine. The
+// tests read while the goroutine may still be appending, so both sides
+// must synchronize — an unguarded slice here is a data race under -race.
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (r *eventRecorder) emit(event Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+	return nil
+}
+
+func (r *eventRecorder) snapshot() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Event(nil), r.events...)
+}
+
 func TestStallWarningFiresAfterSilenceThreshold(t *testing.T) {
 	warningTimeout := 100 * time.Millisecond
 	killTimeout := 1 * time.Second
 	resultGrace := 1 * time.Second
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -60,7 +78,7 @@ func TestStallWarningFiresAfterSilenceThreshold(t *testing.T) {
 
 	// Should have emitted a stall_warning system event.
 	found := false
-	for _, evt := range emitted {
+	for _, evt := range recorder.snapshot() {
 		if evt.Type == "system" {
 			if data, ok := evt.Data.(map[string]any); ok {
 				if subtype, ok := data["subtype"].(string); ok && subtype == "stall_warning" {
@@ -72,7 +90,7 @@ func TestStallWarningFiresAfterSilenceThreshold(t *testing.T) {
 	}
 
 	if !found {
-		t.Errorf("expected stall_warning event, but got %v", emitted)
+		t.Errorf("expected stall_warning event, but got %v", recorder.snapshot())
 	}
 
 	mu.Lock()
@@ -88,11 +106,8 @@ func TestStallKillFiresAfterKillThreshold(t *testing.T) {
 	resultGrace := 1 * time.Second
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -131,7 +146,7 @@ func TestStallKillFiresAfterKillThreshold(t *testing.T) {
 
 	// Check that we got a stall_kill event and the cancel was called.
 	found := false
-	for _, evt := range emitted {
+	for _, evt := range recorder.snapshot() {
 		if evt.Type == "system" {
 			if data, ok := evt.Data.(map[string]any); ok {
 				if subtype, ok := data["subtype"].(string); ok && subtype == "stall_kill" {
@@ -143,7 +158,7 @@ func TestStallKillFiresAfterKillThreshold(t *testing.T) {
 	}
 
 	if !found {
-		t.Errorf("expected stall_kill event, but got %v", emitted)
+		t.Errorf("expected stall_kill event, but got %v", recorder.snapshot())
 	}
 
 	mu.Lock()
@@ -161,11 +176,8 @@ func TestResultGracePeriodKillsHungProcess(t *testing.T) {
 	resultGrace := 100 * time.Millisecond
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -204,7 +216,7 @@ func TestResultGracePeriodKillsHungProcess(t *testing.T) {
 
 	// Check for stall_kill event with reason="result_timeout".
 	found := false
-	for _, evt := range emitted {
+	for _, evt := range recorder.snapshot() {
 		if evt.Type == "system" {
 			if data, ok := evt.Data.(map[string]any); ok {
 				if subtype, ok := data["subtype"].(string); ok && subtype == "stall_kill" {
@@ -218,7 +230,7 @@ func TestResultGracePeriodKillsHungProcess(t *testing.T) {
 	}
 
 	if !found {
-		t.Errorf("expected stall_kill event with reason=result_timeout, but got %v", emitted)
+		t.Errorf("expected stall_kill event with reason=result_timeout, but got %v", recorder.snapshot())
 	}
 
 	mu.Lock()
@@ -236,11 +248,8 @@ func TestResultGracePeriodCancelledByNewPrompt(t *testing.T) {
 	resultGrace := 200 * time.Millisecond
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -290,7 +299,7 @@ func TestResultGracePeriodCancelledByNewPrompt(t *testing.T) {
 	mu.Unlock()
 
 	found := false
-	for _, evt := range emitted {
+	for _, evt := range recorder.snapshot() {
 		if evt.Type == "system" {
 			if data, ok := evt.Data.(map[string]any); ok {
 				if subtype, ok := data["subtype"].(string); ok && subtype == "stall_kill" {
@@ -315,11 +324,8 @@ func TestNormalExitPreemptsStallDetection(t *testing.T) {
 	resultGrace := 1 * time.Second
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelFn := func() {
 		t.Errorf("cancel should not be called during normal exit")
@@ -355,7 +361,7 @@ func TestNormalExitPreemptsStallDetection(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 
 	found := false
-	for _, evt := range emitted {
+	for _, evt := range recorder.snapshot() {
 		if evt.Type == "system" {
 			if data, ok := evt.Data.(map[string]any); ok {
 				if subtype, ok := data["subtype"].(string); ok {
@@ -376,11 +382,8 @@ func TestNormalExitPreemptsStallDetection(t *testing.T) {
 }
 
 func TestAllPhasesDisabled(t *testing.T) {
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -416,8 +419,8 @@ func TestAllPhasesDisabled(t *testing.T) {
 	// Wait to ensure no stall events fire.
 	time.Sleep(100 * time.Millisecond)
 
-	if len(emitted) > 0 {
-		t.Errorf("expected no events when all phases disabled, but got %v", emitted)
+	if len(recorder.snapshot()) > 0 {
+		t.Errorf("expected no events when all phases disabled, but got %v", recorder.snapshot())
 	}
 
 	mu.Lock()
@@ -436,11 +439,8 @@ func TestNoEventsBeforeFirstEvent(t *testing.T) {
 	resultGrace := 1 * time.Second
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -477,8 +477,8 @@ func TestNoEventsBeforeFirstEvent(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Should not have emitted stall events.
-	if len(emitted) > 0 {
-		t.Errorf("expected no stall events before first event, but got %v", emitted)
+	if len(recorder.snapshot()) > 0 {
+		t.Errorf("expected no stall events before first event, but got %v", recorder.snapshot())
 	}
 
 	mu.Lock()
@@ -497,11 +497,8 @@ func TestContinuousEventsPreventStall(t *testing.T) {
 	resultGrace := 1 * time.Second
 	tickInterval := 30 * time.Millisecond
 
-	emitted := make([]Event, 0)
-	emitEvent := func(event Event) error {
-		emitted = append(emitted, event)
-		return nil
-	}
+	recorder := &eventRecorder{}
+	emitEvent := recorder.emit
 
 	cancelCalled := false
 	var mu sync.Mutex
@@ -548,7 +545,7 @@ func TestContinuousEventsPreventStall(t *testing.T) {
 
 	// Should not have emitted stall events.
 	found := false
-	for _, evt := range emitted {
+	for _, evt := range recorder.snapshot() {
 		if evt.Type == "system" {
 			if data, ok := evt.Data.(map[string]any); ok {
 				if subtype, ok := data["subtype"].(string); ok {

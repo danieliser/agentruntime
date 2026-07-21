@@ -122,6 +122,12 @@ type ClaudeBackend struct {
 	done   chan struct{}
 	waitCh chan backendExit
 
+	// eventsMu serializes sends on events against its close in waitForExit.
+	// markDone() runs before the close, so an emit blocked on a full buffer
+	// exits via done and releases the lock first.
+	eventsMu     sync.Mutex
+	eventsClosed bool
+
 	stderrMu sync.Mutex
 	stderr   strings.Builder
 }
@@ -682,7 +688,10 @@ func (b *ClaudeBackend) waitForExit(process ClaudeProcess) {
 
 	b.markDone()
 	close(b.waitCh)
+	b.eventsMu.Lock()
+	b.eventsClosed = true
 	close(b.events)
+	b.eventsMu.Unlock()
 }
 
 func (b *ClaudeBackend) handleStdoutLine(line []byte) {
@@ -842,14 +851,17 @@ func (b *ClaudeBackend) handleControlRequest(line []byte) {
 }
 
 func (b *ClaudeBackend) emit(event Event) {
+	b.eventsMu.Lock()
+	defer b.eventsMu.Unlock()
+	if b.eventsClosed {
+		return
+	}
+	// The channel is buffered so a slow consumer does not block Claude's
+	// stdout parsing; when the buffer fills, backpressure wins until done.
 	select {
 	case <-b.done:
 		return
 	case b.events <- event:
-	default:
-		// The channel is intentionally buffered so a slow consumer does not
-		// block Claude's stdout parsing. If the buffer fills, backpressure wins.
-		b.events <- event
 	}
 }
 

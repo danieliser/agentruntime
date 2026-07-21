@@ -82,6 +82,12 @@ type GrokBackend struct {
 	done   chan struct{}
 	waitCh chan backendExit
 
+	// eventsMu serializes sends on events against its close in waitForExit.
+	// markDone() runs before the close, so an emit blocked on a full buffer
+	// exits via done and releases the lock first.
+	eventsMu     sync.Mutex
+	eventsClosed bool
+
 	stderrMu sync.Mutex
 	stderr   strings.Builder
 }
@@ -425,16 +431,22 @@ func (b *GrokBackend) waitForExit(process ClaudeProcess) {
 
 	b.markDone()
 	close(b.waitCh)
+	b.eventsMu.Lock()
+	b.eventsClosed = true
 	close(b.events)
+	b.eventsMu.Unlock()
 }
 
 func (b *GrokBackend) emit(event Event) {
+	b.eventsMu.Lock()
+	defer b.eventsMu.Unlock()
+	if b.eventsClosed {
+		return
+	}
 	select {
 	case <-b.done:
 		return
 	case b.events <- event:
-	default:
-		b.events <- event
 	}
 }
 

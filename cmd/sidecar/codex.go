@@ -54,10 +54,16 @@ type codexBackend struct {
 	pendingMu sync.Mutex
 	pending   map[string]chan codexRPCResponse
 
-	events    chan Event
-	waitCh    chan backendExit
-	done      chan struct{}
-	closeOnce sync.Once
+	events chan Event
+	waitCh chan backendExit
+	done   chan struct{}
+
+	// eventsMu serializes sends on events against its close. Close cancels
+	// the context first, so an emit blocked on a full buffer exits via
+	// contextDone and releases the lock before the channel is closed.
+	eventsMu     sync.Mutex
+	eventsClosed bool
+	closeOnce    sync.Once
 
 	stderrMu  sync.Mutex
 	stderrBuf strings.Builder
@@ -542,7 +548,10 @@ func (b *codexBackend) Close() error {
 
 		b.failPending(errors.New("codex backend closed"))
 		close(b.done)
+		b.eventsMu.Lock()
+		b.eventsClosed = true
 		close(b.events)
+		b.eventsMu.Unlock()
 	})
 	return closeErr
 }
@@ -868,6 +877,11 @@ func (b *codexBackend) handleNotification(msg codexRPCMessage) {
 }
 
 func (b *codexBackend) emit(event Event) {
+	b.eventsMu.Lock()
+	defer b.eventsMu.Unlock()
+	if b.eventsClosed {
+		return
+	}
 	select {
 	case <-b.contextDone():
 		return
