@@ -59,11 +59,12 @@ type AgentBackend interface {
 }
 
 type healthResponse struct {
-	Status       string `json:"status"`
-	AgentRunning bool   `json:"agent_running"`
-	AgentType    string `json:"agent_type"`
-	SessionID    string `json:"session_id"`
-	ErrorDetail  string `json:"error_detail,omitempty"`
+	Status        string   `json:"status"`
+	AgentRunning  bool     `json:"agent_running"`
+	AgentType     string   `json:"agent_type"`
+	SessionID     string   `json:"session_id"`
+	ErrorDetail   string   `json:"error_detail,omitempty"`
+	Contamination []string `json:"contamination,omitempty"`
 }
 
 type backendExit struct {
@@ -253,12 +254,23 @@ func (s *ExternalWSServer) handleHealth(w http.ResponseWriter, _ *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(healthResponse{
-		Status:       status,
-		AgentRunning: s.backend != nil && s.backend.Running(),
-		AgentType:    s.agentType,
-		SessionID:    s.sessionID(),
-		ErrorDetail:  errorDetail,
+		Status:        status,
+		AgentRunning:  s.backend != nil && s.backend.Running(),
+		AgentType:     s.agentType,
+		SessionID:     s.sessionID(),
+		ErrorDetail:   errorDetail,
+		Contamination: s.backendContamination(),
 	})
+}
+
+// backendContamination returns the backend's unstrippable context residuals,
+// or nil if the backend does not report any.
+func (s *ExternalWSServer) backendContamination() []string {
+	type contaminator interface{ Contamination() []string }
+	if c, ok := s.backend.(contaminator); ok {
+		return c.Contamination()
+	}
+	return nil
 }
 
 func (s *ExternalWSServer) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -373,6 +385,18 @@ func (s *ExternalWSServer) ensureStarted() error {
 		s.startMu.Lock()
 		s.startTime = time.Now()
 		s.startMu.Unlock()
+
+		// Surface unstrippable context residuals in the event log so
+		// consumers of the NDJSON stream can judge the session.
+		if contamination := s.backendContamination(); len(contamination) > 0 {
+			_ = s.recordAndBroadcast(Event{
+				Type: "system",
+				Data: map[string]any{
+					"subtype": "contamination",
+					"items":   contamination,
+				},
+			})
+		}
 
 		// Create and start stall detector.
 		s.stallDetector = NewStallDetector(

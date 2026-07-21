@@ -322,6 +322,9 @@ func TestClaudeBackend_CleanContextIsolationFlags(t *testing.T) {
 		cfg.CleanContext = true
 	})
 
+	if !hasArg(spec.Args, "--safe-mode") {
+		t.Fatalf("expected --safe-mode, args = %v", spec.Args)
+	}
 	mcpPath, ok := argValue(spec.Args, "--mcp-config")
 	if !ok {
 		t.Fatalf("expected --mcp-config, args = %v", spec.Args)
@@ -342,8 +345,8 @@ func TestClaudeBackend_CleanContextIsolationFlags(t *testing.T) {
 	if !hasArg(spec.Args, "--no-chrome") {
 		t.Fatalf("expected --no-chrome, args = %v", spec.Args)
 	}
-	if got, _ := argValue(spec.Args, "--system-prompt"); got != defaultCleanSystemPrompt {
-		t.Fatalf("--system-prompt = %q, want neutral default", got)
+	if hasArg(spec.Args, "--system-prompt") {
+		t.Fatalf("clean context must not force a system prompt (--safe-mode covers persona), args = %v", spec.Args)
 	}
 
 	settingsJSON, ok := argValue(spec.Args, "--settings")

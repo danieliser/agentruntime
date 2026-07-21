@@ -961,6 +961,17 @@ func (b *codexBackend) envSlice() []string {
 	return env
 }
 
+// Contamination reports context leakage this backend cannot strip.
+// PROBED 2026-07-21: a clean CODEX_HOME leaves codex 0.144's built-in skills
+// (imagegen, openai-docs, plugin-creator, skill-creator, skill-installer);
+// no user MCP servers, no global AGENTS.md.
+func (b *codexBackend) Contamination() []string {
+	if b.contextMode != "clean" {
+		return nil
+	}
+	return []string{"codex-builtin-skills"}
+}
+
 // configOverrides returns -c key=value flags for session tuning options.
 // Applies to both exec and app-server modes (both accept -c).
 func (b *codexBackend) configOverrides() []string {

@@ -39,6 +39,15 @@ type SessionRequest struct {
 	ResumeSession  string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"` // session ID to resume
 	PersistSession bool   `json:"persist_session,omitempty" yaml:"persist_session,omitempty"` // create named Docker volume for session persistence
 
+	// Context selects the context materialization mode.
+	//   ""      — default: the agent sees whatever its environment provides
+	//   "clean" — the adapter materializes a minimal ephemeral home per agent
+	//             (only the CLI's own auth + minimal config; keychain symlink
+	//             where required), runs against it, and tears it down.
+	//             Auto-discovery is forced off. Residual leakage that cannot
+	//             be stripped is reported in SessionInfo.Contamination.
+	Context string `json:"context,omitempty" yaml:"context,omitempty"`
+
 	// Filesystem — explicit multi-mount with access modes.
 	// WorkDir is shorthand: becomes {Host: val, Container: "/workspace", Mode: "rw"}.
 	WorkDir string  `json:"work_dir,omitempty" yaml:"work_dir,omitempty"`
@@ -249,6 +258,12 @@ type SessionInfo struct {
 	CostUSD       float64     `json:"cost_usd,omitempty"`
 	ToolCallCount int         `json:"tool_call_count,omitempty"`
 	Team          *TeamConfig `json:"team,omitempty"`
+
+	// Contamination lists context leakage the adapter could NOT strip for
+	// this session (e.g. "cursor-account-rules", "claude-sessionstart-hooks").
+	// Populated for clean-context sessions and for agents with known
+	// unstrippable leaks; empty means no known residual.
+	Contamination []string `json:"contamination,omitempty"`
 }
 
 // ParseVolumes converts the Volumes string slice into typed Mount structs.

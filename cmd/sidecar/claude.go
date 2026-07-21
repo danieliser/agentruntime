@@ -46,14 +46,21 @@ type ClaudeBackendConfig struct {
 	// Spawn fails fast if Bare is set without an API key available.
 	Bare bool
 
-	// CleanContext applies the verified isolation flag set (2026-07-20/21):
-	// settings override neutralizing hooks/statusLine/plugins, an empty
-	// --mcp-config with --strict-mcp-config, --no-chrome, and a system-prompt
-	// override. Subscription OAuth survives (unlike --bare).
+	// CleanContext applies the verified isolation flag set.
 	//
-	// KNOWN RESIDUAL: user-level SessionStart hooks still FIRE even with the
-	// settings override — they just have nothing to inject into the session.
-	// Consumers see this as "claude-sessionstart-hooks" contamination metadata.
+	// PROBE HISTORY (probing the model is the only reliable check):
+	//   2026-07-20 audit: --system-prompt + settings override + empty strict
+	//   mcp config + --no-chrome probed clean on the then-current CLI.
+	//   2026-07-21 re-probe on claude 2.1.216: that set is NO LONGER clean —
+	//   plugin-provided MCP servers, skills, and host CLAUDE.md all leaked.
+	//   --safe-mode ("all customizations disabled") probed clean: NONE, and
+	//   subscription OAuth survives (verified with no ANTHROPIC_API_KEY in
+	//   env). --bare remains API-key-only.
+	//
+	// Clean context therefore uses --safe-mode, keeping the settings override
+	// and empty strict MCP config as defense-in-depth against future CLI
+	// drift. KNOWN RESIDUAL: the CLI's default bundled skills remain
+	// ("claude-bundled-skills" in contamination metadata).
 	CleanContext bool
 }
 
@@ -274,10 +281,11 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 		}
 
 		if b.cleanContext {
-			// Clean-context isolation (VERIFIED probe set, 2026-07-20/21):
-			// an empty --mcp-config with --strict-mcp-config blocks every MCP
-			// server, host or materialized. Written to a temp file because the
-			// flag set was verified file-based.
+			// Clean-context isolation. --safe-mode disables all
+			// customizations (CLAUDE.md, skills, plugins, hooks, MCP servers)
+			// while keeping subscription OAuth — probed clean 2026-07-21 on
+			// claude 2.1.216. The empty strict MCP config stays as
+			// defense-in-depth against future CLI drift.
 			mcpPath, err := writeEmptyMCPConfig()
 			if err != nil {
 				b.emitError(err.Error())
@@ -285,7 +293,7 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 				return
 			}
 			b.tempMCPConfig = mcpPath
-			args = append(args, "--mcp-config", mcpPath, "--strict-mcp-config", "--no-chrome")
+			args = append(args, "--safe-mode", "--mcp-config", mcpPath, "--strict-mcp-config", "--no-chrome")
 		} else {
 			// Load MCP servers from materialized .mcp.json if it exists.
 			// --ide mode doesn't auto-discover .mcp.json, so we pass it explicitly.
@@ -309,8 +317,8 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			args = append(args, "--effort", b.effort)
 		}
 
-		if prompt := b.effectiveSystemPrompt(); prompt != "" {
-			args = append(args, "--system-prompt", prompt)
+		if b.systemPrompt != "" {
+			args = append(args, "--system-prompt", b.systemPrompt)
 		}
 
 		if settings := b.buildSettingsOverride(); len(settings) > 0 {
@@ -490,6 +498,16 @@ func (b *ClaudeBackend) Wait() <-chan backendExit {
 	return b.waitCh
 }
 
+// Contamination reports context leakage this backend cannot strip.
+// PROBED 2026-07-21: --safe-mode leaves only the CLI's default bundled
+// skills (deep-research, dataviz, review, ... — they ship with the binary).
+func (b *ClaudeBackend) Contamination() []string {
+	if !b.cleanContext {
+		return nil
+	}
+	return []string{"claude-bundled-skills"}
+}
+
 // PID returns the agent process PID, or 0 if not started.
 func (b *ClaudeBackend) PID() int {
 	b.mu.RLock()
@@ -501,32 +519,13 @@ func (b *ClaudeBackend) PID() int {
 	return 0
 }
 
-// defaultCleanSystemPrompt neutralizes host persona/instruction leakage when
-// clean-context mode is on and the caller did not supply a system prompt.
-// A system-prompt override is part of the verified isolation set.
-const defaultCleanSystemPrompt = "You are a coding agent working autonomously. " +
-	"You have no persona and no voice. Do not use any skills, plugins, memory tools, " +
-	"or MCP tools. Complete the task fully and stop."
-
-// effectiveSystemPrompt returns the system prompt to pass via --system-prompt.
-// Explicit config wins; clean-context mode falls back to a neutral override.
-func (b *ClaudeBackend) effectiveSystemPrompt() string {
-	if b.systemPrompt != "" {
-		return b.systemPrompt
-	}
-	if b.cleanContext {
-		return defaultCleanSystemPrompt
-	}
-	return ""
-}
-
 // buildSettingsOverride assembles the --settings JSON for this session.
 // Two independent concerns feed it:
 //
-//   - clean context: {"hooks":{},"statusLine":null,"enabledPlugins":{}} is the
-//     VERIFIED override that neutralizes host hooks/plugins while keeping
-//     subscription OAuth working. (User-level SessionStart hooks still fire —
-//     the override empties what they can inject, it cannot stop the dispatch.)
+//   - clean context: {"hooks":{},"statusLine":null,"enabledPlugins":{}} rides
+//     along with --safe-mode as defense-in-depth. (On the 2026-07-20 CLI this
+//     override was the primary mitigation; on 2.1.216 --safe-mode does the
+//     heavy lifting and this is belt-and-suspenders.)
 //   - effort pairing: VERIFIED 2026-07-20: --effort xhigh returns an API 400
 //     unless settings include "alwaysThinkingEnabled": true. The adapter pairs
 //     them automatically; "max" gets the same pairing (higher tier of the same

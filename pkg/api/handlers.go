@@ -93,6 +93,18 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		return
 	}
 
+	// Validate the context mode. Clean context forces auto-discovery off:
+	// the whole point is that no host config reaches the agent.
+	switch req.Context {
+	case "", "clean":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unknown context mode: %q (valid: \"clean\")", req.Context)})
+		return
+	}
+	if req.Context == "clean" {
+		req.AutoDiscover = false
+	}
+
 	// Ensure the agent-specific config block exists so the materializer
 	// can set up credentials, config files, and MCP servers. Callers can
 	// send an empty block (e.g. "codex": {}) — omitting it entirely is
@@ -195,6 +207,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		}
 	}
 	sess := session.NewSessionWithID(requestedID, req.TaskID, req.Agent, rt.Name(), req.Tags)
+	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -346,6 +359,7 @@ func (s *Server) handleGetSessionInfo(c *gin.Context) {
 		OutputTokens:  snap.OutputTokens,
 		CostUSD:       snap.CostUSD,
 		ToolCallCount: snap.ToolCallCount,
+		Contamination: snap.Contamination,
 	}
 	// Reconstruct team config from session tags.
 	if teamName := snap.Tags["team"]; teamName != "" {

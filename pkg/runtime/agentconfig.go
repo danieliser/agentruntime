@@ -15,6 +15,7 @@ type sidecarAgentConfig struct {
 	Effort        string            `json:"effort,omitempty"`
 	ServiceTier   string            `json:"service_tier,omitempty"`
 	SystemPrompt  string            `json:"system_prompt,omitempty"`
+	Context       string            `json:"context,omitempty"`
 
 	// Team fields — enable Claude Code Agent Teams inbox protocol.
 	TeamName      string `json:"team_name,omitempty"`
@@ -54,6 +55,10 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 		}
 		if cfg.Request.Effort != "" {
 			ac.Effort = cfg.Request.Effort
+			hasContent = true
+		}
+		if cfg.Request.Context != "" {
+			ac.Context = cfg.Request.Context
 			hasContent = true
 		}
 		if cfg.Request.Claude != nil {

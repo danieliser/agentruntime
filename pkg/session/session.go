@@ -39,6 +39,10 @@ type Session struct {
 	Replay      *ReplayBuffer         `json:"-"`
 	Handle      runtime.ProcessHandle `json:"-"`
 
+	// Contamination lists context leakage the adapter could not strip for
+	// this session (set at creation from the agent's known residuals).
+	Contamination []string `json:"contamination,omitempty"`
+
 	// Runtime metrics accumulated from the event stream.
 	LastActivity  *time.Time `json:"last_activity,omitempty"`
 	InputTokens   int        `json:"input_tokens,omitempty"`
@@ -200,6 +204,7 @@ func (s *Session) Snapshot() Session {
 		OutputTokens:  s.OutputTokens,
 		CostUSD:       s.CostUSD,
 		ToolCallCount: s.ToolCallCount,
+		Contamination: append([]string(nil), s.Contamination...),
 	}
 }
 

@@ -263,6 +263,16 @@ func (b *GrokBackend) Close() error {
 	return closeErr
 }
 
+// Contamination reports context leakage this backend cannot strip.
+// The fake-HOME strip leaves grok's 4 built-in CLI skills (check-work,
+// create-skill, help, imagine) — they ship with the binary.
+func (b *GrokBackend) Contamination() []string {
+	if b.contextMode != "clean" {
+		return nil
+	}
+	return []string{"grok-builtin-skills"}
+}
+
 // PID returns the agent process PID, or 0 if not started.
 func (b *GrokBackend) PID() int {
 	b.mu.RLock()
