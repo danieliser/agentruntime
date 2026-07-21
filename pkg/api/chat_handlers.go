@@ -289,7 +289,6 @@ func (s *Server) handleGetChatMessages(c *gin.Context) {
 	})
 }
 
-
 // handleChatAttach handles POST /chats/:name/attach.
 // Spawns an interactive session (no prompt) through the chat manager.
 func (s *Server) handleChatAttach(c *gin.Context) {

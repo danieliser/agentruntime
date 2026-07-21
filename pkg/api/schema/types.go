@@ -20,8 +20,8 @@ type SessionRequest struct {
 	// Task identity
 	SessionID string            `json:"session_id,omitempty" yaml:"session_id,omitempty"` // caller-defined session ID (must be valid UUID if set)
 	TaskID    string            `json:"task_id,omitempty" yaml:"task_id,omitempty"`
-	Name   string            `json:"name,omitempty"    yaml:"name,omitempty"` // human label for observability
-	Tags   map[string]string `json:"tags,omitempty"    yaml:"tags,omitempty"`
+	Name      string            `json:"name,omitempty"    yaml:"name,omitempty"` // human label for observability
+	Tags      map[string]string `json:"tags,omitempty"    yaml:"tags,omitempty"`
 
 	// What to run
 	Agent   string `json:"agent"              yaml:"agent"`
@@ -34,9 +34,9 @@ type SessionRequest struct {
 	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"` // duration string: "5m", "1h30m" (default: "5m")
 
 	// Session behavior
-	PTY            bool   `json:"pty,omitempty"            yaml:"pty,omitempty"`            // allocate PTY for interactive agents
-	Interactive    bool   `json:"interactive,omitempty"    yaml:"interactive,omitempty"`    // keep stdin open and steer via WS stdin frames
-	ResumeSession  string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"` // session ID to resume
+	PTY            bool   `json:"pty,omitempty"            yaml:"pty,omitempty"`              // allocate PTY for interactive agents
+	Interactive    bool   `json:"interactive,omitempty"    yaml:"interactive,omitempty"`      // keep stdin open and steer via WS stdin frames
+	ResumeSession  string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"`   // session ID to resume
 	PersistSession bool   `json:"persist_session,omitempty" yaml:"persist_session,omitempty"` // create named Docker volume for session persistence
 
 	// Context selects the context materialization mode.
@@ -103,7 +103,7 @@ type SessionRequest struct {
 
 // Mount describes a bind-mount or named volume mount between host/volume and container.
 type Mount struct {
-	Host      string `json:"host"      yaml:"host"`      // host path (for bind-mount) or volume name (for "volume" type)
+	Host      string `json:"host"      yaml:"host"` // host path (for bind-mount) or volume name (for "volume" type)
 	Container string `json:"container" yaml:"container"`
 	Mode      string `json:"mode"      yaml:"mode"` // "rw" | "ro"
 	Type      string `json:"type"      yaml:"type"` // "bind" (default) | "volume"
@@ -327,8 +327,8 @@ type Resources = ContainerConfig
 
 // CreateChatRequest is the body for POST /chats.
 type CreateChatRequest struct {
-	Name   string          `json:"name"`
-	Config ChatAPIConfig   `json:"config"`
+	Name   string        `json:"name"`
+	Config ChatAPIConfig `json:"config"`
 }
 
 // ChatAPIConfig mirrors chat.ChatConfig for API consumers.

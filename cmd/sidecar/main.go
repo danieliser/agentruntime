@@ -14,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
 )
 
 const defaultPort = "9090"
@@ -394,4 +393,3 @@ func durationFromSeconds(seconds, defaultSeconds int) time.Duration {
 		return time.Duration(seconds) * time.Second
 	}
 }
-

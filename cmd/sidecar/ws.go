@@ -691,11 +691,11 @@ func (s *ExternalWSServer) emitHeartbeat() {
 	_ = s.recordAndBroadcast(Event{
 		Type: "system",
 		Data: map[string]any{
-			"subtype":      "heartbeat",
-			"uptime_ms":    uptimeMs,
-			"input_tokens": inputToks,
+			"subtype":       "heartbeat",
+			"uptime_ms":     uptimeMs,
+			"input_tokens":  inputToks,
 			"output_tokens": outputToks,
-			"tool_calls":   toolCalls,
+			"tool_calls":    toolCalls,
 			"agent_running": s.backend != nil && s.backend.Running(),
 		},
 	})

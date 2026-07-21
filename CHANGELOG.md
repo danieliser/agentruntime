@@ -10,13 +10,20 @@ isolation claims below were verified by probing the model (asking it to
 enumerate its own context), not by config inspection.
 
 ### Features
-- **Clean-context sessions** (`context: "clean"` on `SessionRequest`): every
-  adapter materializes a minimal ephemeral home (only the CLI's own auth +
-  minimal config; keychain symlink where required), runs the session against
-  it, and tears it down. Auto-discovery is forced off. Residual leakage that
-  cannot be stripped is reported in a new `contamination` field on
-  `SessionInfo`, in the sidecar `/health` response, and as a
-  `system{subtype:"contamination"}` event in the NDJSON stream.
+- **Clean-context sessions** (`context: "clean"` on `SessionRequest`): each
+  adapter isolates by its verified route. codex, grok, and cursor materialize
+  a minimal ephemeral home (only the CLI's own auth + minimal config;
+  keychain symlink where required) and tear it down on close. claude keeps
+  its real HOME — an ephemeral home breaks subscription OAuth — and isolates
+  via `--safe-mode` plus the flag set below, the combination that probed
+  clean. All clean sessions also run under a strict env allowlist (no
+  `XDG_*`, `NODE_OPTIONS`/`NODE_PATH`, or host `CODEX_HOME`). Auto-discovery
+  is forced off. Residual leakage that cannot be stripped is reported in a
+  new `contamination` field on `SessionInfo`, in the sidecar `/health`
+  response, and as a `system{subtype:"contamination"}` event in the NDJSON
+  stream. Not supported on the legacy `local-pipe` runtime; on `docker`,
+  clean context covers claude and codex only (the agent image bundles
+  neither grok nor cursor).
 - **grok agent** (native xAI CLI, single-turn prompt mode): streaming-json
   normalization (thought/text deltas, terminal result with usage + cost),
   fake-HOME clean context. Known limit: grok 0.2.106 emits no tool events.

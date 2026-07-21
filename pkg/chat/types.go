@@ -30,18 +30,18 @@ const defaultIdleTimeout = 30 * time.Minute
 // ChatConfig is the stored config applied to every spawned session.
 // Specified at creation and reused on respawn. PATCH-able only when idle.
 type ChatConfig struct {
-	Agent        string             `json:"agent"`
-	Runtime      string             `json:"runtime,omitempty"`
-	Model        string             `json:"model,omitempty"`
-	Effort       string             `json:"effort,omitempty"`
-	Context      string             `json:"context,omitempty"` // "" | "clean" — forwarded to every session this chat spawns
-	MCPServers   []schema.MCPServer `json:"mcp_servers,omitempty"`
-	AutoDiscover interface{}        `json:"auto_discover,omitempty"`
-	WorkDir      string             `json:"work_dir,omitempty"`
-	Mounts       []schema.Mount     `json:"mounts,omitempty"`
-	Env          map[string]string   `json:"env,omitempty"`
-	IdleTimeout  string              `json:"idle_timeout,omitempty"`
-	MaxTurns     int                 `json:"max_turns,omitempty"`
+	Agent        string               `json:"agent"`
+	Runtime      string               `json:"runtime,omitempty"`
+	Model        string               `json:"model,omitempty"`
+	Effort       string               `json:"effort,omitempty"`
+	Context      string               `json:"context,omitempty"` // "" | "clean" — forwarded to every session this chat spawns
+	MCPServers   []schema.MCPServer   `json:"mcp_servers,omitempty"`
+	AutoDiscover interface{}          `json:"auto_discover,omitempty"`
+	WorkDir      string               `json:"work_dir,omitempty"`
+	Mounts       []schema.Mount       `json:"mounts,omitempty"`
+	Env          map[string]string    `json:"env,omitempty"`
+	IdleTimeout  string               `json:"idle_timeout,omitempty"`
+	MaxTurns     int                  `json:"max_turns,omitempty"`
 	Claude       *schema.ClaudeConfig `json:"claude,omitempty"`
 	Codex        *schema.CodexConfig  `json:"codex,omitempty"`
 }
@@ -62,12 +62,12 @@ func (c ChatConfig) EffectiveIdleTimeout() time.Duration {
 // ChatRecord is the persisted representation of a named chat.
 // Stored as JSON in {dataDir}/chats/{name}.json.
 type ChatRecord struct {
-	Name           string     `json:"name"`
-	Config         ChatConfig `json:"config"`
-	State          ChatState  `json:"state"`
-	VolumeName     string     `json:"volume_name,omitempty"`
-	CurrentSession string     `json:"current_session,omitempty"`
-	SessionChain   []string   `json:"session_chain"`
+	Name             string            `json:"name"`
+	Config           ChatConfig        `json:"config"`
+	State            ChatState         `json:"state"`
+	VolumeName       string            `json:"volume_name,omitempty"`
+	CurrentSession   string            `json:"current_session,omitempty"`
+	SessionChain     []string          `json:"session_chain"`
 	PendingMessage   string            `json:"pending_message,omitempty"`
 	ClaudeSessionIDs map[string]string `json:"claude_session_ids,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`

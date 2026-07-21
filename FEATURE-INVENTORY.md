@@ -99,14 +99,15 @@
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `context: "clean"` session option | Done | Ephemeral per-agent home, auto-discovery forced off, teardown on close |
-| Claude clean context | Done | `--safe-mode` + defense-in-depth overrides; probe-verified 2026-07-21; OAuth survives |
-| Codex clean context | Done | Ephemeral `CODEX_HOME` with auth.json + minimal config.toml |
+| `context: "clean"` session option | Done | Strict env allowlist + auto-discovery forced off; ephemeral home where the route uses one; rejected on `local-pipe` (no sidecar isolation) |
+| Claude clean context | Done | Flag-based, NOT an ephemeral home (that breaks subscription OAuth): `--safe-mode` + defense-in-depth overrides; probe-verified 2026-07-21 |
+| Codex clean context | Done | Ephemeral `CODEX_HOME` with auth.json + minimal config.toml; removed on close and on spawn failure |
 | Grok clean context | Done | Fake HOME with `.grok/{auth.json,agent_id,config.toml}` only |
 | Cursor clean context | Done | Fake HOME + `Library/Keychains` symlink (auth is keychain-based) |
-| Contamination metadata | Done | `SessionInfo.contamination`, sidecar `/health`, `system{contamination}` event |
-| Isolation self-tests (probe pattern) | Done | `pkg/e2e` clean-context probes per adapter; all four pass live 2026-07-21 |
-| Docker clean context | Partial | Clean sessions force auto-discovery off; docker homes are materialized per session by design — no ephemeral-home probe run in-container yet |
+| Contamination metadata | Done | `SessionInfo.contamination` (HTTP and chat spawn paths), sidecar `/health`, `system{contamination}` event |
+| Isolation self-tests (probe pattern) | Done | `pkg/e2e` clean-context probes per adapter; all four passed live 2026-07-21; assertion logic unit-tested outside the e2e tag |
+| Docker clean context | Partial | claude/codex only — the agent image bundles neither grok nor cursor, so those are rejected up front; no ephemeral-home probe run in-container yet |
+| Chat clean context | Done | `ChatConfig.context` forwarded to every session the chat spawns |
 
 ## Credentials And Config
 

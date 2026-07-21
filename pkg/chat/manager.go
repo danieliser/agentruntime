@@ -50,7 +50,7 @@ type Manager struct {
 	volumes        VolumeManager
 	spawner        SessionSpawner
 
-	mu       sync.Mutex
+	mu        sync.Mutex
 	chatLocks map[string]*sync.Mutex
 }
 
