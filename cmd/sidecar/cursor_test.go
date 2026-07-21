@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -236,6 +237,29 @@ func TestCursorBackend_CleanContextFakeHome(t *testing.T) {
 	_ = backend.Close()
 	if _, err := os.Stat(fakeHome); !os.IsNotExist(err) {
 		t.Fatalf("fake home not removed on Close: %v", err)
+	}
+}
+
+// TestCursorBackend_CloseRacesNaturalExit reproduces the double-close panic:
+// API deletion (Close) racing natural process exit (waitForExit) both closed
+// the done channel behind a non-atomic select-then-close. Run with -race.
+func TestCursorBackend_CloseRacesNaturalExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	for i := 0; i < 50; i++ {
+		backend, proc, _ := spawnCursorBackend(t, nil)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			proc.finish(nil)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = backend.Close()
+		}()
+		wg.Wait()
 	}
 }
 

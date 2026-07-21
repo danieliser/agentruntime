@@ -110,12 +110,13 @@ type ClaudeBackend struct {
 
 	startProcess ClaudeProcessStarter
 
-	mu      sync.RWMutex
-	mcp     *MCPServer
-	process ClaudeProcess
-	stdin   io.WriteCloser
-	running bool
-	once    sync.Once
+	mu       sync.RWMutex
+	mcp      *MCPServer
+	process  ClaudeProcess
+	stdin    io.WriteCloser
+	running  bool
+	once     sync.Once
+	doneOnce sync.Once
 
 	events chan Event
 	done   chan struct{}
@@ -477,16 +478,19 @@ func (b *ClaudeBackend) Stop() error {
 	}
 	b.removeTempMCPConfig()
 
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.markDone()
 	return stopErr
 }
 
 func (b *ClaudeBackend) Close() error {
 	return b.Stop()
+}
+
+// markDone closes the done channel exactly once. Stop (API deletion) and
+// waitForExit (natural process exit) race here — a bare select-then-close
+// can panic on double close.
+func (b *ClaudeBackend) markDone() {
+	b.doneOnce.Do(func() { close(b.done) })
 }
 
 func (b *ClaudeBackend) SessionID() string {
@@ -676,11 +680,7 @@ func (b *ClaudeBackend) waitForExit(process ClaudeProcess) {
 	default:
 	}
 
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.markDone()
 	close(b.waitCh)
 	close(b.events)
 }

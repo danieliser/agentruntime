@@ -58,6 +58,7 @@ type CursorBackend struct {
 	sessionID string
 	fakeHome  string
 	once      sync.Once
+	doneOnce  sync.Once
 
 	events chan Event
 	done   chan struct{}
@@ -261,12 +262,15 @@ func (b *CursorBackend) Close() error {
 	}
 	b.removeFakeHome()
 
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.markDone()
 	return closeErr
+}
+
+// markDone closes the done channel exactly once. Close (API deletion) and
+// waitForExit (natural process exit) race here — a bare select-then-close
+// can panic on double close.
+func (b *CursorBackend) markDone() {
+	b.doneOnce.Do(func() { close(b.done) })
 }
 
 // PID returns the agent process PID, or 0 if not started.
@@ -443,11 +447,7 @@ func (b *CursorBackend) waitForExit(process ClaudeProcess) {
 	default:
 	}
 
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.markDone()
 	close(b.waitCh)
 	close(b.events)
 }

@@ -76,6 +76,7 @@ type GrokBackend struct {
 	sessionID string
 	fakeHome  string // ephemeral HOME for clean-context sessions
 	once      sync.Once
+	doneOnce  sync.Once
 
 	events chan Event
 	done   chan struct{}
@@ -257,12 +258,15 @@ func (b *GrokBackend) Close() error {
 	}
 	b.removeFakeHome()
 
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.markDone()
 	return closeErr
+}
+
+// markDone closes the done channel exactly once. Close (API deletion) and
+// waitForExit (natural process exit) race here — a bare select-then-close
+// can panic on double close.
+func (b *GrokBackend) markDone() {
+	b.doneOnce.Do(func() { close(b.done) })
 }
 
 // Contamination reports context leakage this backend cannot strip.
@@ -419,11 +423,7 @@ func (b *GrokBackend) waitForExit(process ClaudeProcess) {
 	default:
 	}
 
-	select {
-	case <-b.done:
-	default:
-		close(b.done)
-	}
+	b.markDone()
 	close(b.waitCh)
 	close(b.events)
 }
