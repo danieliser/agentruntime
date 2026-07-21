@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -272,22 +274,166 @@ func TestCodexBackend_AutoApproval(t *testing.T) {
 	}
 }
 
-type fakeCodexSpawner struct {
-	mu   sync.Mutex
-	cmd  []string
-	proc *fakeCodexProcess
+// startPromptModeBackend starts a fire-and-forget codex backend against a
+// fake spawner and returns the spawner for command/env inspection.
+func startPromptModeBackend(t *testing.T, cfg AgentConfig) (*codexBackend, *fakeCodexSpawner) {
+	t.Helper()
+
+	proc := newFakeCodexProcess(t)
+	runner := &fakeCodexSpawner{proc: proc}
+	backend := newCodexBackendConfig("codex", "do the task", log.New(io.Discard, "", 0), runner.spawn, cfg)
+	t.Cleanup(func() { _ = backend.Close() })
+
+	if err := backend.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	return backend, runner
 }
 
-func (s *fakeCodexSpawner) spawn(_ context.Context, cmd []string, _ []string) (*codexTransport, error) {
+func TestCodexPromptMode_NoStdinPipe(t *testing.T) {
+	_, runner := startPromptModeBackend(t, AgentConfig{})
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.withStdin {
+		t.Fatal("exec mode must spawn without a stdin pipe (stdin = /dev/null)")
+	}
+}
+
+func TestCodexInteractiveMode_KeepsStdinPipe(t *testing.T) {
+	proc := newFakeCodexProcess(t)
+	runner := &fakeCodexSpawner{proc: proc}
+	backend := newCodexBackendConfig("codex", "", log.New(io.Discard, "", 0), runner.spawn, AgentConfig{})
+	t.Cleanup(func() { _ = backend.Close() })
+
+	go func() {
+		_ = backend.Spawn(context.Background())
+	}()
+	proc.nextWrite(t) // initialize request proves stdin is wired
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if !runner.withStdin {
+		t.Fatal("app-server mode must keep a stdin pipe for JSON-RPC")
+	}
+}
+
+func containsPair(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCodexPromptMode_EffortAndServiceTierFlags(t *testing.T) {
+	_, runner := startPromptModeBackend(t, AgentConfig{
+		Effort:      "xhigh",
+		ServiceTier: "priority",
+	})
+
+	runner.mu.Lock()
+	cmd := append([]string(nil), runner.cmd...)
+	runner.mu.Unlock()
+
+	if !containsPair(cmd, "-c", "model_reasoning_effort=xhigh") {
+		t.Fatalf("missing model_reasoning_effort override, cmd = %v", cmd)
+	}
+	if !containsPair(cmd, "-c", "service_tier=priority") {
+		t.Fatalf("missing service_tier override, cmd = %v", cmd)
+	}
+	// The prompt must remain the final argument.
+	if cmd[len(cmd)-1] != "do the task" {
+		t.Fatalf("prompt not last arg, cmd = %v", cmd)
+	}
+}
+
+func TestCodexPromptMode_CleanHomeMaterialization(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	if err := os.MkdirAll(home+"/.codex", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home+"/.codex/auth.json", []byte(`{"token":"secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Contaminants that must NOT be copied into the clean home.
+	if err := os.WriteFile(home+"/.codex/config.toml", []byte("mcp_servers.evil = {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home+"/.codex/AGENTS.md", []byte("global instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	backend, runner := startPromptModeBackend(t, AgentConfig{Context: "clean"})
+
+	runner.mu.Lock()
+	env := append([]string(nil), runner.env...)
+	runner.mu.Unlock()
+
+	cleanHome := ""
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "CODEX_HOME=") {
+			cleanHome = strings.TrimPrefix(entry, "CODEX_HOME=")
+		}
+	}
+	if cleanHome == "" {
+		t.Fatalf("expected CODEX_HOME in env, got %v", env)
+	}
+	if strings.HasPrefix(cleanHome, home) {
+		t.Fatalf("clean home %q must not live under the real HOME", cleanHome)
+	}
+
+	auth, err := os.ReadFile(cleanHome + "/auth.json")
+	if err != nil {
+		t.Fatalf("auth.json not copied: %v", err)
+	}
+	if string(auth) != `{"token":"secret"}` {
+		t.Fatalf("auth.json content = %q", auth)
+	}
+	config, err := os.ReadFile(cleanHome + "/config.toml")
+	if err != nil {
+		t.Fatalf("config.toml not written: %v", err)
+	}
+	if strings.Contains(string(config), "mcp_servers") {
+		t.Fatalf("host config.toml leaked into clean home: %q", config)
+	}
+	if _, err := os.Stat(cleanHome + "/AGENTS.md"); !os.IsNotExist(err) {
+		t.Fatal("AGENTS.md must not be copied into the clean home")
+	}
+
+	// Teardown removes the ephemeral home.
+	_ = backend.Close()
+	if _, err := os.Stat(cleanHome); !os.IsNotExist(err) {
+		t.Fatalf("clean home not removed on Close: %v", err)
+	}
+}
+
+type fakeCodexSpawner struct {
+	mu        sync.Mutex
+	cmd       []string
+	env       []string
+	withStdin bool
+	proc      *fakeCodexProcess
+}
+
+func (s *fakeCodexSpawner) spawn(_ context.Context, cmd []string, env []string, withStdin bool) (*codexTransport, error) {
 	s.mu.Lock()
 	s.cmd = append([]string(nil), cmd...)
+	s.env = append([]string(nil), env...)
+	s.withStdin = withStdin
 	s.mu.Unlock()
-	return &codexTransport{
-		stdin:   s.proc.stdinW,
+	transport := &codexTransport{
 		stdout:  s.proc.stdoutR,
 		wait:    s.proc.waitCh,
 		closeFn: s.proc.close,
-	}, nil
+	}
+	if withStdin {
+		transport.stdin = s.proc.stdinW
+	}
+	return transport, nil
 }
 
 type fakeCodexProcess struct {

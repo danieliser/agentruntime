@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -23,10 +24,17 @@ type codexBackend struct {
 	prompt       string // if set, fire-and-forget exec mode
 	model        string // --model flag override
 	approvalMode string // "full-auto" | "auto-edit" | "suggest"
+	effort       string // -c model_reasoning_effort=<tier>
+	serviceTier  string // -c service_tier=<tier>
+	contextMode  string // "clean" = ephemeral CODEX_HOME with only auth + minimal config
 	extraEnv     map[string]string
 	logger       *log.Logger
 	spawner      codexSpawner
 	sessionID    string
+
+	// cleanHome is the ephemeral CODEX_HOME materialized for clean-context
+	// sessions; removed on Close.
+	cleanHome string
 
 	mu           sync.RWMutex
 	stdin        io.WriteCloser
@@ -66,7 +74,12 @@ func isInsideContainer() bool {
 	return false
 }
 
-type codexSpawner func(ctx context.Context, cmd []string, env []string) (*codexTransport, error)
+// codexSpawner starts a codex process. withStdin controls whether a stdin pipe
+// is created: app-server mode needs one for JSON-RPC; exec mode must NOT get
+// one. VERIFIED 2026-07-20: a detached codex exec blocks forever reading stdin
+// — with withStdin=false the process reads from /dev/null (os/exec wires the
+// null device when cmd.Stdin is nil), which is unconditional and race-free.
+type codexSpawner func(ctx context.Context, cmd []string, env []string, withStdin bool) (*codexTransport, error)
 
 type codexTransport struct {
 	stdin   io.WriteCloser
@@ -133,6 +146,9 @@ func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner co
 		prompt:       prompt,
 		model:        cfg.Model,
 		approvalMode: cfg.ApprovalMode,
+		effort:       cfg.Effort,
+		serviceTier:  cfg.ServiceTier,
+		contextMode:  cfg.Context,
 		extraEnv:     cfg.Env,
 		logger:       logger,
 		spawner:      spawner,
@@ -145,7 +161,7 @@ func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner co
 	}
 }
 
-func spawnCodexAppServer(ctx context.Context, cmdArgs []string, env []string) (*codexTransport, error) {
+func spawnCodexAppServer(ctx context.Context, cmdArgs []string, env []string, withStdin bool) (*codexTransport, error) {
 	if len(cmdArgs) == 0 {
 		return nil, errors.New("missing codex command")
 	}
@@ -154,9 +170,15 @@ func spawnCodexAppServer(ctx context.Context, cmdArgs []string, env []string) (*
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
+	// exec mode: cmd.Stdin stays nil, so the process reads /dev/null and can
+	// never block on stdin. Only app-server mode gets a JSON-RPC stdin pipe.
+	var stdin io.WriteCloser
+	if withStdin {
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdin pipe: %w", err)
+		}
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -224,8 +246,18 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 	if b.model != "" {
 		cmd = append(cmd, "--model", b.model)
 	}
+	cmd = append(cmd, b.configOverrides()...)
 	cmd = append(cmd, b.prompt)
-	transport, err := b.spawner(b.ctx, cmd, b.envSlice())
+
+	env, err := b.spawnEnv()
+	if err != nil {
+		b.setRunning(false)
+		b.emitError(err.Error())
+		return err
+	}
+	// withStdin=false: exec mode reads /dev/null. VERIFIED 2026-07-20 that a
+	// detached codex with an open stdin blocks forever — this is unconditional.
+	transport, err := b.spawner(b.ctx, cmd, env, false)
 	if err != nil {
 		b.setRunning(false)
 		b.emitError(err.Error())
@@ -238,11 +270,6 @@ func (b *codexBackend) startPromptMode(ctx context.Context) error {
 	b.stderr = transport.stderr
 	b.closeFn = transport.closeFn
 	b.mu.Unlock()
-
-	// Close stdin — exec mode doesn't need it
-	if transport.stdin != nil {
-		transport.stdin.Close()
-	}
 
 	// Use JSONL reader (not JSON-RPC) — codex exec --json outputs flat events
 	go b.readExecJSONL()
@@ -329,7 +356,15 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	if b.model != "" {
 		spawnCmd = append(spawnCmd, "--model", b.model)
 	}
-	transport, err := b.spawner(b.ctx, spawnCmd, b.envSlice())
+	spawnCmd = append(spawnCmd, b.configOverrides()...)
+
+	env, err := b.spawnEnv()
+	if err != nil {
+		b.setRunning(false)
+		b.emitError(err.Error())
+		return err
+	}
+	transport, err := b.spawner(b.ctx, spawnCmd, env, true)
 	if err != nil {
 		b.setRunning(false)
 		b.emitError(err.Error())
@@ -481,8 +516,10 @@ func (b *codexBackend) Close() error {
 		cancel := b.cancel
 		closeFn := b.closeFn
 		stdin := b.stdin
+		cleanHome := b.cleanHome
 		b.stdin = nil
 		b.closeFn = nil
+		b.cleanHome = ""
 		b.running = false
 		b.mu.Unlock()
 
@@ -494,6 +531,9 @@ func (b *codexBackend) Close() error {
 		}
 		if closeFn != nil {
 			closeErr = closeFn()
+		}
+		if cleanHome != "" {
+			_ = os.RemoveAll(cleanHome)
 		}
 
 		b.failPending(errors.New("codex backend closed"))
@@ -919,6 +959,80 @@ func (b *codexBackend) envSlice() []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// configOverrides returns -c key=value flags for session tuning options.
+// Applies to both exec and app-server modes (both accept -c).
+func (b *codexBackend) configOverrides() []string {
+	var flags []string
+	if b.effort != "" {
+		flags = append(flags, "-c", "model_reasoning_effort="+b.effort)
+	}
+	if b.serviceTier != "" {
+		flags = append(flags, "-c", "service_tier="+b.serviceTier)
+	}
+	return flags
+}
+
+// spawnEnv builds the env slice for the codex process, materializing an
+// ephemeral clean CODEX_HOME first when clean-context mode is on.
+func (b *codexBackend) spawnEnv() ([]string, error) {
+	env := b.envSlice()
+	if b.contextMode != "clean" {
+		return env, nil
+	}
+
+	home, err := materializeCleanCodexHome(b.logger)
+	if err != nil {
+		return nil, fmt.Errorf("materialize clean CODEX_HOME: %w", err)
+	}
+	b.mu.Lock()
+	b.cleanHome = home
+	b.mu.Unlock()
+	return append(env, "CODEX_HOME="+home), nil
+}
+
+// materializeCleanCodexHome creates an ephemeral CODEX_HOME containing only
+// auth.json (copied from the real config root) and a minimal config.toml.
+// VERIFIED 2026-07-20: CODEX_HOME relocates the whole config root, and a clean
+// home with only auth + minimal config yields zero user MCP servers and no
+// global AGENTS.md. Removed by the backend on Close.
+func materializeCleanCodexHome(logger *log.Logger) (string, error) {
+	dir, err := os.MkdirTemp("", "agentruntime-codex-home-")
+	if err != nil {
+		return "", err
+	}
+
+	src := os.Getenv("CODEX_HOME")
+	if src == "" {
+		src = filepath.Join(os.Getenv("HOME"), ".codex")
+	}
+
+	// Copy only auth.json — never config.toml, AGENTS.md, or MCP config.
+	// A missing auth.json is not fatal: OPENAI_API_KEY env auth still works.
+	authData, err := os.ReadFile(filepath.Join(src, "auth.json"))
+	switch {
+	case err == nil:
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"), authData, 0o600); err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+	case os.IsNotExist(err):
+		if logger != nil {
+			logger.Printf("[codex] clean home: no auth.json at %s — relying on env auth", src)
+		}
+	default:
+		os.RemoveAll(dir)
+		return "", err
+	}
+
+	// Minimal config: model and tuning come from CLI flags, nothing else.
+	minimal := "# agentruntime clean-context session — intentionally minimal.\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(minimal), 0o600); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 func rpcIDKey(id any) string {

@@ -218,6 +218,201 @@ func TestClaudeBackend_ContextInjection(t *testing.T) {
 	}
 }
 
+// spawnClaudePromptMode spawns a prompt-mode backend with the given config
+// overrides and returns the captured spawn spec.
+func spawnClaudePromptMode(t *testing.T, mutate func(*ClaudeBackendConfig)) ClaudeSpawnSpec {
+	t.Helper()
+
+	proc := newFakeClaudeProcess()
+	var gotSpec ClaudeSpawnSpec
+	cfg := ClaudeBackendConfig{
+		Binary:           "claude",
+		SessionID:        "sess-prompt",
+		Prompt:           "do the thing",
+		WorkspaceFolders: []string{t.TempDir()},
+		StartProcess: func(_ context.Context, spec ClaudeSpawnSpec) (ClaudeProcess, error) {
+			gotSpec = spec
+			return proc, nil
+		},
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+
+	backend := NewClaudeBackend(cfg)
+	t.Cleanup(func() {
+		proc.finish(nil)
+		_ = backend.Stop()
+	})
+	if err := backend.Spawn(context.Background()); err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	return gotSpec
+}
+
+func argValue(args []string, flag string) (string, bool) {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
+func hasArg(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func TestClaudeBackend_EffortXHighPairsAlwaysThinking(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	for _, effort := range []string{"xhigh", "max"} {
+		spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
+			cfg.SessionID = "sess-effort-" + effort
+			cfg.Effort = effort
+		})
+
+		if got, _ := argValue(spec.Args, "--effort"); got != effort {
+			t.Fatalf("--effort = %q, want %q", got, effort)
+		}
+		settingsJSON, ok := argValue(spec.Args, "--settings")
+		if !ok {
+			t.Fatalf("effort %s: expected --settings flag, args = %v", effort, spec.Args)
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+			t.Fatalf("settings JSON invalid: %v", err)
+		}
+		if settings["alwaysThinkingEnabled"] != true {
+			t.Fatalf("effort %s: alwaysThinkingEnabled = %#v, want true", effort, settings["alwaysThinkingEnabled"])
+		}
+	}
+}
+
+func TestClaudeBackend_EffortHighNoSettingsOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
+		cfg.Effort = "high"
+	})
+
+	if hasArg(spec.Args, "--settings") {
+		t.Fatalf("effort high should not add --settings, args = %v", spec.Args)
+	}
+}
+
+func TestClaudeBackend_CleanContextIsolationFlags(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// A host-materialized .mcp.json must NOT be passed in clean mode.
+	if err := os.MkdirAll(home+"/.claude", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home+"/.claude/.mcp.json", []byte(`{"mcpServers":{"leaky":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
+		cfg.CleanContext = true
+	})
+
+	mcpPath, ok := argValue(spec.Args, "--mcp-config")
+	if !ok {
+		t.Fatalf("expected --mcp-config, args = %v", spec.Args)
+	}
+	if strings.Contains(mcpPath, home) {
+		t.Fatalf("clean context used host mcp config %q", mcpPath)
+	}
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("read empty mcp config: %v", err)
+	}
+	if string(data) != `{"mcpServers":{}}` {
+		t.Fatalf("empty mcp config content = %q", data)
+	}
+	if !hasArg(spec.Args, "--strict-mcp-config") {
+		t.Fatalf("expected --strict-mcp-config, args = %v", spec.Args)
+	}
+	if !hasArg(spec.Args, "--no-chrome") {
+		t.Fatalf("expected --no-chrome, args = %v", spec.Args)
+	}
+	if got, _ := argValue(spec.Args, "--system-prompt"); got != defaultCleanSystemPrompt {
+		t.Fatalf("--system-prompt = %q, want neutral default", got)
+	}
+
+	settingsJSON, ok := argValue(spec.Args, "--settings")
+	if !ok {
+		t.Fatalf("expected --settings, args = %v", spec.Args)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+		t.Fatalf("settings JSON invalid: %v", err)
+	}
+	if hooks, isMap := settings["hooks"].(map[string]any); !isMap || len(hooks) != 0 {
+		t.Fatalf("settings hooks = %#v, want {}", settings["hooks"])
+	}
+	if v, present := settings["statusLine"]; !present || v != nil {
+		t.Fatalf("settings statusLine = %#v, want null", v)
+	}
+	if plugins, isMap := settings["enabledPlugins"].(map[string]any); !isMap || len(plugins) != 0 {
+		t.Fatalf("settings enabledPlugins = %#v, want {}", settings["enabledPlugins"])
+	}
+}
+
+func TestClaudeBackend_CleanContextCustomSystemPrompt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
+		cfg.CleanContext = true
+		cfg.SystemPrompt = "You are a game dev bot."
+	})
+
+	if got, _ := argValue(spec.Args, "--system-prompt"); got != "You are a game dev bot." {
+		t.Fatalf("--system-prompt = %q, want custom prompt", got)
+	}
+}
+
+func TestClaudeBackend_BareRequiresAPIKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	backend := NewClaudeBackend(ClaudeBackendConfig{
+		Binary: "claude",
+		Prompt: "task",
+		Bare:   true,
+		StartProcess: func(_ context.Context, _ ClaudeSpawnSpec) (ClaudeProcess, error) {
+			t.Fatal("process should not start without API key in bare mode")
+			return nil, nil
+		},
+	})
+	t.Cleanup(func() { _ = backend.Stop() })
+
+	err := backend.Spawn(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("Spawn() error = %v, want ANTHROPIC_API_KEY requirement", err)
+	}
+}
+
+func TestClaudeBackend_BareAllowedWithAPIKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
+		cfg.Bare = true
+		cfg.ExtraEnv = map[string]string{"ANTHROPIC_API_KEY": "sk-test"}
+	})
+
+	if !hasArg(spec.Args, "--bare") {
+		t.Fatalf("expected --bare, args = %v", spec.Args)
+	}
+}
+
 type fakeClaudeProcess struct {
 	stdinMu sync.Mutex
 	stdin   bytes.Buffer

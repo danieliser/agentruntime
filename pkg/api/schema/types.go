@@ -27,6 +27,7 @@ type SessionRequest struct {
 	Agent   string `json:"agent"              yaml:"agent"`
 	Runtime string `json:"runtime,omitempty"  yaml:"runtime,omitempty"` // "local" | "docker" (default: server default)
 	Model   string `json:"model,omitempty"    yaml:"model,omitempty"`   // cross-agent convenience (e.g. "claude-opus-4-5")
+	Effort  string `json:"effort,omitempty"   yaml:"effort,omitempty"`  // cross-agent effort tier (claude --effort; codex model_reasoning_effort; grok --reasoning-effort)
 	Prompt  string `json:"prompt"             yaml:"prompt"`
 
 	// Timing
@@ -147,7 +148,14 @@ type ClaudeConfig struct {
 	// for backward compatibility with existing request payloads but ignored.
 	OutputFormat string `json:"output_format,omitempty" yaml:"output_format,omitempty"`
 
+	// SystemPrompt fully replaces Claude's system prompt (--system-prompt).
+	// Used by clean-context sessions to neutralize host persona leakage.
+	SystemPrompt string `json:"system_prompt,omitempty" yaml:"system_prompt,omitempty"`
+
 	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
+	// Requires ANTHROPIC_API_KEY: --bare does not load OAuth/keychain
+	// credentials (verified 2026-07-21). For subscription auth, use the
+	// clean-context session option instead.
 	Bare bool `json:"bare,omitempty" yaml:"bare,omitempty"`
 }
 
@@ -156,6 +164,7 @@ type CodexConfig struct {
 	ConfigTOML   map[string]any `json:"config_toml,omitempty"   yaml:"config_toml,omitempty"`   // → ~/.codex/config.toml
 	Instructions string         `json:"instructions,omitempty"  yaml:"instructions,omitempty"`  // → ~/.codex/instructions.md
 	ApprovalMode string         `json:"approval_mode,omitempty" yaml:"approval_mode,omitempty"` // "auto-edit" | "suggest" | "full-auto"
+	ServiceTier  string         `json:"service_tier,omitempty"  yaml:"service_tier,omitempty"`  // -c service_tier=<tier> (e.g. "priority")
 }
 
 // MCPServer describes an MCP server to inject into the agent's config.

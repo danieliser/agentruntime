@@ -81,6 +81,34 @@ func TestBuildAgentConfigJSON_CodexApprovalMode(t *testing.T) {
 	}
 }
 
+func TestBuildAgentConfigJSON_EffortSystemPromptServiceTier(t *testing.T) {
+	cfg := SpawnConfig{
+		Request: &apischema.SessionRequest{
+			Effort: "xhigh",
+			Claude: &apischema.ClaudeConfig{
+				SystemPrompt: "You are a neutral coding agent.",
+			},
+			Codex: &apischema.CodexConfig{
+				ServiceTier: "priority",
+			},
+		},
+	}
+	got := buildAgentConfigJSON(cfg)
+	var ac sidecarAgentConfig
+	if err := json.Unmarshal([]byte(got), &ac); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ac.Effort != "xhigh" {
+		t.Errorf("Effort = %q, want xhigh", ac.Effort)
+	}
+	if ac.SystemPrompt != "You are a neutral coding agent." {
+		t.Errorf("SystemPrompt = %q", ac.SystemPrompt)
+	}
+	if ac.ServiceTier != "priority" {
+		t.Errorf("ServiceTier = %q, want priority", ac.ServiceTier)
+	}
+}
+
 func TestBuildAgentConfigJSON_SpawnModelOverridesRequest(t *testing.T) {
 	cfg := SpawnConfig{
 		Model: "override-model",

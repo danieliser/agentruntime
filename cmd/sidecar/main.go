@@ -312,11 +312,13 @@ func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, 
 			MaxTurns:      cfg.MaxTurns,
 			AllowedTools:  cfg.AllowedTools,
 			Effort:        cfg.Effort,
+			SystemPrompt:  cfg.SystemPrompt,
 			ExtraEnv:      cfg.Env,
 			TeamName:      cfg.TeamName,
 			TeamAgentName: cfg.TeamAgentName,
 			TeamAgentID:   cfg.TeamAgentID,
 			Bare:          cfg.Bare,
+			CleanContext:  cfg.Context == "clean",
 		}), nil
 	case "codex":
 		if prompt != "" {

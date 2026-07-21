@@ -33,8 +33,23 @@ type AgentConfig struct {
 	// AllowedTools restricts which tools the agent can use (Claude --allowedTools).
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 
-	// Effort controls the agent's effort level (Claude --effort).
+	// Effort controls the agent's effort level.
+	// Claude: --effort. Codex: -c model_reasoning_effort=<tier>.
 	Effort string `json:"effort,omitempty"`
+
+	// ServiceTier selects the Codex service tier (-c service_tier=<tier>).
+	// Ignored by other agents.
+	ServiceTier string `json:"service_tier,omitempty"`
+
+	// SystemPrompt overrides the agent's system prompt (Claude --system-prompt,
+	// grok --system-prompt-override). Part of the verified isolation set: a
+	// neutral override prevents host persona/instruction leakage.
+	SystemPrompt string `json:"system_prompt,omitempty"`
+
+	// Context selects the context materialization mode. "clean" runs the agent
+	// against an ephemeral home containing only its own auth + minimal config,
+	// so host hooks, MCP servers, and instruction files cannot leak in.
+	Context string `json:"context,omitempty"`
 
 	// StallWarningTimeout is seconds of event-stream silence before emitting
 	// an advisory stall_warning system event. Default: 600 (10 min). 0 = use default. -1 = disabled.

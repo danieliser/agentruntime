@@ -32,6 +32,7 @@ type ClaudeBackendConfig struct {
 	MaxTurns     int               // --max-turns flag
 	AllowedTools []string          // --allowedTools flag (repeatable)
 	Effort       string            // --effort flag
+	SystemPrompt string            // --system-prompt override
 	ExtraEnv     map[string]string // merged into buildCleanEnv
 
 	// Team fields — enable Claude Code Agent Teams inbox protocol.
@@ -40,7 +41,20 @@ type ClaudeBackendConfig struct {
 	TeamAgentID   string // --agent-id flag
 
 	// Bare mode — skip hooks, plugins, LSP, automem, CLAUDE.md (clean room).
+	// VERIFIED 2026-07-21: --bare only works with ANTHROPIC_API_KEY auth;
+	// subscription OAuth/keychain credentials are NOT loaded in bare mode.
+	// Spawn fails fast if Bare is set without an API key available.
 	Bare bool
+
+	// CleanContext applies the verified isolation flag set (2026-07-20/21):
+	// settings override neutralizing hooks/statusLine/plugins, an empty
+	// --mcp-config with --strict-mcp-config, --no-chrome, and a system-prompt
+	// override. Subscription OAuth survives (unlike --bare).
+	//
+	// KNOWN RESIDUAL: user-level SessionStart hooks still FIRE even with the
+	// settings override — they just have nothing to inject into the session.
+	// Consumers see this as "claude-sessionstart-hooks" contamination metadata.
+	CleanContext bool
 }
 
 type ClaudeSpawnSpec struct {
@@ -72,6 +86,7 @@ type ClaudeBackend struct {
 	maxTurns     int
 	allowedTools []string
 	effort       string
+	systemPrompt string
 	extraEnv     map[string]string
 
 	// Team fields.
@@ -79,7 +94,12 @@ type ClaudeBackend struct {
 	teamAgentName string
 	teamAgentID   string
 
-	bare bool
+	bare         bool
+	cleanContext bool
+
+	// tempMCPConfig is the ephemeral empty MCP config written for clean-context
+	// sessions; removed when the backend stops.
+	tempMCPConfig string
 
 	startProcess ClaudeProcessStarter
 
@@ -168,11 +188,13 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 		maxTurns:      cfg.MaxTurns,
 		allowedTools:  cfg.AllowedTools,
 		effort:        cfg.Effort,
+		systemPrompt:  cfg.SystemPrompt,
 		extraEnv:      cfg.ExtraEnv,
 		teamName:      cfg.TeamName,
 		teamAgentName: cfg.TeamAgentName,
 		teamAgentID:   cfg.TeamAgentID,
 		bare:          cfg.Bare,
+		cleanContext:  cfg.CleanContext,
 		startProcess:  startProcess,
 		events:        make(chan Event, 64),
 		done:          make(chan struct{}),
@@ -189,6 +211,17 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 	b.once.Do(func() {
 		var args []string
 		var envExtra []string
+
+		// Bare mode requires API-key auth. VERIFIED 2026-07-21: --bare skips
+		// OAuth/keychain credential loading entirely, so a session without
+		// ANTHROPIC_API_KEY would fail with an opaque auth error mid-run.
+		// Fail fast with an actionable message instead.
+		if b.bare && !b.hasAnthropicAPIKey() {
+			err := errors.New("bare mode requires ANTHROPIC_API_KEY: --bare does not load OAuth/keychain credentials; use clean-context mode for subscription auth")
+			b.emitError(err.Error())
+			spawnErr = err
+			return
+		}
 
 		if b.prompt != "" {
 			// Fire-and-forget: claude -p "prompt" — no MCP server needed
@@ -240,11 +273,26 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 			}
 		}
 
-		// Load MCP servers from materialized .mcp.json if it exists.
-		// --ide mode doesn't auto-discover .mcp.json, so we pass it explicitly.
-		mcpConfigPath := filepath.Join(os.Getenv("HOME"), ".claude", ".mcp.json")
-		if _, err := os.Stat(mcpConfigPath); err == nil {
-			args = append(args, "--mcp-config", mcpConfigPath)
+		if b.cleanContext {
+			// Clean-context isolation (VERIFIED probe set, 2026-07-20/21):
+			// an empty --mcp-config with --strict-mcp-config blocks every MCP
+			// server, host or materialized. Written to a temp file because the
+			// flag set was verified file-based.
+			mcpPath, err := writeEmptyMCPConfig()
+			if err != nil {
+				b.emitError(err.Error())
+				spawnErr = err
+				return
+			}
+			b.tempMCPConfig = mcpPath
+			args = append(args, "--mcp-config", mcpPath, "--strict-mcp-config", "--no-chrome")
+		} else {
+			// Load MCP servers from materialized .mcp.json if it exists.
+			// --ide mode doesn't auto-discover .mcp.json, so we pass it explicitly.
+			mcpConfigPath := filepath.Join(os.Getenv("HOME"), ".claude", ".mcp.json")
+			if _, err := os.Stat(mcpConfigPath); err == nil {
+				args = append(args, "--mcp-config", mcpConfigPath)
+			}
 		}
 
 		// Append AGENT_CONFIG passthrough flags (apply to both modes).
@@ -259,6 +307,20 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 		}
 		if b.effort != "" {
 			args = append(args, "--effort", b.effort)
+		}
+
+		if prompt := b.effectiveSystemPrompt(); prompt != "" {
+			args = append(args, "--system-prompt", prompt)
+		}
+
+		if settings := b.buildSettingsOverride(); len(settings) > 0 {
+			data, err := json.Marshal(settings)
+			if err != nil {
+				b.emitError(err.Error())
+				spawnErr = err
+				return
+			}
+			args = append(args, "--settings", string(data))
 		}
 
 		// Team flags — enable Agent Teams inbox protocol.
@@ -400,6 +462,7 @@ func (b *ClaudeBackend) Stop() error {
 			stopErr = err
 		}
 	}
+	b.removeTempMCPConfig()
 
 	select {
 	case <-b.done:
@@ -436,6 +499,81 @@ func (b *ClaudeBackend) PID() int {
 		return p.PID()
 	}
 	return 0
+}
+
+// defaultCleanSystemPrompt neutralizes host persona/instruction leakage when
+// clean-context mode is on and the caller did not supply a system prompt.
+// A system-prompt override is part of the verified isolation set.
+const defaultCleanSystemPrompt = "You are a coding agent working autonomously. " +
+	"You have no persona and no voice. Do not use any skills, plugins, memory tools, " +
+	"or MCP tools. Complete the task fully and stop."
+
+// effectiveSystemPrompt returns the system prompt to pass via --system-prompt.
+// Explicit config wins; clean-context mode falls back to a neutral override.
+func (b *ClaudeBackend) effectiveSystemPrompt() string {
+	if b.systemPrompt != "" {
+		return b.systemPrompt
+	}
+	if b.cleanContext {
+		return defaultCleanSystemPrompt
+	}
+	return ""
+}
+
+// buildSettingsOverride assembles the --settings JSON for this session.
+// Two independent concerns feed it:
+//
+//   - clean context: {"hooks":{},"statusLine":null,"enabledPlugins":{}} is the
+//     VERIFIED override that neutralizes host hooks/plugins while keeping
+//     subscription OAuth working. (User-level SessionStart hooks still fire —
+//     the override empties what they can inject, it cannot stop the dispatch.)
+//   - effort pairing: VERIFIED 2026-07-20: --effort xhigh returns an API 400
+//     unless settings include "alwaysThinkingEnabled": true. The adapter pairs
+//     them automatically; "max" gets the same pairing (higher tier of the same
+//     thinking requirement — xhigh is the empirically verified case).
+func (b *ClaudeBackend) buildSettingsOverride() map[string]any {
+	settings := map[string]any{}
+	if b.cleanContext {
+		settings["hooks"] = map[string]any{}
+		settings["statusLine"] = nil
+		settings["enabledPlugins"] = map[string]any{}
+	}
+	if b.effort == "xhigh" || b.effort == "max" {
+		settings["alwaysThinkingEnabled"] = true
+	}
+	return settings
+}
+
+// writeEmptyMCPConfig writes {"mcpServers":{}} to a temp file for
+// --mcp-config + --strict-mcp-config in clean-context mode.
+func writeEmptyMCPConfig() (string, error) {
+	f, err := os.CreateTemp("", "agentruntime-empty-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(`{"mcpServers":{}}`); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+func (b *ClaudeBackend) hasAnthropicAPIKey() bool {
+	if b.extraEnv["ANTHROPIC_API_KEY"] != "" {
+		return true
+	}
+	return os.Getenv("ANTHROPIC_API_KEY") != ""
+}
+
+func (b *ClaudeBackend) removeTempMCPConfig() {
+	if b.tempMCPConfig != "" {
+		_ = os.Remove(b.tempMCPConfig)
+	}
 }
 
 func (b *ClaudeBackend) currentMCP() *MCPServer {
@@ -518,6 +656,7 @@ func (b *ClaudeBackend) waitForExit(process ClaudeProcess) {
 	if server != nil {
 		_ = server.Stop()
 	}
+	b.removeTempMCPConfig()
 
 	code := 0
 	detail := ""

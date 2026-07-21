@@ -12,6 +12,9 @@ type sidecarAgentConfig struct {
 	ApprovalMode  string            `json:"approval_mode,omitempty"`
 	MaxTurns      int               `json:"max_turns,omitempty"`
 	AllowedTools  []string          `json:"allowed_tools,omitempty"`
+	Effort        string            `json:"effort,omitempty"`
+	ServiceTier   string            `json:"service_tier,omitempty"`
+	SystemPrompt  string            `json:"system_prompt,omitempty"`
 
 	// Team fields — enable Claude Code Agent Teams inbox protocol.
 	TeamName      string `json:"team_name,omitempty"`
@@ -49,6 +52,10 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 			ac.ResumeSession = cfg.Request.ResumeSession
 			hasContent = true
 		}
+		if cfg.Request.Effort != "" {
+			ac.Effort = cfg.Request.Effort
+			hasContent = true
+		}
 		if cfg.Request.Claude != nil {
 			if cfg.Request.Claude.MaxTurns > 0 {
 				ac.MaxTurns = cfg.Request.Claude.MaxTurns
@@ -58,10 +65,20 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 				ac.AllowedTools = cfg.Request.Claude.AllowedTools
 				hasContent = true
 			}
+			if cfg.Request.Claude.SystemPrompt != "" {
+				ac.SystemPrompt = cfg.Request.Claude.SystemPrompt
+				hasContent = true
+			}
 		}
-		if cfg.Request.Codex != nil && cfg.Request.Codex.ApprovalMode != "" {
-			ac.ApprovalMode = cfg.Request.Codex.ApprovalMode
-			hasContent = true
+		if cfg.Request.Codex != nil {
+			if cfg.Request.Codex.ApprovalMode != "" {
+				ac.ApprovalMode = cfg.Request.Codex.ApprovalMode
+				hasContent = true
+			}
+			if cfg.Request.Codex.ServiceTier != "" {
+				ac.ServiceTier = cfg.Request.Codex.ServiceTier
+				hasContent = true
+			}
 		}
 		if cfg.Request.Team != nil && cfg.Request.Team.Name != "" {
 			ac.TeamName = cfg.Request.Team.Name
