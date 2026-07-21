@@ -93,16 +93,9 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		return
 	}
 
-	// Validate the context mode. Clean context forces auto-discovery off:
-	// the whole point is that no host config reaches the agent.
-	switch req.Context {
-	case "", "clean":
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unknown context mode: %q (valid: \"clean\")", req.Context)})
+	if err := validateContextMode(&req, rt.Name()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
-	}
-	if req.Context == "clean" {
-		req.AutoDiscover = false
 	}
 
 	// Ensure the agent-specific config block exists so the materializer
@@ -545,6 +538,10 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 		return nil, fmt.Errorf("unknown agent: %s", req.Agent)
 	}
 
+	if err := validateContextMode(&req, rt.Name()); err != nil {
+		return nil, err
+	}
+
 	switch req.Agent {
 	case "claude":
 		if req.Claude == nil {
@@ -593,6 +590,7 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 	}
 
 	sess := session.NewSessionWithID(req.SessionID, req.TaskID, req.Agent, rt.Name(), req.Tags)
+	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
 		return nil, fmt.Errorf("prepare session dir: %w", err)
 	}
@@ -638,6 +636,34 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 
 	AttachSessionIO(sess, s.logDir)
 	return sess, nil
+}
+
+// validateContextMode normalizes req.Context and enforces clean-context
+// preconditions. Shared by the HTTP and chat/internal spawn paths so no
+// session can request an isolation mode its runtime cannot honor.
+func validateContextMode(req *SessionRequest, runtimeName string) error {
+	switch req.Context {
+	case "", "clean":
+	default:
+		return fmt.Errorf("unknown context mode: %q (valid: \"clean\")", req.Context)
+	}
+	if req.Context != "clean" {
+		return nil
+	}
+	// Clean context forces auto-discovery off: the whole point is that no
+	// host config reaches the agent.
+	req.AutoDiscover = false
+	// local-pipe predates the sidecar and has no clean-context materialization.
+	if runtimeName == "local-pipe" {
+		return fmt.Errorf("context %q is not supported on the local-pipe runtime: it bypasses the sidecar isolation layer", req.Context)
+	}
+	// The docker agent image bundles only claude and codex; grok/cursor clean
+	// context would fail inside the container with a missing binary and no
+	// host auth to materialize.
+	if runtimeName == "docker" && (req.Agent == "grok" || req.Agent == "cursor") {
+		return fmt.Errorf("context %q for agent %q is not supported on the docker runtime: the agent image bundles neither the CLI nor its credentials", req.Context, req.Agent)
+	}
+	return nil
 }
 
 func effectiveWorkDir(workDir string, mounts []Mount) string {
