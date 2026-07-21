@@ -355,7 +355,7 @@ func (b *CursorBackend) handleStdoutLine(line []byte) {
 				"status":      envelope.Subtype,
 				"is_error":    envelope.IsError,
 				"duration_ms": envelope.DurationMS,
-				"usage":       envelope.Usage,
+				"usage":       normalizeCursorUsage(envelope.Usage),
 				"text":        envelope.Result,
 			},
 		})
@@ -393,15 +393,49 @@ func (b *CursorBackend) handleToolCall(envelope cursorEnvelope) {
 			},
 		})
 	case "completed":
+		// cursor reports outcomes as result.{success|error}; per-tool
+		// duration is not present in the stream, so duration_ms stays absent.
+		isError := false
+		if result, ok := payload["result"].(map[string]any); ok {
+			_, isError = result["error"]
+		}
 		b.emit(Event{
 			Type: "tool_result",
 			Data: map[string]any{
-				"id":     envelope.CallID,
-				"name":   name,
-				"output": payload["result"],
+				"id":       envelope.CallID,
+				"name":     name,
+				"output":   payload["result"],
+				"is_error": isError,
 			},
 		})
 	}
+}
+
+// normalizeCursorUsage maps cursor's camelCase usage keys onto the snake_case
+// shape every result-event consumer expects (sessionio metrics, dashboard,
+// TUI, startup-crash detection). Unrecognized keys pass through untouched so
+// future CLI additions are not dropped.
+func normalizeCursorUsage(usage map[string]any) map[string]any {
+	if usage == nil {
+		return nil
+	}
+	renames := map[string]string{
+		"inputTokens":         "input_tokens",
+		"outputTokens":        "output_tokens",
+		"cacheReadTokens":     "cache_read_input_tokens",
+		"cachedInputTokens":   "cache_read_input_tokens",
+		"cacheWriteTokens":    "cache_creation_input_tokens",
+		"cacheCreationTokens": "cache_creation_input_tokens",
+	}
+	out := make(map[string]any, len(usage))
+	for key, value := range usage {
+		if renamed, ok := renames[key]; ok {
+			out[renamed] = value
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func (b *CursorBackend) readStderr(r io.ReadCloser) {

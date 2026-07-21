@@ -163,14 +163,52 @@ func TestCursorBackend_EventMapping(t *testing.T) {
 	if toolResultData["name"] != "edit" || toolResultData["output"] == nil {
 		t.Fatalf("tool_result data = %#v", toolResultData)
 	}
+	if toolResultData["is_error"] != false {
+		t.Fatalf("tool_result is_error = %#v, want false", toolResultData["is_error"])
+	}
 
 	result := claudeExpectEventType(t, backend.Events(), "result")
 	resultData := claudeEventData(t, result)
 	if resultData["status"] != "success" || resultData["is_error"] != false {
 		t.Fatalf("result data = %#v", resultData)
 	}
+	// Usage must be normalized to snake_case — consumers (session metrics,
+	// startup-crash detection) read input_tokens/output_tokens.
+	usage, _ := resultData["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(17996) || usage["output_tokens"] != float64(100) {
+		t.Fatalf("result usage not normalized to snake_case: %#v", resultData["usage"])
+	}
+	if _, camel := usage["inputTokens"]; camel {
+		t.Fatalf("camelCase usage keys must be renamed, got %#v", usage)
+	}
 	if backend.SessionID() != "cursor-sess-1" {
 		t.Fatalf("SessionID() = %q, want cursor-sess-1", backend.SessionID())
+	}
+}
+
+func TestCursorBackend_ToolResultError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	backend, _, _ := spawnCursorBackend(t, nil)
+
+	raw, err := json.Marshal(map[string]any{
+		"type": "tool_call", "subtype": "completed", "call_id": "call-2",
+		"tool_call": map[string]any{
+			"shellToolCall": map[string]any{
+				"args":   map[string]any{"command": "false"},
+				"result": map[string]any{"error": map[string]any{"message": "exit 1"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.handleStdoutLine(raw)
+
+	event := claudeExpectEventType(t, backend.Events(), "tool_result")
+	data := claudeEventData(t, event)
+	if data["is_error"] != true {
+		t.Fatalf("is_error = %#v, want true for result.error payload", data["is_error"])
 	}
 }
 
