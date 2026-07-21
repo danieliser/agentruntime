@@ -276,6 +276,8 @@ func detectAgentType(cmd []string) string {
 		return "codex"
 	case strings.Contains(name, "grok"):
 		return "grok"
+	case strings.Contains(name, "cursor"):
+		return "cursor"
 	default:
 		return name
 	}
@@ -340,6 +342,17 @@ func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, 
 			SystemPrompt: cfg.SystemPrompt,
 			Context:      cfg.Context,
 			ExtraEnv:     cfg.Env,
+		}), nil
+	case "cursor":
+		if prompt == "" {
+			return nil, errors.New("cursor backend requires AGENT_PROMPT: cursor-agent is prompt mode only")
+		}
+		return NewCursorBackend(CursorBackendConfig{
+			Binary:   cmd[0],
+			Prompt:   prompt,
+			Model:    cfg.Model,
+			Context:  cfg.Context,
+			ExtraEnv: cfg.Env,
 		}), nil
 	default:
 		return newGenericCommandBackend(agentType, cmd, prompt), nil

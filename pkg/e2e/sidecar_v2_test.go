@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -209,6 +210,23 @@ func TestE2E_V2_GrokPromptMode(t *testing.T) {
 
 	events := readEvents(t, conn, 90*time.Second)
 	assertNormalizedAgentMessage(t, events, "SIDECAR_V2_GROK_OK")
+	assertNormalizedResult(t, events)
+}
+
+func TestE2E_V2_CursorPromptMode(t *testing.T) {
+	cursorPath, err := exec.LookPath("cursor-agent")
+	if err != nil {
+		t.Skip("cursor-agent not in PATH")
+	}
+
+	port, cleanup := startSidecarLocal(t, commandSpec(t, cursorPath), "Reply with exactly SIDECAR_V2_CURSOR_OK and no other text.")
+	defer cleanup()
+
+	conn := dialSidecarWS(t, port)
+	defer conn.Close()
+
+	events := readEvents(t, conn, 90*time.Second)
+	assertNormalizedAgentMessage(t, events, "SIDECAR_V2_CURSOR_OK")
 	assertNormalizedResult(t, events)
 }
 
@@ -490,11 +508,10 @@ func assertNormalizedAgentMessage(t *testing.T, events []map[string]any, needle 
 		}
 
 		text, _ := data["text"].(string)
-		_, hasDelta := data["delta"].(bool)
-		if hasDelta && strings.Contains(text, needle) {
+		if strings.Contains(text, needle) {
 			return
 		}
-		if hasDelta {
+		if _, hasDelta := data["delta"].(bool); hasDelta {
 			// Token-level delta streams (grok) split the needle across events.
 			accumulated.WriteString(text)
 		}
@@ -555,6 +572,22 @@ func injectCredentials(t *testing.T, homeDir, encodedCmd string) {
 			return
 		}
 		copyFileIfExists(t, filepath.Join(realHome, ".codex", "auth.json"), filepath.Join(codexDir, "auth.json"))
+	}
+
+	if strings.Contains(encodedCmd, "cursor") && runtime.GOOS == "darwin" {
+		// cursor-agent auth lives in the macOS keychain; a fake HOME needs
+		// Library/Keychains symlinked to the real one.
+		libDir := filepath.Join(homeDir, "Library")
+		if err := os.MkdirAll(libDir, 0o700); err != nil {
+			t.Logf("mkdir Library: %v", err)
+			return
+		}
+		realKeychains := filepath.Join(realHome, "Library", "Keychains")
+		if _, err := os.Stat(realKeychains); err == nil {
+			if err := os.Symlink(realKeychains, filepath.Join(libDir, "Keychains")); err != nil {
+				t.Logf("symlink keychains: %v", err)
+			}
+		}
 	}
 
 	if strings.Contains(encodedCmd, "grok") {

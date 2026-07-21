@@ -87,5 +87,6 @@ func DefaultRegistry() *Registry {
 	r.Register(&ClaudeAgent{})
 	r.Register(&CodexAgent{})
 	r.Register(&GrokAgent{})
+	r.Register(&CursorAgent{})
 	return r
 }
