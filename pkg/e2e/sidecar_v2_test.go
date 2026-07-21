@@ -195,6 +195,23 @@ func TestE2E_V2_CodexPromptMode(t *testing.T) {
 	assertNormalizedResult(t, events)
 }
 
+func TestE2E_V2_GrokPromptMode(t *testing.T) {
+	grokPath, err := exec.LookPath("grok")
+	if err != nil {
+		t.Skip("grok not in PATH")
+	}
+
+	port, cleanup := startSidecarLocal(t, commandSpec(t, grokPath), "Reply with exactly SIDECAR_V2_GROK_OK and no other text.")
+	defer cleanup()
+
+	conn := dialSidecarWS(t, port)
+	defer conn.Close()
+
+	events := readEvents(t, conn, 90*time.Second)
+	assertNormalizedAgentMessage(t, events, "SIDECAR_V2_GROK_OK")
+	assertNormalizedResult(t, events)
+}
+
 func startSidecarLocal(t *testing.T, agentCmd, prompt string) (int, func()) {
 	t.Helper()
 
@@ -458,6 +475,7 @@ func assertNormalizedResult(t *testing.T, events []map[string]any) {
 func assertNormalizedAgentMessage(t *testing.T, events []map[string]any, needle string) {
 	t.Helper()
 
+	var accumulated strings.Builder
 	for _, event := range events {
 		if eventType(event) != "agent_message" {
 			continue
@@ -467,12 +485,22 @@ func assertNormalizedAgentMessage(t *testing.T, events []map[string]any, needle 
 		if data == nil {
 			continue
 		}
+		if thought, _ := data["thought"].(bool); thought {
+			continue // reasoning deltas are not response text
+		}
 
 		text, _ := data["text"].(string)
 		_, hasDelta := data["delta"].(bool)
 		if hasDelta && strings.Contains(text, needle) {
 			return
 		}
+		if hasDelta {
+			// Token-level delta streams (grok) split the needle across events.
+			accumulated.WriteString(text)
+		}
+	}
+	if strings.Contains(accumulated.String(), needle) {
+		return
 	}
 
 	t.Fatalf("expected normalized agent_message containing %q in %#v", needle, events)
@@ -527,6 +555,18 @@ func injectCredentials(t *testing.T, homeDir, encodedCmd string) {
 			return
 		}
 		copyFileIfExists(t, filepath.Join(realHome, ".codex", "auth.json"), filepath.Join(codexDir, "auth.json"))
+	}
+
+	if strings.Contains(encodedCmd, "grok") {
+		grokDir := filepath.Join(homeDir, ".grok")
+		if err := os.MkdirAll(grokDir, 0o700); err != nil {
+			t.Logf("mkdir .grok: %v", err)
+			return
+		}
+		// grok auth is purely file-based: auth.json + agent_id.
+		copyFileIfExists(t, filepath.Join(realHome, ".grok", "auth.json"), filepath.Join(grokDir, "auth.json"))
+		copyFileIfExists(t, filepath.Join(realHome, ".grok", "agent_id"), filepath.Join(grokDir, "agent_id"))
+		copyFileIfExists(t, filepath.Join(realHome, ".grok", "models_cache.json"), filepath.Join(grokDir, "models_cache.json"))
 	}
 }
 

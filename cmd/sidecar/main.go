@@ -274,6 +274,8 @@ func detectAgentType(cmd []string) string {
 		return "claude"
 	case strings.Contains(name, "codex"):
 		return "codex"
+	case strings.Contains(name, "grok"):
+		return "grok"
 	default:
 		return name
 	}
@@ -325,6 +327,20 @@ func newBackend(agentType string, cmd []string, cfg AgentConfig) (AgentBackend, 
 			return newCodexBackendPromptMode(cmd[0], prompt, cfg), nil
 		}
 		return newCodexBackendInteractive(cmd[0], cfg), nil
+	case "grok":
+		if prompt == "" {
+			return nil, errors.New("grok backend requires AGENT_PROMPT: the grok CLI is single-turn prompt mode only")
+		}
+		return NewGrokBackend(GrokBackendConfig{
+			Binary:       cmd[0],
+			Prompt:       prompt,
+			Model:        cfg.Model,
+			Effort:       cfg.Effort,
+			MaxTurns:     cfg.MaxTurns,
+			SystemPrompt: cfg.SystemPrompt,
+			Context:      cfg.Context,
+			ExtraEnv:     cfg.Env,
+		}), nil
 	default:
 		return newGenericCommandBackend(agentType, cmd, prompt), nil
 	}
