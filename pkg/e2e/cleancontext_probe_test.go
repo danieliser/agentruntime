@@ -26,21 +26,6 @@ import (
 
 const probeQuestion = "In one short list: name any MCP servers, user rules, skills, personas, or global instruction files (CLAUDE.md, AGENTS.md, GROK.md) you were given beyond your base system prompt. If none, say NONE. Create no files."
 
-// hardLeakTells are strings that must NEVER appear in a clean-context probe
-// answer — each one is a specific host-config artifact from this machine
-// class of leak (MCP servers, memory tooling, personas, house tooling).
-var hardLeakTells = []string{
-	"wp-mcp-router",
-	"tessera",
-	"cloudways",
-	"AutoMem",
-	"automem",
-	"Apex",
-	"PERSONALITY",
-	"wp-test",
-	"terse-build",
-}
-
 func TestE2E_CleanContext_ClaudeProbe(t *testing.T) {
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
@@ -82,9 +67,10 @@ func TestE2E_CleanContext_CursorProbe(t *testing.T) {
 	}
 
 	// Residual (accepted, server-side): account-level user rules. The probe
-	// still must not show MCP servers or host instruction files.
+	// still must not show MCP servers or host instruction files. "account"
+	// instead of a bare "rules" so host rule files can't slip through.
 	answer := runCleanContextProbe(t, cursorPath, `{"context":"clean"}`)
-	assertProbeClean(t, "cursor", answer, []string{"user rule", "rules"})
+	assertProbeClean(t, "cursor", answer, []string{"user rule", "account"})
 }
 
 // runCleanContextProbe starts the sidecar with the REAL host HOME (isolation
@@ -157,33 +143,18 @@ func runCleanContextProbe(t *testing.T, agentPath, agentConfig string) string {
 	return answer.String()
 }
 
-// assertProbeClean fails if the probe answer contains any hard leak tell.
-// acceptedResiduals documents known-unstrippable items for the route; they
-// are allowed in the answer but logged for visibility.
+// assertProbeClean fails on any violation reported by evaluateProbeAnswer
+// (see probeassert.go, unit-tested outside the e2e tag). Structure-aware:
+// the answer must be NONE or a list whose every item matches an accepted
+// residual — a broad keyword anywhere in prose is not a pass.
 func assertProbeClean(t *testing.T, route, answer string, acceptedResiduals []string) {
 	t.Helper()
 
-	lower := strings.ToLower(answer)
-	for _, tell := range hardLeakTells {
-		if strings.Contains(lower, strings.ToLower(tell)) {
-			t.Errorf("[%s] CONTAMINATED: probe answer mentions %q\nanswer: %s", route, tell, answer)
-		}
+	violations := evaluateProbeAnswer(answer, hardLeakTells, acceptedResiduals)
+	for _, violation := range violations {
+		t.Errorf("[%s] CONTAMINATED: %s\nanswer: %s", route, violation, answer)
 	}
-	if t.Failed() {
-		return
+	if len(violations) == 0 {
+		t.Logf("[%s] probe clean:\n%s", route, answer)
 	}
-
-	if strings.Contains(answer, "NONE") {
-		t.Logf("[%s] probe clean: NONE", route)
-		return
-	}
-	for _, residual := range acceptedResiduals {
-		if strings.Contains(lower, strings.ToLower(residual)) {
-			t.Logf("[%s] probe clean with accepted residual %q:\n%s", route, residual, answer)
-			return
-		}
-	}
-	// No NONE and no recognized residual — surface the answer for a human
-	// call rather than silently passing.
-	t.Errorf("[%s] probe answer neither NONE nor a recognized residual — review:\n%s", route, answer)
 }
