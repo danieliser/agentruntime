@@ -26,7 +26,7 @@ func TestCodexBackend_InitializeHandshake(t *testing.T) {
 	msg := proc.nextWrite(t)
 	wantCmd := []string{"codex", "app-server", "--listen", "stdio://"}
 	if isInsideContainer() {
-		wantCmd = append(wantCmd, "--sandbox", "danger-full-access")
+		wantCmd = append(wantCmd, "-c", "sandbox_mode=danger-full-access")
 	}
 	if got := runner.cmd; !equalStrings(got, wantCmd) {
 		t.Fatalf("spawned command = %v, want %v", got, wantCmd)
@@ -297,6 +297,33 @@ func TestCodexPromptMode_NoStdinPipe(t *testing.T) {
 	defer runner.mu.Unlock()
 	if runner.withStdin {
 		t.Fatal("exec mode must spawn without a stdin pipe (stdin = /dev/null)")
+	}
+}
+
+// codex app-server rejects --model/--sandbox with exit 2 (VERIFIED on
+// 0.144.6) — interactive spawns must use -c config overrides instead.
+func TestCodexInteractiveMode_ModelUsesConfigOverride(t *testing.T) {
+	proc := newFakeCodexProcess(t)
+	runner := &fakeCodexSpawner{proc: proc}
+	backend := newCodexBackendConfig("codex", "", log.New(io.Discard, "", 0), runner.spawn, AgentConfig{Model: "gpt-5.5"})
+	t.Cleanup(func() { _ = backend.Close() })
+
+	go func() {
+		_ = backend.Spawn(context.Background())
+	}()
+	proc.nextWrite(t) // initialize request proves the process was spawned
+
+	runner.mu.Lock()
+	cmd := append([]string(nil), runner.cmd...)
+	runner.mu.Unlock()
+
+	if !containsPair(cmd, "-c", "model=gpt-5.5") {
+		t.Fatalf("missing -c model override, cmd = %v", cmd)
+	}
+	for _, flag := range []string{"--model", "--sandbox"} {
+		if hasArg(cmd, flag) {
+			t.Fatalf("app-server does not accept %s (exit 2 on 0.144.6), cmd = %v", flag, cmd)
+		}
 	}
 }
 

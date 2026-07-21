@@ -352,12 +352,15 @@ func (b *codexBackend) Spawn(ctx context.Context) error {
 	b.ctx, b.cancel = context.WithCancel(ctx)
 	b.mu.Unlock()
 
+	// codex app-server accepts no --model/--sandbox flags (VERIFIED on
+	// 0.144.6: both exit 2 with "unexpected argument"). Model and sandbox
+	// must be expressed as -c config overrides; exec mode keeps the flags.
 	spawnCmd := []string{b.binary, "app-server", "--listen", "stdio://"}
 	if isInsideContainer() {
-		spawnCmd = append(spawnCmd, "--sandbox", "danger-full-access")
+		spawnCmd = append(spawnCmd, "-c", "sandbox_mode=danger-full-access")
 	}
 	if b.model != "" {
-		spawnCmd = append(spawnCmd, "--model", b.model)
+		spawnCmd = append(spawnCmd, "-c", "model="+b.model)
 	}
 	spawnCmd = append(spawnCmd, b.configOverrides()...)
 
