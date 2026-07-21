@@ -167,8 +167,11 @@ func spawnCodexAppServer(ctx context.Context, cmdArgs []string, env []string, wi
 	}
 
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
+	// env is the complete allowlist environment built by spawnEnv. NEVER
+	// merge os.Environ() here — clean-context sessions must not see host
+	// vars (credentials, AGENT_CONFIG, other tools' config roots).
 	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = env
 	}
 	// exec mode: cmd.Stdin stays nil, so the process reads /dev/null and can
 	// never block on stdin. Only app-server mode gets a JSON-RPC stdin pipe.
@@ -985,12 +988,13 @@ func (b *codexBackend) configOverrides() []string {
 	return flags
 }
 
-// spawnEnv builds the env slice for the codex process, materializing an
-// ephemeral clean CODEX_HOME first when clean-context mode is on.
+// spawnEnv builds the complete environment for the codex process from the
+// allowlist builders (never the full host env), materializing an ephemeral
+// clean CODEX_HOME first when clean-context mode is on.
 func (b *codexBackend) spawnEnv() ([]string, error) {
-	env := b.envSlice()
+	extra := b.envSlice()
 	if b.contextMode != "clean" {
-		return env, nil
+		return buildCleanEnv(extra), nil
 	}
 
 	home, err := materializeCleanCodexHome(b.logger)
@@ -1000,7 +1004,8 @@ func (b *codexBackend) spawnEnv() ([]string, error) {
 	b.mu.Lock()
 	b.cleanHome = home
 	b.mu.Unlock()
-	return append(env, "CODEX_HOME="+home), nil
+	// Appended last so it wins over any host CODEX_HOME when os/exec dedups.
+	return buildCleanContextEnv(append(extra, "CODEX_HOME="+home)), nil
 }
 
 // materializeCleanCodexHome creates an ephemeral CODEX_HOME containing only

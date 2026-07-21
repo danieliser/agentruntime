@@ -348,13 +348,18 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 		// Build a clean environment — DO NOT inherit host env wholesale.
 		// Only pass through essential vars + explicit extras (MCP server env).
 		// This prevents host hooks, plugins, MCP servers from leaking in.
-		// Merge AGENT_CONFIG.env on top of the clean env.
+		// Merge AGENT_CONFIG.env on top of the clean env. Clean-context
+		// sessions use the stricter allowlist (no XDG_* redirects, no
+		// NODE_OPTIONS/NODE_PATH injection vectors).
 		for k, v := range b.extraEnv {
 			envExtra = append(envExtra, k+"="+v)
 		}
 		cleanEnv := buildCleanEnv(envExtra)
+		if b.cleanContext {
+			cleanEnv = buildCleanContextEnv(envExtra)
+		}
 
-		log.Printf("[claude] spawn: %s %v (resume=%v session=%s)", b.binary, args, b.resume, b.sessionID)
+		log.Printf("[claude] spawn: %s %v (resume=%v session=%s)", b.binary, redactPromptArgs(args, b.prompt), b.resume, b.sessionID)
 
 		spec := ClaudeSpawnSpec{
 			Command: b.binary,
@@ -938,47 +943,4 @@ func (p *execClaudeProcess) PID() int {
 		return p.cmd.Process.Pid
 	}
 	return 0
-}
-
-// buildCleanEnv creates a minimal environment for the agent process.
-// Only essential system vars are inherited. No host hooks, plugins, or
-// MCP servers leak through. Extra vars (e.g., IDE MCP env) are appended.
-func buildCleanEnv(extra []string) []string {
-	// Essential vars that the agent process needs to function.
-	passthrough := []string{
-		"PATH", "HOME", "USER", "LANG", "TERM",
-		"SHELL", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
-		// Claude OAuth (if set by the credential sync or env-file)
-		"CLAUDE_CODE_OAUTH_TOKEN",
-		// Codex / OpenAI auth
-		"OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-		// Node/npm (needed by Claude Code CLI)
-		"NODE_PATH", "NODE_OPTIONS", "NVM_DIR",
-		// Proxy (set by network manager)
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-		"http_proxy", "https_proxy", "no_proxy",
-	}
-
-	env := make([]string, 0, len(passthrough)+len(extra))
-	hostEnv := make(map[string]string)
-	for _, e := range os.Environ() {
-		if i := strings.IndexByte(e, '='); i > 0 {
-			hostEnv[e[:i]] = e[i+1:]
-		}
-	}
-
-	for _, key := range passthrough {
-		if val, ok := hostEnv[key]; ok {
-			env = append(env, key+"="+val)
-		}
-	}
-
-	// NOTE: In Docker containers, HOME=/home/agent with our clean .claude/ mount.
-	// When running locally, Claude reads the host's ~/.claude/ (hooks, plugins, etc).
-	// This is expected — the Docker container IS the isolation boundary.
-
-	// Append explicit extras (MCP server env vars, etc.)
-	env = append(env, extra...)
-
-	return env
 }

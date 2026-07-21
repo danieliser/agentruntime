@@ -155,6 +155,7 @@ func (b *CursorBackend) Start(ctx context.Context) error {
 			envExtra = append(envExtra, k+"="+v)
 		}
 
+		buildEnv := buildCleanEnv
 		if b.contextMode == "clean" {
 			fakeHome, err := materializeCursorFakeHome()
 			if err != nil {
@@ -166,14 +167,15 @@ func (b *CursorBackend) Start(ctx context.Context) error {
 			b.fakeHome = fakeHome
 			b.mu.Unlock()
 			envExtra = append(envExtra, "HOME="+fakeHome)
+			buildEnv = buildCleanContextEnv
 		}
 
-		log.Printf("[cursor] spawn: %s %v (session=%s clean=%v)", b.binary, args, b.sessionID, b.contextMode == "clean")
+		log.Printf("[cursor] spawn: %s %v (session=%s clean=%v)", b.binary, redactPromptArgs(args, b.prompt), b.sessionID, b.contextMode == "clean")
 
 		spec := ClaudeSpawnSpec{
 			Command: b.binary,
 			Args:    args,
-			Env:     buildCleanEnv(envExtra),
+			Env:     buildEnv(envExtra),
 		}
 		if len(b.workspace) > 0 {
 			spec.Dir = b.workspace[0]

@@ -148,6 +148,7 @@ func (b *GrokBackend) Start(ctx context.Context) error {
 			envExtra = append(envExtra, k+"="+v)
 		}
 
+		buildEnv := buildCleanEnv
 		if b.contextMode == "clean" {
 			fakeHome, err := materializeGrokFakeHome()
 			if err != nil {
@@ -159,16 +160,17 @@ func (b *GrokBackend) Start(ctx context.Context) error {
 			b.fakeHome = fakeHome
 			b.mu.Unlock()
 			// Last duplicate wins in exec.Cmd.Env — this overrides the
-			// passthrough HOME from buildCleanEnv.
+			// passthrough HOME from the allowlist.
 			envExtra = append(envExtra, "HOME="+fakeHome)
+			buildEnv = buildCleanContextEnv
 		}
 
-		log.Printf("[grok] spawn: %s %v (session=%s clean=%v)", b.binary, args, b.sessionID, b.contextMode == "clean")
+		log.Printf("[grok] spawn: %s %v (session=%s clean=%v)", b.binary, redactPromptArgs(args, b.prompt), b.sessionID, b.contextMode == "clean")
 
 		spec := ClaudeSpawnSpec{
 			Command: b.binary,
 			Args:    args,
-			Env:     buildCleanEnv(envExtra),
+			Env:     buildEnv(envExtra),
 		}
 		if len(b.workspace) > 0 {
 			spec.Dir = b.workspace[0]

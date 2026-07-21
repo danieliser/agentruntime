@@ -196,9 +196,19 @@ func TestCursorBackend_CleanContextFakeHome(t *testing.T) {
 		}
 	}
 
+	// Injection vectors that must not survive clean context.
+	t.Setenv("NODE_OPTIONS", "--require /tmp/evil.js")
+	t.Setenv("XDG_CONFIG_HOME", home+"/.config")
+
 	backend, _, spec := spawnCursorBackend(t, func(cfg *CursorBackendConfig) {
 		cfg.Context = "clean"
 	})
+
+	for _, key := range []string{"NODE_OPTIONS", "XDG_CONFIG_HOME"} {
+		if envHasKey(spec.Env, key) {
+			t.Fatalf("clean context env must strip %s: %v", key, spec.Env)
+		}
+	}
 
 	fakeHome := ""
 	for _, entry := range spec.Env {

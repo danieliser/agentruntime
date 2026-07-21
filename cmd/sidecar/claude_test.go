@@ -318,12 +318,21 @@ func TestClaudeBackend_CleanContextIsolationFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Injection vectors that must not survive clean context.
+	t.Setenv("NODE_OPTIONS", "--require /tmp/evil.js")
+	t.Setenv("XDG_CONFIG_HOME", home+"/.config")
+
 	spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
 		cfg.CleanContext = true
 	})
 
 	if !hasArg(spec.Args, "--safe-mode") {
 		t.Fatalf("expected --safe-mode, args = %v", spec.Args)
+	}
+	for _, key := range []string{"NODE_OPTIONS", "XDG_CONFIG_HOME"} {
+		if envHasKey(spec.Env, key) {
+			t.Fatalf("clean context env must strip %s: %v", key, spec.Env)
+		}
 	}
 	mcpPath, ok := argValue(spec.Args, "--mcp-config")
 	if !ok {

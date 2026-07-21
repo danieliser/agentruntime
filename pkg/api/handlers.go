@@ -257,7 +257,7 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	}
 
 	sess.SetRunning(handle)
-	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), cmd)
+	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), agent.RedactPrompt(cmd, req.Prompt))
 
 	// Close stdin for prompt-mode agents (claude -p, codex exec).
 	// Interactive sessions keep stdin open so WS stdin frames can steer them.

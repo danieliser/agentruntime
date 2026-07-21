@@ -367,11 +367,24 @@ func TestCodexPromptMode_CleanHomeMaterialization(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Host vars that must NOT reach a clean-context codex process.
+	t.Setenv("AGENTRUNTIME_TEST_SECRET", "leak-me")
+	t.Setenv("AGENT_CONFIG", `{"context":"clean"}`)
+
 	backend, runner := startPromptModeBackend(t, AgentConfig{Context: "clean"})
 
 	runner.mu.Lock()
 	env := append([]string(nil), runner.env...)
 	runner.mu.Unlock()
+
+	for _, key := range []string{"AGENTRUNTIME_TEST_SECRET", "AGENT_CONFIG"} {
+		if envHasKey(env, key) {
+			t.Fatalf("host var %s leaked into clean codex env: %v", key, env)
+		}
+	}
+	if !envHasKey(env, "PATH") {
+		t.Fatalf("clean codex env missing PATH passthrough: %v", env)
+	}
 
 	cleanHome := ""
 	for _, entry := range env {
@@ -408,6 +421,51 @@ func TestCodexPromptMode_CleanHomeMaterialization(t *testing.T) {
 	_ = backend.Close()
 	if _, err := os.Stat(cleanHome); !os.IsNotExist(err) {
 		t.Fatalf("clean home not removed on Close: %v", err)
+	}
+}
+
+// TestSpawnCodexAppServer_NoHostEnvMerge proves the REAL spawner passes the
+// provided env verbatim instead of merging os.Environ() — the P0 leak was a
+// full host-environment merge that fake-spawner tests could not see.
+func TestSpawnCodexAppServer_NoHostEnvMerge(t *testing.T) {
+	t.Setenv("AGENTRUNTIME_TEST_SECRET", "leak-me")
+
+	env := []string{"AGENTRUNTIME_TEST_MARKER=present"}
+	transport, err := spawnCodexAppServer(context.Background(), []string{"/usr/bin/env"}, env, false)
+	if err != nil {
+		t.Fatalf("spawn /usr/bin/env: %v", err)
+	}
+	defer func() { _ = transport.closeFn() }()
+
+	out, err := io.ReadAll(transport.stdout)
+	if err != nil {
+		t.Fatalf("read env output: %v", err)
+	}
+	<-transport.wait
+
+	printed := string(out)
+	if !strings.Contains(printed, "AGENTRUNTIME_TEST_MARKER=present") {
+		t.Fatalf("provided env not passed to process: %q", printed)
+	}
+	if strings.Contains(printed, "AGENTRUNTIME_TEST_SECRET") {
+		t.Fatalf("host env merged into codex process: %q", printed)
+	}
+}
+
+func TestCodexPromptMode_HostEnvAllowlist(t *testing.T) {
+	t.Setenv("AGENTRUNTIME_TEST_SECRET", "leak-me")
+
+	_, runner := startPromptModeBackend(t, AgentConfig{})
+
+	runner.mu.Lock()
+	env := append([]string(nil), runner.env...)
+	runner.mu.Unlock()
+
+	if envHasKey(env, "AGENTRUNTIME_TEST_SECRET") {
+		t.Fatalf("host var leaked into codex env: %v", env)
+	}
+	if !envHasKey(env, "PATH") {
+		t.Fatalf("codex env missing PATH passthrough: %v", env)
 	}
 }
 
