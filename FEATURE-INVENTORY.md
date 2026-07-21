@@ -48,7 +48,14 @@
 | Codex structured output | Done | Notifications normalized into shared event types |
 | Codex tool events | Done | `tool_use` and `tool_result` normalized |
 | Codex resume session lookup | Done | Reads local Codex session history |
+| Codex effort / service tier options | Done | `-c model_reasoning_effort` / `-c service_tier` from session request |
+| Codex exec stdin discipline | Done | Exec mode reads /dev/null unconditionally (no stdin pipe) |
+| Claude effort/thinking pairing | Done | `--effort xhigh\|max` auto-pairs `alwaysThinkingEnabled` settings |
+| Claude bare-mode guard | Done | Fails fast without `ANTHROPIC_API_KEY` (bare skips OAuth) |
+| Grok agent (native xAI CLI) | Done | Prompt mode; streaming-json normalized; no tool events in CLI 0.2.106 |
+| Cursor agent (cursor-agent CLI) | Done | Prompt mode; stream-json normalized incl. tool_use/tool_result |
 | OpenCode agent implementation | Stub | Interface exists, CLI flags and parsing still not verified |
+| agy / jetski agent | Deferred | No adapter — print mode never binds the workspace; see `docs/agy-jetski-notes.md` |
 
 ## Runtimes
 
@@ -88,6 +95,19 @@
 | Incremental replay polling | Done | `/sessions/:id/logs?cursor=N` |
 | Full log download | Done | `/sessions/:id/log` returns the persisted NDJSON log |
 
+## Clean-Context Sessions (2026-07)
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| `context: "clean"` session option | Done | Ephemeral per-agent home, auto-discovery forced off, teardown on close |
+| Claude clean context | Done | `--safe-mode` + defense-in-depth overrides; probe-verified 2026-07-21; OAuth survives |
+| Codex clean context | Done | Ephemeral `CODEX_HOME` with auth.json + minimal config.toml |
+| Grok clean context | Done | Fake HOME with `.grok/{auth.json,agent_id,config.toml}` only |
+| Cursor clean context | Done | Fake HOME + `Library/Keychains` symlink (auth is keychain-based) |
+| Contamination metadata | Done | `SessionInfo.contamination`, sidecar `/health`, `system{contamination}` event |
+| Isolation self-tests (probe pattern) | Done | `pkg/e2e` clean-context probes per adapter; all four pass live 2026-07-21 |
+| Docker clean context | Partial | Clean sessions force auto-discovery off; docker homes are materialized per session by design — no ephemeral-home probe run in-container yet |
+
 ## Credentials And Config
 
 | Feature | Status | Notes |
@@ -117,15 +137,15 @@
 
 ## Testing
 
-These counts are source-counted from the repository on 2026-03-17 (post-hardening).
+These counts are source-counted from the repository on 2026-07-21 (harness refresh).
 
 | Category | Count | Notes |
 | --- | --- | --- |
-| Test functions (`func Test...`) | 381 | Across the repo |
-| Fuzz targets (`func Fuzz...`) | 17 | API, client, bridge, materializer, session, agent parsing, sidecar normalization |
-| Adversarial test functions | 85 | Files named `*adversarial*_test.go` |
-| E2E test functions | 17 | `pkg/e2e` |
-| Go packages | 12 | `go list ./...` |
+| Test functions (`func Test...`) | 731 | Across the repo |
+| Fuzz targets (`func Fuzz...`) | 25 | API, client, bridge, materializer, session, agent parsing, sidecar normalization |
+| Adversarial test functions | 95 | Files named `*adversarial*_test.go` |
+| E2E test functions | 24 | `pkg/e2e` (includes live CLI prompt-mode tests and clean-context isolation probes) |
+| Go packages | 16 | `go list ./...` |
 
 ## Remaining Gaps
 

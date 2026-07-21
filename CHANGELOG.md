@@ -2,6 +2,62 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [0.9.0] — 2026-07-21
+
+Harness refresh: adapters re-verified against the July 2026 CLI surfaces,
+two new agents, and clean-context sessions as a first-class feature. All
+isolation claims below were verified by probing the model (asking it to
+enumerate its own context), not by config inspection.
+
+### Features
+- **Clean-context sessions** (`context: "clean"` on `SessionRequest`): every
+  adapter materializes a minimal ephemeral home (only the CLI's own auth +
+  minimal config; keychain symlink where required), runs the session against
+  it, and tears it down. Auto-discovery is forced off. Residual leakage that
+  cannot be stripped is reported in a new `contamination` field on
+  `SessionInfo`, in the sidecar `/health` response, and as a
+  `system{subtype:"contamination"}` event in the NDJSON stream.
+- **grok agent** (native xAI CLI, single-turn prompt mode): streaming-json
+  normalization (thought/text deltas, terminal result with usage + cost),
+  fake-HOME clean context. Known limit: grok 0.2.106 emits no tool events.
+- **cursor agent** (cursor-agent CLI, prompt mode): stream-json normalization
+  including tool_use/tool_result mapping; clean context via fake HOME +
+  keychain symlink. Known limit: account-level user rules sync server-side
+  and cannot be stripped — always reported as contamination.
+- **Effort/service-tier options**: `effort` on `SessionRequest` (claude
+  `--effort`, codex `model_reasoning_effort`, grok `--reasoning-effort`),
+  `service_tier` on `CodexConfig`, `system_prompt` on `ClaudeConfig`.
+- **Claude effort pairing**: `--effort xhigh|max` automatically pairs with
+  `alwaysThinkingEnabled: true` settings (xhigh returns an API 400 without it).
+- **Isolation self-tests**: `pkg/e2e` clean-context probes per adapter launch
+  the real CLI through the sidecar against the real host HOME and assert the
+  model reports an empty context (accepted residuals excepted).
+
+### Fixes & hardening
+- **Claude clean context uses `--safe-mode`**: the 2026-03 isolation flag set
+  (settings override + strict empty MCP config) no longer strips plugin MCP
+  servers, skills, or host CLAUDE.md on claude 2.1.216 (re-probed). The old
+  set is retained as defense-in-depth. Subscription OAuth survives safe-mode.
+- **Claude `--bare` guarded**: fails fast unless `ANTHROPIC_API_KEY` is
+  available — bare mode does not load OAuth/keychain credentials.
+- **Codex exec stdin**: exec-mode spawns no longer create a stdin pipe; the
+  process reads `/dev/null` unconditionally (a detached codex with open
+  stdin blocks forever).
+- **Codex clean home**: ephemeral `CODEX_HOME` per session with only
+  `auth.json` + minimal `config.toml`; removed on close.
+
+### Known contamination residuals (probe-verified)
+- claude: CLI-bundled skills under `--safe-mode`
+- codex: built-in skills new in 0.144 (imagegen, skill-creator, …)
+- grok: 4 built-in CLI skills
+- cursor: server-side account rules (unstrippable)
+
+### Deferred
+- **agy (jetski)**: no adapter. Headless permission auto-deny and the
+  fake-HOME onboarding wizard are both solved, but print mode never binds
+  the working directory (writes land in the CLI's internal scratch dir).
+  Full failure matrix in `docs/agy-jetski-notes.md`.
+
 ## [0.8.0] — 2026-03-25
 
 ### Features
