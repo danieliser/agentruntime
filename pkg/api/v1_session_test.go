@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -132,6 +133,80 @@ func TestV1CreateSessionIsConcurrentAndRestartIdempotent(t *testing.T) {
 	decodeJSON(t, inspect.Body, &inspected)
 	if inspect.StatusCode != http.StatusOK || inspected.Data.SessionID != sessionID || !inspected.Data.State.Terminal() || inspected.Data.Generation != 1 {
 		t.Fatalf("durable inspect: status=%d data=%+v", inspect.StatusCode, inspected.Data)
+	}
+}
+
+func TestV1ListSessionsReturnsDurableActiveAndTerminalHistory(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	for index, state := range []durable.SessionState{durable.StateCreated, durable.StateCompleted} {
+		id := fmt.Sprintf("listed-%d", index)
+		created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+			SessionID: id, IdempotencyKey: "job-" + id, RequestHash: "sha256:" + id,
+			RequestManifest: json.RawMessage(`{"agent":"claude","runtime":"docker"}`),
+			Agent:           "claude", Runtime: "docker", CreatedAt: time.Unix(int64(100+index), 0).UTC(),
+		})
+		if err != nil {
+			t.Fatalf("create listed session: %v", err)
+		}
+		if state == durable.StateCompleted {
+			if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+				SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Unix(102, 0).UTC(),
+			}); err != nil {
+				t.Fatalf("start listed session: %v", err)
+			}
+			if _, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{
+				SessionID: created.Session.ID, Runtime: "docker", ContainerID: "container-listed", CreatedAt: time.Unix(103, 0).UTC(),
+			}); err != nil {
+				t.Fatalf("create listed generation: %v", err)
+			}
+			if _, err := store.TransitionGeneration(ctx, durable.TransitionGenerationParams{
+				SessionID: created.Session.ID, Generation: 1, From: durable.GenerationStarting, To: durable.GenerationRunning, At: time.Unix(104, 0).UTC(),
+			}); err != nil {
+				t.Fatalf("run listed generation: %v", err)
+			}
+			if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+				SessionID: created.Session.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Unix(104, 0).UTC(),
+			}); err != nil {
+				t.Fatalf("run listed session: %v", err)
+			}
+			exitCode := 0
+			if _, err := store.FinalizeSession(ctx, durable.FinalizeSessionParams{
+				From: durable.StateRunning, GenerationFrom: durable.GenerationRunning, GenerationTo: durable.GenerationExited,
+				Receipt: durable.TerminalReceipt{SessionID: created.Session.ID, Generation: 1, State: durable.StateCompleted,
+					ExitCode: &exitCode, StartedAt: time.Unix(103, 0).UTC(), EndedAt: time.Unix(105, 0).UTC(), OutputHash: "sha256:listed"},
+			}); err != nil {
+				t.Fatalf("finalize listed session: %v", err)
+			}
+		}
+	}
+	server := NewServer(session.NewManager(), runtime.NewLocalRuntime(), agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	response := get(t, httpServer, "/api/v1/sessions")
+	defer response.Body.Close()
+	var envelope struct {
+		Data []v1SessionData `json:"data"`
+	}
+	decodeJSON(t, response.Body, &envelope)
+	if response.StatusCode != http.StatusOK || len(envelope.Data) != 2 {
+		t.Fatalf("list status=%d data=%+v", response.StatusCode, envelope.Data)
+	}
+	states := map[durable.SessionState]bool{}
+	for _, listed := range envelope.Data {
+		states[listed.State] = true
+		if listed.CreatedAt.IsZero() || listed.UpdatedAt.IsZero() || listed.EventsURL == "" || listed.EventStreamURL == "" {
+			t.Fatalf("incomplete listed session: %+v", listed)
+		}
+	}
+	if !states[durable.StateCreated] || !states[durable.StateCompleted] {
+		t.Fatalf("listed states = %v", states)
 	}
 }
 

@@ -91,6 +91,24 @@ func TestClientStreamEventRawStopsAtDurableTerminal(t *testing.T) {
 	}
 }
 
+func TestClientListsDurableSessions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/sessions" {
+			http.NotFound(writer, request)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": []map[string]any{
+			{"session_id": "active", "state": "running", "generation": 1, "last_sequence": 4},
+			{"session_id": "history", "state": "completed", "generation": 1, "last_sequence": 9},
+		}})
+	}))
+	defer server.Close()
+	sessions, err := New(server.URL).ListDurableSessions(context.Background())
+	if err != nil || len(sessions) != 2 || sessions[0].SessionID != "active" || sessions[1].State != "completed" {
+		t.Fatalf("durable session list = %+v err=%v", sessions, err)
+	}
+}
+
 func durableTestRequest() api.SessionRequest {
 	return api.SessionRequest{Agent: "claude", Runtime: "docker", Prompt: "hello"}
 }

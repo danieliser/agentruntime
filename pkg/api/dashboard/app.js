@@ -9,7 +9,12 @@ const state = {
     refreshInterval: null,
     historyRefreshInterval: null,
     eventLogs: {}, // keyed by sessionId
+    eventSequences: {}, // durable sequence pointer keyed by sessionId
 };
+
+const terminalStates = new Set([
+    'completed', 'failed', 'cancelled', 'timed_out', 'crashed', 'indeterminate'
+]);
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
@@ -139,11 +144,12 @@ function updateHealthBadge(err) {
 // Fetch sessions list
 async function fetchSessions() {
     try {
-        const res = await fetch('/sessions');
+        const res = await fetch('/api/v1/sessions');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const all = await res.json() || [];
+        const envelope = await res.json();
+        const all = envelope.data || [];
         // Active tab only shows non-terminal sessions
-        state.sessions = all.filter(s => !['completed', 'failed'].includes(s.status || s.state));
+        state.sessions = all.filter(s => !terminalStates.has(s.state));
         updateSessionsTable();
     } catch (err) {
         console.error('Sessions fetch error:', err);
@@ -160,7 +166,7 @@ function updateSessionsTable() {
     }
 
     tbody.innerHTML = state.sessions.map(session => {
-        const statusClass = getStatusClass(session.status);
+        const statusClass = getStatusClass(session.state);
         const sessionIdShort = session.session_id.substring(0, 8);
 
         return `
@@ -170,7 +176,7 @@ function updateSessionsTable() {
                 <td>${escapeHtml(session.runtime)}</td>
                 <td>
                     <span class="session-status ${statusClass}">
-                        ${escapeHtml(session.status)}
+                        ${escapeHtml(session.state)}
                     </span>
                 </td>
                 <td>-</td>
@@ -179,7 +185,7 @@ function updateSessionsTable() {
                 <td>
                     <div class="action-buttons">
                         <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(session.session_id)}">Info</button>
-                        <button class="btn btn-delete" data-action="delete" data-session-id="${escapeAttr(session.session_id)}">Delete</button>
+                        <button class="btn btn-delete" data-action="delete" data-session-id="${escapeAttr(session.session_id)}">Cancel</button>
                     </div>
                 </td>
             </tr>
@@ -204,9 +210,13 @@ function updateSessionsTable() {
 // Fetch session history
 async function fetchHistory() {
     try {
-        const res = await fetch('/sessions/history?limit=50');
+        const res = await fetch('/api/v1/sessions');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        state.history = await res.json() || [];
+        const envelope = await res.json();
+        state.history = (envelope.data || [])
+            .filter(s => terminalStates.has(s.state))
+            .sort((left, right) => new Date(right.updated_at) - new Date(left.updated_at))
+            .slice(0, 50);
         updateHistoryTable();
     } catch (err) {
         console.error('History fetch error:', err);
@@ -223,21 +233,14 @@ function updateHistoryTable() {
     }
 
     tbody.innerHTML = state.history.map(entry => {
-        const statusClass = getStatusClass(entry.status);
+        const statusClass = getStatusClass(entry.state);
         const sessionIdShort = entry.session_id.substring(0, 8);
-        const duration = entry.created_at && entry.ended_at
-            ? formatDuration(new Date(entry.ended_at) - new Date(entry.created_at))
+        const duration = entry.created_at && entry.updated_at
+            ? formatDuration(new Date(entry.updated_at) - new Date(entry.created_at))
             : '-';
-        const totalTokens = (entry.input_tokens || 0) + (entry.output_tokens || 0);
-        const date = entry.ended_at
-            ? new Date(entry.ended_at).toLocaleString()
+        const date = entry.updated_at
+            ? new Date(entry.updated_at).toLocaleString()
             : '-';
-        const fileSize = entry.file_size > 1024 * 1024
-            ? `${(entry.file_size / 1024 / 1024).toFixed(1)}MB`
-            : entry.file_size > 1024
-            ? `${(entry.file_size / 1024).toFixed(1)}KB`
-            : `${entry.file_size}B`;
-        const cost = entry.cost_usd ? `$${entry.cost_usd.toFixed(4)}` : '-';
 
         return `
             <tr data-session-id="${escapeAttr(entry.session_id)}">
@@ -245,14 +248,14 @@ function updateHistoryTable() {
                 <td>${escapeHtml(entry.agent || '-')}</td>
                 <td>
                     <span class="session-status ${statusClass}">
-                        ${escapeHtml(entry.status || '-')}
+                        ${escapeHtml(entry.state || '-')}
                     </span>
                 </td>
                 <td>${escapeHtml(duration)}</td>
-                <td>${escapeHtml(String(totalTokens))}</td>
-                <td>${escapeHtml(String(entry.tool_calls || 0))}</td>
-                <td>${escapeHtml(cost)}</td>
-                <td>${escapeHtml(fileSize)}</td>
+                <td>-</td>
+                <td>-</td>
+                <td>-</td>
+                <td>-</td>
                 <td><span class="date-small">${escapeHtml(date)}</span></td>
                 <td>
                     <div class="action-buttons">
@@ -284,6 +287,10 @@ function getStatusClass(status) {
         case 'completed':
             return 'status-completed';
         case 'failed':
+        case 'cancelled':
+        case 'timed_out':
+        case 'crashed':
+        case 'indeterminate':
             return 'status-failed';
         case 'pending':
         default:
@@ -303,9 +310,10 @@ async function showDetailPanel(sessionId) {
 
     // Fetch session info
     try {
-        const res = await fetch(`/sessions/${sessionId}/info`);
+        const res = await fetch(`/api/v1/sessions/${sessionId}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const info = await res.json();
+        const envelope = await res.json();
+        const info = envelope.data;
         renderDetailPanel(info);
         connectWebSocket(sessionId);
     } catch (err) {
@@ -342,28 +350,24 @@ function renderDetailPanel(info) {
     content.innerHTML = '';
 
     // Calculate uptime if still running
-    let uptime = info.uptime;
-    if (!info.ended_at) {
+    let uptime = '-';
+    if (!terminalStates.has(info.state)) {
         const createdAt = new Date(info.created_at);
         const now = new Date();
         uptime = formatDuration(now - createdAt);
     }
-
-    const totalTokens = (info.input_tokens || 0) + (info.output_tokens || 0);
 
     // Create fields using DOM methods
     const fields = [
         ['Session ID', info.session_id],
         ['Agent', info.agent],
         ['Runtime', info.runtime],
-        ['Status', info.status],
+        ['Status', info.state],
         ['Created', new Date(info.created_at).toLocaleString()],
         ['Uptime', uptime || '-'],
-        ['Input Tokens', String(info.input_tokens || 0)],
-        ['Output Tokens', String(info.output_tokens || 0)],
-        ['Total Tokens', String(totalTokens)],
-        ['Tool Calls', String(info.tool_call_count || 0)],
-        ['Cost (USD)', `$${(info.cost_usd || 0).toFixed(4)}`],
+        ['Generation', String(info.generation)],
+        ['Last Sequence', String(info.last_sequence)],
+        ['Updated', new Date(info.updated_at).toLocaleString()],
     ];
 
     if (info.exit_code !== null && info.exit_code !== undefined) {
@@ -398,7 +402,8 @@ function renderDetailPanel(info) {
 // Connect to WebSocket
 function connectWebSocket(sessionId) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/sessions/${sessionId}`);
+    const afterSequence = state.eventSequences[sessionId] || 0;
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/ws/sessions/${sessionId}/events?after_sequence=${afterSequence}`);
 
     ws.onopen = () => {
         addEventLogEntry('system', 'Connected to session');
@@ -427,38 +432,51 @@ function connectWebSocket(sessionId) {
 
 // Handle session events
 function handleSessionEvent(event) {
-    // The event structure from agentd is NDJSON-like, may contain type, data, offset, timestamp
+    if (event.frame_type === 'stream.ready') {
+        addEventLogEntry('system', `Replay ready through sequence ${event.replay_through}`);
+        return;
+    }
+    if (event.frame_type === 'error') {
+        addEventLogEntry('error', event.error?.message || 'Event stream failed');
+        return;
+    }
     const type = event.type || 'unknown';
-    const data = event.data || {};
+    const data = event.payload || {};
+    if (event.sequence) {
+        const previous = state.eventSequences[event.session_id] || 0;
+        if (event.sequence !== previous + 1) {
+            addEventLogEntry('error', `Sequence gap: expected ${previous + 1}, received ${event.sequence}`);
+            state.ws?.close();
+            return;
+        }
+        state.eventSequences[event.session_id] = event.sequence;
+    }
 
     let message = '';
 
     switch (type) {
-        case 'agent_message':
+        case 'content.delta':
             message = data.text || JSON.stringify(data);
             addEventLogEntry('tool', message);
             break;
-        case 'tool_use':
+        case 'tool.call':
             message = `Tool: ${data.name} (${data.input ? 'with input' : 'no input'})`;
             addEventLogEntry('tool', message);
             break;
-        case 'tool_result':
+        case 'tool.result':
             message = `Result: ${data.output ? data.output.substring(0, 50) : 'empty'}`;
             addEventLogEntry('tool', message);
             break;
-        case 'progress':
-            message = data.message || 'Progress update';
-            addEventLogEntry('system', message);
-            break;
-        case 'error':
+        case 'runtime.stderr':
             message = data.message || JSON.stringify(data);
             addEventLogEntry('error', message);
             break;
-        case 'exit':
-            message = `Exit code: ${data.code || 0}`;
-            addEventLogEntry('system', message);
-            break;
         default:
+            if (event.stream === 'terminal') {
+                message = `${data.reason || type} (exit ${data.exit_code ?? '-'})`;
+                addEventLogEntry('system', message);
+                return;
+            }
             message = JSON.stringify(data);
             addEventLogEntry('system', message);
     }
@@ -491,12 +509,16 @@ function closeDetailPanel() {
 
 // Delete session
 async function deleteSession(sessionId) {
-    if (!confirm(`Delete session ${sessionId.substring(0, 8)}…?`)) {
+    if (!confirm(`Cancel session ${sessionId.substring(0, 8)}…?`)) {
         return;
     }
 
     try {
-        const res = await fetch(`/sessions/${sessionId}`, { method: 'DELETE' });
+        const res = await fetch(`/api/v1/sessions/${sessionId}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idempotency_key: `dashboard-cancel:${sessionId}` }),
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
         // Close detail panel if it was showing this session
@@ -507,8 +529,8 @@ async function deleteSession(sessionId) {
         // Refresh list
         fetchSessions();
     } catch (err) {
-        console.error('Delete session error:', err);
-        alert('Failed to delete session');
+        console.error('Cancel session error:', err);
+        alert('Failed to cancel session');
     }
 }
 

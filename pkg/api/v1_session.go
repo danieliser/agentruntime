@@ -32,6 +32,8 @@ type v1SessionData struct {
 	State          durable.SessionState `json:"state"`
 	Generation     int64                `json:"generation"`
 	LastSequence   int64                `json:"last_sequence"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
 	EventsURL      string               `json:"events_url"`
 	EventStreamURL string               `json:"event_stream_url"`
 }
@@ -69,6 +71,23 @@ func (s *Server) handleV1GetSession(c *gin.Context) {
 		return
 	}
 	s.writeV1Session(c, http.StatusOK, stored)
+}
+
+func (s *Server) handleV1ListSessions(c *gin.Context) {
+	if s.durableStore == nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "list_v1_sessions", "durable session store unavailable", nil))
+		return
+	}
+	stored, err := s.durableStore.ListSessions(c.Request.Context())
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	data := make([]v1SessionData, 0, len(stored))
+	for _, item := range stored {
+		data = append(data, v1SessionView(c, item))
+	}
+	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": data})
 }
 
 func (s *Server) handleV1GetTerminalReceipt(c *gin.Context) {
@@ -238,14 +257,18 @@ func scrubManifestSecrets(value any, path string, grants *[]string) {
 func (s *Server) writeV1Session(c *gin.Context, status int, stored durable.Session) {
 	c.JSON(status, gin.H{
 		"api_version": "v1",
-		"data": v1SessionData{
-			SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
-			Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
-			Generation: stored.ActiveGeneration, LastSequence: stored.LastSequence,
-			EventsURL:      sessionEventsURL(c, stored.ID),
-			EventStreamURL: sessionEventStreamURL(c, stored.ID),
-		},
+		"data":        v1SessionView(c, stored),
 	})
+}
+
+func v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
+	return v1SessionData{
+		SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
+		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
+		Generation: stored.ActiveGeneration, LastSequence: stored.LastSequence,
+		CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt,
+		EventsURL: sessionEventsURL(c, stored.ID), EventStreamURL: sessionEventStreamURL(c, stored.ID),
+	}
 }
 
 func sessionEventsURL(c *gin.Context, sessionID string) string {

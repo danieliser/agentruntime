@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"net/http"
 	"testing"
 )
@@ -28,6 +29,26 @@ func TestDashboardRedirect(t *testing.T) {
 	location := resp.Header.Get("Location")
 	if location != "/dashboard/" {
 		t.Errorf("Expected redirect to /dashboard/, got %s", location)
+	}
+}
+
+func TestEmbeddedDashboardUsesDurableV1SessionSurfaces(t *testing.T) {
+	app, err := dashboardFS.ReadFile("dashboard/app.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard: %v", err)
+	}
+	for _, required := range [][]byte{[]byte("/api/v1/sessions"), []byte("/api/v1/ws/sessions/")} {
+		if !bytes.Contains(app, required) {
+			t.Fatalf("dashboard missing durable route %q", required)
+		}
+	}
+	for _, legacy := range [][]byte{
+		[]byte("fetch('/sessions')"), []byte("/sessions/history"),
+		[]byte("/sessions/${sessionId}/info"), []byte("${window.location.host}/ws/sessions/"),
+	} {
+		if bytes.Contains(app, legacy) {
+			t.Fatalf("dashboard still uses compatibility route %q", legacy)
+		}
 	}
 }
 

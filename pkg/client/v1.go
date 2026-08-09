@@ -18,15 +18,17 @@ import (
 
 // DurableSession is the public v1 logical-session view.
 type DurableSession struct {
-	SessionID      string `json:"session_id"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Agent          string `json:"agent"`
-	Runtime        string `json:"runtime"`
-	State          string `json:"state"`
-	Generation     int64  `json:"generation"`
-	LastSequence   int64  `json:"last_sequence"`
-	EventsURL      string `json:"events_url"`
-	EventStreamURL string `json:"event_stream_url"`
+	SessionID      string    `json:"session_id"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Agent          string    `json:"agent"`
+	Runtime        string    `json:"runtime"`
+	State          string    `json:"state"`
+	Generation     int64     `json:"generation"`
+	LastSequence   int64     `json:"last_sequence"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	EventsURL      string    `json:"events_url"`
+	EventStreamURL string    `json:"event_stream_url"`
 }
 
 type ReplayCapabilities struct {
@@ -149,6 +151,25 @@ func (c *Client) GetDurableSession(ctx context.Context, sessionID string) (*Dura
 		return nil, err
 	}
 	return &envelope.Data, nil
+}
+
+// ListDurableSessions returns active and terminal logical sessions from the
+// durable store. It is the canonical history/listing surface for v1 clients.
+func (c *Client) ListDurableSessions(ctx context.Context) ([]DurableSession, error) {
+	httpRequest, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Data []DurableSession `json:"data"`
+	}
+	if err := c.doJSON(httpRequest, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Data == nil {
+		envelope.Data = []DurableSession{}
+	}
+	return envelope.Data, nil
 }
 
 // GetEvents reads events strictly after afterSequence.
