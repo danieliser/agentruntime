@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,9 @@ import (
 	"github.com/danieliser/agentruntime/pkg/agent"
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/chat"
+	"github.com/danieliser/agentruntime/pkg/durable"
+	durablememory "github.com/danieliser/agentruntime/pkg/durable/memory"
+	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -46,6 +50,8 @@ func newChatTestServer(t *testing.T) (*httptest.Server, *Server, *chat.Manager, 
 	}
 
 	spawner := &stubSpawner{sessions: sessMgr}
+	durableStore := durablememory.New()
+	t.Cleanup(func() { _ = durableStore.Close() })
 	runtimeMap := map[string]string{"test": "test"}
 	_ = runtimeMap // just for documentation
 
@@ -63,6 +69,8 @@ func newChatTestServer(t *testing.T) (*httptest.Server, *Server, *chat.Manager, 
 		LogDir:       logDir,
 		ChatRegistry: chatReg,
 		ChatManager:  chatMgr,
+		DurableStore: durableStore,
+		EventBroker:  eventstream.New(durableStore),
 	})
 
 	ts := httptest.NewServer(srv.router)
@@ -105,13 +113,13 @@ func newFakeHandle() *fakeHandle {
 	return &fakeHandle{waitCh: make(chan runtime.ExitResult, 1)}
 }
 
-func (h *fakeHandle) PID() int                                { return 99999 }
-func (h *fakeHandle) Stdin() io.WriteCloser                    { return &nopWriteCloser{} }
-func (h *fakeHandle) Stdout() io.ReadCloser                    { return nil }
-func (h *fakeHandle) Stderr() io.ReadCloser                    { return nil }
-func (h *fakeHandle) Wait() <-chan runtime.ExitResult          { return h.waitCh }
-func (h *fakeHandle) Kill() error                              { return nil }
-func (h *fakeHandle) RecoveryInfo() *runtime.RecoveryInfo      { return nil }
+func (h *fakeHandle) PID() int                            { return 99999 }
+func (h *fakeHandle) Stdin() io.WriteCloser               { return &nopWriteCloser{} }
+func (h *fakeHandle) Stdout() io.ReadCloser               { return nil }
+func (h *fakeHandle) Stderr() io.ReadCloser               { return nil }
+func (h *fakeHandle) Wait() <-chan runtime.ExitResult     { return h.waitCh }
+func (h *fakeHandle) Kill() error                         { return nil }
+func (h *fakeHandle) RecoveryInfo() *runtime.RecoveryInfo { return nil }
 
 type nopWriteCloser struct{ bytes.Buffer }
 
@@ -377,8 +385,8 @@ func TestGetChat_Running_HasWSURL(t *testing.T) {
 	if chatResp.State != "running" {
 		t.Fatalf("expected state %q, got %q", "running", chatResp.State)
 	}
-	if !strings.Contains(chatResp.WSURL, "/ws/chats/running-ws") {
-		t.Fatalf("expected ws_url containing /ws/chats/running-ws, got %q", chatResp.WSURL)
+	if !strings.Contains(chatResp.WSURL, "/api/v1/ws/sessions/"+chatResp.CurrentSession+"/events") {
+		t.Fatalf("expected durable session event URL, got %q", chatResp.WSURL)
 	}
 	if chatResp.CurrentSession == "" {
 		t.Fatal("expected non-empty current_session for running chat")
@@ -415,8 +423,8 @@ func TestSendMessage_202_Spawned(t *testing.T) {
 	if sendResp.State != "running" {
 		t.Fatalf("expected state %q, got %q", "running", sendResp.State)
 	}
-	if !strings.Contains(sendResp.WSURL, "/ws/chats/send-test") {
-		t.Fatalf("expected ws_url containing /ws/chats/send-test, got %q", sendResp.WSURL)
+	if !strings.Contains(sendResp.WSURL, "/api/v1/ws/sessions/"+sendResp.SessionID+"/events") {
+		t.Fatalf("expected durable session event URL, got %q", sendResp.WSURL)
 	}
 }
 
@@ -481,23 +489,10 @@ func TestGetChatMessages_200(t *testing.T) {
 	ts, srv, _, _ := newChatTestServer(t)
 	mustCreateChat(t, ts, "msg-test", "echo-test")
 
-	// Write some fake NDJSON events to a session log file.
 	sessID := "test-session-001"
-	logPath := session.LogFilePath(srv.logDir, sessID)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	events := []string{
-		`{"type":"agent_message","data":{"content":"hello"},"timestamp":1700000000000}`,
-		`{"type":"tool_use","data":{"name":"read_file"},"timestamp":1700000001000}`,
-		`{"type":"tool_result","data":{"output":"file contents"},"timestamp":1700000002000}`,
-		`{"type":"progress","data":{"percent":50},"timestamp":1700000003000}`,
-		`{"type":"result","data":{"status":"success"},"timestamp":1700000004000}`,
-	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
+	seedDurableChatEvents(t, srv.durableStore, sessID, []string{
+		"content.delta", "tool.call", "tool.result", "lifecycle.turn.started", "usage",
+	})
 
 	// Manually update the chat record to have this session in the chain.
 	rec, _ := srv.chatRegistry.Load("msg-test")
@@ -517,7 +512,7 @@ func TestGetChatMessages_200(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// Should include agent_message, tool_use, tool_result, result — but NOT progress.
+	// Should project content/tool/usage — but not unrelated lifecycle events.
 	if len(msgResp.Messages) != 4 {
 		t.Fatalf("expected 4 messages (excluding progress), got %d", len(msgResp.Messages))
 	}
@@ -527,6 +522,31 @@ func TestGetChatMessages_200(t *testing.T) {
 	if msgResp.Messages[0].SessionID != sessID {
 		t.Fatalf("expected session_id %q, got %q", sessID, msgResp.Messages[0].SessionID)
 	}
+	if msgResp.Messages[0].Source != "durable_v1" {
+		t.Fatalf("expected durable history source, got %q", msgResp.Messages[0].Source)
+	}
+}
+
+func TestGetChatMessagesMarksLegacyHistoryUnverified(t *testing.T) {
+	ts, srv, _, _ := newChatTestServer(t)
+	mustCreateChat(t, ts, "legacy-msg-test", "echo-test")
+	sessionID := "legacy-session"
+	logPath := session.LogFilePath(srv.logDir, sessionID)
+	if err := os.WriteFile(logPath, []byte(`{"type":"agent_message","data":{"text":"old"},"timestamp":1700000000000}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write legacy log: %v", err)
+	}
+	rec, _ := srv.chatRegistry.Load("legacy-msg-test")
+	rec.SessionChain = []string{sessionID}
+	if err := srv.chatRegistry.Save(rec); err != nil {
+		t.Fatalf("save legacy chat: %v", err)
+	}
+	resp := get(t, ts, "/chats/legacy-msg-test/messages")
+	defer resp.Body.Close()
+	var history apischema.ChatMessagesResponse
+	decodeJSON(t, resp.Body, &history)
+	if resp.StatusCode != http.StatusOK || len(history.Messages) != 1 || history.Messages[0].Source != "legacy_ndjson_unverified" {
+		t.Fatalf("legacy history status=%d response=%+v", resp.StatusCode, history)
+	}
 }
 
 func TestGetChatMessages_Pagination(t *testing.T) {
@@ -534,19 +554,9 @@ func TestGetChatMessages_Pagination(t *testing.T) {
 	mustCreateChat(t, ts, "page-test", "echo-test")
 
 	sessID := "test-session-page"
-	logPath := session.LogFilePath(srv.logDir, sessID)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	// Write 5 agent_message events.
-	var events []string
-	for i := 0; i < 5; i++ {
-		events = append(events, `{"type":"agent_message","data":{"content":"msg"},"timestamp":1700000000000}`)
-	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
+	seedDurableChatEvents(t, srv.durableStore, sessID, []string{
+		"content.delta", "content.delta", "content.delta", "content.delta", "content.delta",
+	})
 
 	rec, _ := srv.chatRegistry.Load("page-test")
 	rec.SessionChain = []string{sessID}
@@ -576,6 +586,40 @@ func TestGetChatMessages_Pagination(t *testing.T) {
 	// limit+1 for efficiency and does not scan the full history for a count).
 	if msgResp.Total != 3 {
 		t.Fatalf("expected total=3 (page count), got %d", msgResp.Total)
+	}
+}
+
+func seedDurableChatEvents(t *testing.T, store durable.Store, sessionID string, eventTypes []string) {
+	t.Helper()
+	ctx := context.Background()
+	createdAt := time.Unix(1_700_000_000, 0).UTC()
+	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: sessionID, IdempotencyKey: "job-" + sessionID, RequestHash: "sha256:" + sessionID,
+		RequestManifest: json.RawMessage(`{"agent":"claude","runtime":"docker"}`),
+		Agent:           "claude", Runtime: "docker", CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatalf("create durable chat session: %v", err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+		SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: createdAt.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("start durable chat session: %v", err)
+	}
+	if _, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{
+		SessionID: sessionID, Runtime: "docker", ContainerID: "container-" + sessionID, CreatedAt: createdAt.Add(2 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("create durable chat generation: %v", err)
+	}
+	for index, eventType := range eventTypes {
+		payload, _ := json.Marshal(map[string]interface{}{"text": "message", "name": "read_file", "index": index})
+		if _, err := store.AppendEvent(ctx, durable.AppendEventParams{
+			SchemaVersion: "1.0", EventID: fmt.Sprintf("evt-%s-%d", sessionID, index), SessionID: sessionID,
+			Generation: 1, Timestamp: createdAt.Add(time.Duration(index+3) * time.Millisecond),
+			Type: eventType, Stream: durable.StreamProviderStdout, Payload: payload, Raw: payload,
+		}); err != nil {
+			t.Fatalf("append durable chat event: %v", err)
+		}
 	}
 }
 
@@ -689,17 +733,18 @@ func TestDeleteChat_404(t *testing.T) {
 	}
 }
 
-// --- GET /ws/chats/:name ---
+// --- retired GET /ws/chats/:name compatibility proxy ---
 
 func TestChatWS_409_NotRunning(t *testing.T) {
 	ts, _, _, _ := newChatTestServer(t)
 	mustCreateChat(t, ts, "ws-idle", "echo-test")
 
-	// Try to GET /ws/chats/ws-idle — should return 409 (not running).
+	// The chat-specific byte-stream proxy is gone; clients use the session's
+	// v1 event_stream_url returned by chat inspect/send/attach.
 	resp := get(t, ts, "/ws/chats/ws-idle")
 	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("expected 409, got %d body=%s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", resp.StatusCode, string(body))
 	}
 }
 

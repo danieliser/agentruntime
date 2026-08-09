@@ -4,15 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
-	"github.com/danieliser/agentruntime/pkg/bridge"
 	"github.com/danieliser/agentruntime/pkg/chat"
+	"github.com/danieliser/agentruntime/pkg/durable"
 )
 
 // chatConfigFromAPI converts the API config type to the internal chat config.
@@ -72,13 +71,9 @@ func chatRecordToResponse(rec *chat.ChatRecord, c *gin.Context) apischema.ChatRe
 		LastActiveAt:     rec.LastActiveAt,
 	}
 	if rec.State == chat.ChatStateRunning && rec.CurrentSession != "" {
-		resp.WSURL = chatWSURL(c, rec.Name)
+		resp.WSURL = sessionEventStreamURL(c, rec.CurrentSession)
 	}
 	return resp
-}
-
-func chatWSURL(c *gin.Context, name string) string {
-	return websocketScheme(c) + "://" + c.Request.Host + "/ws/chats/" + url.PathEscape(name)
 }
 
 // handleCreateChat handles POST /chats.
@@ -212,7 +207,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		State:     state,
 		Queued:    result.Queued,
 		Spawned:   result.Spawned,
-		WSURL:     chatWSURL(c, name),
+		WSURL:     sessionEventStreamURL(c, result.SessionID),
 	})
 }
 
@@ -260,19 +255,7 @@ func (s *Server) handleGetChatMessages(c *gin.Context) {
 		}
 	}
 
-	// Convert before cursor: -1 sentinel → 0 (LogReader treats 0 as no cursor).
-	var beforeOffset int64
-	if beforeCursor > 0 {
-		beforeOffset = beforeCursor
-	}
-
-	logReader := chat.NewLogReader(s.logDir)
-	messages, hasMore, err := logReader.ReadMessages(
-		rec.SessionChain,
-		limit,
-		beforeOffset,
-		messageEventTypeList,
-	)
+	messages, hasMore, err := s.readChatMessages(c.Request.Context(), rec.SessionChain, limit, beforeCursor)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -289,6 +272,86 @@ func (s *Server) handleGetChatMessages(c *gin.Context) {
 		HasMore:  hasMore,
 		Before:   beforeOut,
 	})
+}
+
+func (s *Server) readChatMessages(ctx context.Context, chain []string, limit int, before int64) ([]apischema.ChatMessageEntry, bool, error) {
+	entries := make([]apischema.ChatMessageEntry, 0)
+	for chainIndex, sessionID := range chain {
+		sessionEntries, err := s.readChatSessionMessages(ctx, sessionID, chainIndex)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, entry := range sessionEntries {
+			if before > 0 && entry.Offset >= before {
+				continue
+			}
+			entries = append(entries, entry)
+		}
+	}
+	if limit > 0 && len(entries) > limit {
+		return entries[:limit], true, nil
+	}
+	return entries, false, nil
+}
+
+func (s *Server) readChatSessionMessages(ctx context.Context, sessionID string, chainIndex int) ([]apischema.ChatMessageEntry, error) {
+	if s.durableStore != nil {
+		if _, err := s.durableStore.GetSession(ctx, sessionID); err == nil {
+			return s.readDurableChatSessionMessages(ctx, sessionID, chainIndex)
+		} else if !durable.IsCode(err, durable.CodeNotFound) {
+			return nil, err
+		}
+	}
+	legacy, _, err := chat.NewLogReader(s.logDir).ReadMessages([]string{sessionID}, 0, 0, messageEventTypeList)
+	if err != nil {
+		return nil, err
+	}
+	for index := range legacy {
+		legacy[index].Offset += int64(chainIndex) * 1_000_000_000
+		legacy[index].Source = "legacy_ndjson_unverified"
+	}
+	return legacy, nil
+}
+
+func (s *Server) readDurableChatSessionMessages(ctx context.Context, sessionID string, chainIndex int) ([]apischema.ChatMessageEntry, error) {
+	entries := make([]apischema.ChatMessageEntry, 0)
+	cursor := int64(0)
+	for {
+		page, err := s.durableStore.ListEvents(ctx, durable.EventQuery{SessionID: sessionID, AfterSequence: cursor, Limit: 1000})
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range page.Events {
+			cursor = event.Sequence
+			typeName := ""
+			switch event.Type {
+			case "content.delta":
+				typeName = "agent_message"
+			case "tool.call":
+				typeName = "tool_use"
+			case "tool.result":
+				typeName = "tool_result"
+			case "usage":
+				typeName = "result"
+			case "runtime.stderr", "error.protocol":
+				typeName = "error"
+			default:
+				continue
+			}
+			entries = append(entries, apischema.ChatMessageEntry{
+				SessionID: sessionID, Type: typeName, Data: append([]byte(nil), event.Payload...),
+				Offset:    int64(chainIndex)*1_000_000_000 + event.Sequence,
+				Timestamp: event.Timestamp, Source: "durable_v1",
+			})
+		}
+		if !page.HasMore {
+			break
+		}
+		if len(page.Events) == 0 {
+			return nil, durable.NewError(durable.CodeIndeterminate, "read_chat_history", "event page did not advance", nil)
+		}
+	}
+	return entries, nil
 }
 
 // handleChatAttach handles POST /chats/:name/attach.
@@ -314,7 +377,7 @@ func (s *Server) handleChatAttach(c *gin.Context) {
 		SessionID: result.SessionID,
 		State:     "running",
 		Spawned:   result.Spawned,
-		WSURL:     chatWSURL(c, name),
+		WSURL:     sessionEventStreamURL(c, result.SessionID),
 	})
 }
 
@@ -402,60 +465,4 @@ func (s *Server) handleDeleteChat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"name": name, "deleted": true})
-}
-
-// handleChatWS handles GET /ws/chats/:name.
-// Proxies the WS connection to the current session's WS endpoint.
-func (s *Server) handleChatWS(c *gin.Context) {
-	if s.chatManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "chat subsystem not initialized"})
-		return
-	}
-
-	name := c.Param("name")
-	rec, err := s.chatManager.GetChat(name)
-	if err != nil {
-		if errors.Is(err, chat.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "chat not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	if rec.State != chat.ChatStateRunning || rec.CurrentSession == "" {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "chat is not running",
-			"state": string(rec.State),
-		})
-		return
-	}
-
-	sess := s.sessions.Get(rec.CurrentSession)
-	if sess == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "session not found for running chat"})
-		return
-	}
-	if sess.Handle == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "session has no active process"})
-		return
-	}
-
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	sinceOffset := int64(-1)
-	if sinceStr := c.Query("since"); sinceStr != "" {
-		if parsed, parseErr := strconv.ParseInt(sinceStr, 10, 64); parseErr == nil {
-			sinceOffset = parsed
-		}
-	}
-
-	b := bridge.New(conn, sess.Handle, sess.Replay, s.logDir, sess.ID)
-	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
-	defer cancel()
-	b.Run(ctx, sess.ID, sinceOffset)
 }

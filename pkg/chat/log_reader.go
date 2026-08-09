@@ -113,6 +113,7 @@ func (r *LogReader) ReadMessages(
 				Data:      data,
 				Offset:    globalOffset,
 				Timestamp: ts,
+				Source:    "legacy_ndjson_unverified",
 			})
 
 			// Stop early once we have limit+1: enough to detect hasMore.

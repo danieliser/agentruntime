@@ -404,6 +404,7 @@ type ChatMessageEntry struct {
 	Data      json.RawMessage `json:"data"`
 	Offset    int64           `json:"offset"`
 	Timestamp time.Time       `json:"timestamp"`
+	Source    string          `json:"source"`
 }
 
 // ChatMessagesResponse is returned by GET /chats/:name/messages.

@@ -60,4 +60,4 @@ go test ./pkg/runtime \
 
 ## Compatibility warning
 
-The CLI attach/dispatch flows, TUI, embedded dashboard, and typed Go-client methods use v1 sequences. Legacy Go-client methods, unversioned daemon routes, and server chat-log pagination still use byte cursors while migration is in progress. Do not interpret those offsets as v1 event sequences or build new consumers on them.
+The CLI attach/dispatch flows, TUI, embedded dashboard, typed Go-client methods, and chat history use v1 sequences. Legacy Go-client methods and unversioned session routes still use byte cursors while migration is in progress. Do not interpret those offsets as v1 event sequences or build new consumers on them. Pre-v1 chat NDJSON is read-only and explicitly unverified.

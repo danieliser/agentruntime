@@ -47,8 +47,6 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 		chats.DELETE("/:name", s.handleDeleteChat)
 	}
 
-	r.GET("/ws/chats/:name", s.handleChatWS)
-
 	// Embedded dashboard — baked into the binary, works from any working directory.
 	r.StaticFS("/dashboard", DashboardHandler())
 
