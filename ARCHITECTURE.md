@@ -27,7 +27,7 @@ SQLite under the data root contains four authorities:
 - `sessions`: caller idempotency key, canonical request hash/manifest, agent/runtime, lifecycle state, active generation, last sequence;
 - `runtime_generations`: runtime/container identity, image reference/digest, sandbox profile, provider session/thread ID, log configuration, generation state;
 - `events`: immutable sequence, event ID, type/stream, payload, exact raw bytes/hash, timestamp;
-- `terminal_receipts`: immutable final state, code/signal, timestamps, hashes, and final sequence.
+- `terminal_receipts`: immutable final state/reason, code/signal, timestamps, hashes, and final sequence.
 
 Logical sequence numbers are contiguous across runtime generations. A terminal logical session never returns to running.
 
@@ -85,7 +85,7 @@ Future cursors, deleted rows, divergent raw hashes, and missing ranges fail expl
 
 ## Idempotent controls
 
-Prompt, steer, interrupt, and cancel use two durable control events:
+Prompt, steer, interrupt, cancel, and terminate use two durable control events:
 
 ```text
 control.<kind>.requested
@@ -95,7 +95,7 @@ control.<kind>.requested
 
 An identical completed retry is a no-op. Reusing a key for changed content conflicts. A requested-only retry is `indeterminate` because AgentD cannot prove whether the provider observed the side effect.
 
-Cancellation commits intent before termination and waits for dispatch proof before emitting `session.cancelled` and the receipt.
+Cancellation and administrative termination commit intent before stopping the runtime and wait for dispatch proof before emitting distinct `session.cancelled` or `session.terminated` reasons in the receipt.
 
 ## Docker runtime
 

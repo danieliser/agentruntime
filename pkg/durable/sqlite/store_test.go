@@ -54,6 +54,46 @@ func TestMigrationV2AllowsOneWayProviderIdentityBinding(t *testing.T) {
 	}
 }
 
+func TestMigrationV3AddsTerminalReasonWithoutRewritingReceipts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agentd.sqlite")
+	db, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("open v2 fixture: %v", err)
+	}
+	for _, name := range []string{"migrations/001_durable_store_v1.sql", "migrations/002_durable_store_v2.sql"} {
+		migration, readErr := migrations.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		if _, execErr := db.ExecContext(ctx, string(migration)); execErr != nil {
+			t.Fatalf("apply %s: %v", name, execErr)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO sessions (id, idempotency_key, request_hash, request_manifest_json, agent, runtime, state, active_generation, created_at_ns, updated_at_ns)
+VALUES ('v2-terminal', 'job-v2-terminal', 'sha256:v2', '{}', 'claude', 'docker', 'completed', 1, 100, 300);
+INSERT INTO runtime_generations (session_id, generation, runtime, state, container_id, image_reference, image_digest, sandbox_profile, created_at_ns, updated_at_ns)
+VALUES ('v2-terminal', 1, 'docker', 'exited', 'container-v2-terminal', 'image:v2', 'sha256:v2', 'docker-native-v1', 200, 300);
+INSERT INTO terminal_receipts (session_id, generation, state, exit_code, started_at_ns, ended_at_ns, output_hash, last_sequence)
+VALUES ('v2-terminal', 1, 'completed', 0, 200, 300, 'sha256:output', 0);
+PRAGMA user_version = 2;`); err != nil {
+		t.Fatalf("seed v2 receipt: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v2 fixture: %v", err)
+	}
+
+	upgraded := openTestStore(t, path)
+	receipt, err := upgraded.GetTerminalReceipt(ctx, "v2-terminal")
+	if err != nil || receipt.Reason != "completed" {
+		t.Fatalf("upgraded receipt = %+v err=%v", receipt, err)
+	}
+	if _, err := upgraded.db.ExecContext(ctx, "UPDATE terminal_receipts SET terminal_reason = 'terminated' WHERE session_id = 'v2-terminal'"); err == nil {
+		t.Fatal("immutable v2 receipt reason unexpectedly changed after migration")
+	}
+}
+
 func TestStoreSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "agentd.sqlite")
@@ -108,7 +148,7 @@ func TestTerminalReceiptSurvivesRestart(t *testing.T) {
 	}
 	exitCode := 0
 	receipt := durable.TerminalReceipt{
-		SessionID: "terminal-session", Generation: 1, State: durable.StateCompleted,
+		SessionID: "terminal-session", Generation: 1, State: durable.StateCompleted, Reason: string(durable.StateCompleted),
 		ExitCode: &exitCode, StartedAt: time.Unix(111, 0).UTC(), EndedAt: time.Unix(112, 0).UTC(),
 		OutputHash: "sha256:output", ArtifactHash: "sha256:artifacts", LastSequence: 1,
 	}
@@ -235,7 +275,7 @@ func TestBackupRestoresConsistentHistory(t *testing.T) {
 		t.Fatalf("read backup for hash: %v", err)
 	}
 	digest := sha256.Sum256(backupBytes)
-	if metadata.SchemaVersion != 2 || metadata.DatabaseSHA256 != fmt.Sprintf("sha256:%x", digest) {
+	if metadata.SchemaVersion != 3 || metadata.DatabaseSHA256 != fmt.Sprintf("sha256:%x", digest) {
 		t.Fatalf("backup metadata = %+v", metadata)
 	}
 	if len(metadata.SessionTails) != 1 || metadata.SessionTails[0].SessionID != "backup-session" || metadata.SessionTails[0].LastSequence != 3 {

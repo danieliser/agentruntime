@@ -8,7 +8,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/durable"
 )
 
-const receiptColumns = `session_id, generation, state, exit_code, signal,
+const receiptColumns = `session_id, generation, state, terminal_reason, exit_code, signal,
 started_at_ns, ended_at_ns, output_hash, artifact_hash, last_sequence`
 
 func (store *Store) FinalizeSession(ctx context.Context, params durable.FinalizeSessionParams) (durable.FinalizeSessionResult, error) {
@@ -23,6 +23,11 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 	if !validFinalTransition(params.From, receipt.State) {
 		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidState, op, "terminal session transition is not allowed", nil)
 	}
+	reason, valid := durable.NormalizeTerminalReason(receipt.State, receipt.Reason)
+	if !valid {
+		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidArgument, op, "terminal reason does not match receipt state", nil)
+	}
+	receipt.Reason = reason
 	receipt.StartedAt, receipt.EndedAt = normalizedTime(receipt.StartedAt), normalizedTime(receipt.EndedAt)
 	if receipt.EndedAt.Before(receipt.StartedAt) {
 		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidArgument, op, "receipt end time precedes start time", nil)
@@ -71,9 +76,9 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 		exitCode = *receipt.ExitCode
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO terminal_receipts (
-session_id, generation, state, exit_code, signal, started_at_ns, ended_at_ns,
+session_id, generation, state, terminal_reason, exit_code, signal, started_at_ns, ended_at_ns,
 output_hash, artifact_hash, last_sequence
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, receipt.SessionID, receipt.Generation, receipt.State,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, receipt.SessionID, receipt.Generation, receipt.State, receipt.Reason,
 		exitCode, receipt.Signal, receipt.StartedAt.UnixNano(), receipt.EndedAt.UnixNano(),
 		receipt.OutputHash, receipt.ArtifactHash, receipt.LastSequence)
 	if err != nil {
@@ -109,7 +114,7 @@ func scanReceipt(row rowScanner) (durable.TerminalReceipt, error) {
 	var state string
 	var exitCode sql.NullInt64
 	var startedAt, endedAt int64
-	err := row.Scan(&receipt.SessionID, &receipt.Generation, &state, &exitCode, &receipt.Signal,
+	err := row.Scan(&receipt.SessionID, &receipt.Generation, &state, &receipt.Reason, &exitCode, &receipt.Signal,
 		&startedAt, &endedAt, &receipt.OutputHash, &receipt.ArtifactHash, &receipt.LastSequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return durable.TerminalReceipt{}, durable.NewError(durable.CodeNotFound, op, "terminal receipt not found", nil)
@@ -118,6 +123,7 @@ func scanReceipt(row rowScanner) (durable.TerminalReceipt, error) {
 		return durable.TerminalReceipt{}, storageError(op, "scan terminal receipt", err)
 	}
 	receipt.State = durable.SessionState(state)
+	receipt.Reason, _ = durable.NormalizeTerminalReason(receipt.State, receipt.Reason)
 	receipt.StartedAt, receipt.EndedAt = timeFromUnixNano(startedAt), timeFromUnixNano(endedAt)
 	if exitCode.Valid {
 		value := int(exitCode.Int64)
@@ -141,7 +147,7 @@ func validFinalTransition(from, to durable.SessionState) bool {
 
 func receiptsEqual(left, right durable.TerminalReceipt) bool {
 	if left.SessionID != right.SessionID || left.Generation != right.Generation || left.State != right.State ||
-		left.Signal != right.Signal || !left.StartedAt.Equal(right.StartedAt) || !left.EndedAt.Equal(right.EndedAt) ||
+		left.Reason != right.Reason || left.Signal != right.Signal || !left.StartedAt.Equal(right.StartedAt) || !left.EndedAt.Equal(right.EndedAt) ||
 		left.OutputHash != right.OutputHash || left.ArtifactHash != right.ArtifactHash || left.LastSequence != right.LastSequence {
 		return false
 	}

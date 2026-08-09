@@ -495,6 +495,45 @@ func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
 	}
 }
 
+func TestV1TerminateIsDistinctFromCallerCancellation(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&cancelCodexFixtureAgent{})
+	server := NewServer(session.NewManager(), runtime.NewLocalRuntime(), registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	createdResponse := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-native-terminate", "agent": "codex", "runtime": "local",
+		"prompt": "start", "interactive": true,
+	})
+	defer createdResponse.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, createdResponse.Body, &created)
+	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 1)
+	terminated := postV1Control(t, httpServer.URL, created.Data.SessionID, "terminate", map[string]any{"idempotency_key": "terminate-once"})
+	defer terminated.Body.Close()
+	if terminated.StatusCode != http.StatusAccepted {
+		t.Fatalf("terminate status=%d", terminated.StatusCode)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateCancelled || receipt.Reason != "terminated" {
+		t.Fatalf("terminate receipt = %+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 100})
+	if err != nil || page.Events[len(page.Events)-1].Type != "session.terminated" {
+		t.Fatalf("terminate ledger = %+v err=%v", page, err)
+	}
+}
+
 func TestV1NativeSessionTimeoutCommitsDurableTerminalProof(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {

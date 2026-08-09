@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -30,14 +31,29 @@ type v1InterruptRequest struct {
 type activeNativeSession struct {
 	transport nativeprotocol.Transport
 
-	mu                 sync.Mutex
-	terminalRequested  durable.SessionState
-	terminalOutcome    durable.SessionState
-	terminalClaimed    bool
-	terminalSettled    chan struct{}
-	terminalSettleOnce sync.Once
-	finished           chan struct{}
-	finishedOnce       sync.Once
+	mu                    sync.Mutex
+	terminalRequested     durable.SessionState
+	terminalRequestReason string
+	terminalOutcome       durable.SessionState
+	terminalClaimed       bool
+	terminalSettled       chan struct{}
+	terminalSettleOnce    sync.Once
+	finished              chan struct{}
+	finishedOnce          sync.Once
+}
+
+// activeNativeSessionRef coordinates transport registration with the process
+// waiter, which may observe an immediate exit while attachment is completing.
+type activeNativeSessionRef struct {
+	value atomic.Pointer[activeNativeSession]
+}
+
+func (ref *activeNativeSessionRef) Load() *activeNativeSession {
+	return ref.value.Load()
+}
+
+func (ref *activeNativeSessionRef) Store(active *activeNativeSession) {
+	ref.value.Store(active)
 }
 
 func newActiveNativeSession(transport nativeprotocol.Transport) *activeNativeSession {
@@ -47,14 +63,18 @@ func newActiveNativeSession(transport nativeprotocol.Transport) *activeNativeSes
 }
 
 func (active *activeNativeSession) beginCancel() bool {
-	return active.beginTerminal(durable.StateCancelled)
+	return active.beginTerminal(durable.StateCancelled, "cancelled")
 }
 
 func (active *activeNativeSession) beginTimeout() bool {
-	return active.beginTerminal(durable.StateTimedOut)
+	return active.beginTerminal(durable.StateTimedOut, "timed_out")
 }
 
-func (active *activeNativeSession) beginTerminal(state durable.SessionState) bool {
+func (active *activeNativeSession) beginTerminate() bool {
+	return active.beginTerminal(durable.StateCancelled, "terminated")
+}
+
+func (active *activeNativeSession) beginTerminal(state durable.SessionState, reason string) bool {
 	active.mu.Lock()
 	defer active.mu.Unlock()
 	if active.terminalClaimed {
@@ -62,6 +82,7 @@ func (active *activeNativeSession) beginTerminal(state durable.SessionState) boo
 	}
 	active.terminalClaimed = true
 	active.terminalRequested = state
+	active.terminalRequestReason = reason
 	return true
 }
 
@@ -91,6 +112,7 @@ func (active *activeNativeSession) terminalReason() string {
 		return ""
 	}
 	requested := active.terminalRequested
+	requestedReason := active.terminalRequestReason
 	active.mu.Unlock()
 	if requested == "" {
 		active.markFinished()
@@ -100,9 +122,18 @@ func (active *activeNativeSession) terminalReason() string {
 	outcome := active.terminalState()
 	active.markFinished()
 	if outcome == durable.StateCancelled || outcome == durable.StateTimedOut {
-		return string(outcome)
+		return requestedReason
 	}
 	return string(durable.StateIndeterminate)
+}
+
+func (active *activeNativeSession) terminalReceiptReason() string {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	if active.terminalOutcome == active.terminalRequested && active.terminalRequestReason != "" {
+		return active.terminalRequestReason
+	}
+	return string(active.terminalOutcome)
 }
 
 func (active *activeNativeSession) terminalState() durable.SessionState {
@@ -299,17 +330,25 @@ func (s *Server) handleV1NativeInterrupt(c *gin.Context) {
 }
 
 func (s *Server) handleV1NativeCancel(c *gin.Context) {
-	const op = "cancel_v1_native_session"
+	s.handleV1NativeStop(c, "cancel", durable.StateCancelled)
+}
+
+func (s *Server) handleV1NativeTerminate(c *gin.Context) {
+	s.handleV1NativeStop(c, "terminate", durable.StateCancelled)
+}
+
+func (s *Server) handleV1NativeStop(c *gin.Context, kind string, outcome durable.SessionState) {
+	op := kind + "_v1_native_session"
 	var request v1InterruptRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode cancel request", err))
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode "+kind+" request", err))
 		return
 	}
 	if request.IdempotencyKey == "" {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
 		return
 	}
-	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, "cancel", map[string]any{})
+	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, kind, map[string]any{})
 	if err != nil {
 		writeDurableError(c, err)
 		return
@@ -320,11 +359,17 @@ func (s *Server) handleV1NativeCancel(c *gin.Context) {
 	}
 	active := s.nativeSession(c.Param("id"))
 	if active == nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "cancel intent is durable but the native transport is unavailable", nil))
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, kind+" intent is durable but the native transport is unavailable", nil))
 		return
 	}
-	if !active.beginCancel() {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "cancel intent is durable but process exit already crossed the terminal boundary", nil))
+	var claimed bool
+	if kind == "terminate" {
+		claimed = active.beginTerminate()
+	} else {
+		claimed = active.beginCancel()
+	}
+	if !claimed {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, kind+" intent is durable but process exit already crossed the terminal boundary", nil))
 		return
 	}
 	if err := active.transport.Close(); err != nil {
@@ -336,10 +381,10 @@ func (s *Server) handleV1NativeCancel(c *gin.Context) {
 	defer cancel()
 	if _, err := s.eventBroker.CompleteControl(ctx, control); err != nil {
 		active.settleCancel(durable.StateIndeterminate)
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "native process stopped without durable cancel dispatch proof", err))
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "native process stopped without durable "+kind+" dispatch proof", err))
 		return
 	}
-	active.settleCancel(durable.StateCancelled)
+	active.settleCancel(outcome)
 	c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true}})
 }
 

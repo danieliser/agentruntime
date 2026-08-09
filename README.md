@@ -111,7 +111,7 @@ Each event has a stable schema version, ID, session ID, generation, sequence, ti
 
 The first WebSocket frame is `stream.ready` and identifies the durable replay boundary. Slow consumers reconnect from their last contiguous sequence; they never block provider ingestion.
 
-### Follow-up, steer, interrupt, cancel, and resume
+### Follow-up, steer, interrupt, cancel, terminate, and resume
 
 Every state-changing control requires its own idempotency key:
 
@@ -128,6 +128,17 @@ curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/cancel \
   -H 'content-type: application/json' \
   -d '{"idempotency_key":"cancel-001"}'
 ```
+
+Administrative forced termination is separate from caller cancellation:
+
+```bash
+curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/terminate \
+  -H 'content-type: application/json' \
+  -d '{"idempotency_key":"terminate-001"}'
+```
+
+Both close the logical session, but the immutable receipt/event reason is
+`cancelled` or `terminated`, respectively.
 
 `resume` creates generation `N+1` only for an eligible nonterminal session whose prior runtime generation is durably `lost`. Reconnect/replay of an existing generation does not call `resume`.
 

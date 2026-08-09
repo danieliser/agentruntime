@@ -42,6 +42,7 @@ type v1TerminalReceiptData struct {
 	SessionID    string               `json:"session_id"`
 	Generation   int64                `json:"generation"`
 	State        durable.SessionState `json:"state"`
+	Reason       string               `json:"reason"`
 	ExitCode     *int                 `json:"exit_code,omitempty"`
 	Signal       string               `json:"signal,omitempty"`
 	StartedAt    time.Time            `json:"started_at"`
@@ -102,6 +103,7 @@ func (s *Server) handleV1GetTerminalReceipt(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1TerminalReceiptData{
 		SessionID: receipt.SessionID, Generation: receipt.Generation, State: receipt.State,
+		Reason:   receipt.Reason,
 		ExitCode: receipt.ExitCode, Signal: receipt.Signal, StartedAt: receipt.StartedAt, EndedAt: receipt.EndedAt,
 		OutputHash: receipt.OutputHash, ArtifactHash: receipt.ArtifactHash, LastSequence: receipt.LastSequence,
 	}})
@@ -333,7 +335,7 @@ func outputHash(path string) string {
 }
 
 func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult, streamErrors ...error) {
-	s.finalizeV1SessionAs(sessionID, result, "", streamErrors...)
+	s.finalizeV1SessionClassified(sessionID, result, "", "", streamErrors...)
 }
 
 func runtimeTerminalState(result runtime.ExitResult) durable.SessionState {
@@ -353,6 +355,10 @@ func runtimeTerminalState(result runtime.ExitResult) durable.SessionState {
 }
 
 func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult, override durable.SessionState, streamErrors ...error) {
+	s.finalizeV1SessionClassified(sessionID, result, override, string(override), streamErrors...)
+}
+
+func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.ExitResult, override durable.SessionState, reason string, streamErrors ...error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stored, err := s.durableStore.GetSession(ctx, sessionID)
@@ -385,6 +391,9 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 			generationTo = durable.GenerationIndeterminate
 		}
 	}
+	if reason == "" {
+		reason = string(state)
+	}
 	exitCode := result.Code
 	startedAt := result.StartedAt
 	if startedAt.IsZero() {
@@ -404,6 +413,7 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 		From: stored.State, GenerationFrom: generation.State, GenerationTo: generationTo,
 		Receipt: durable.TerminalReceipt{
 			SessionID: sessionID, Generation: generation.Number, State: state,
+			Reason:   reason,
 			ExitCode: &exitCode, Signal: result.Signal, StartedAt: startedAt, EndedAt: endedAt,
 			OutputHash: outputHash(session.LogFilePath(s.logDir, sessionID)), LastSequence: stored.LastSequence,
 		},

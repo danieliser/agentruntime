@@ -312,28 +312,33 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	}
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
-	var active *activeNativeSession
+	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
 		"", !manifest.Interactive,
 		true, s.eventBroker,
 		func() string {
-			if active == nil {
+			current := active.Load()
+			if current == nil {
 				return ""
 			}
-			return active.terminalReason()
+			return current.terminalReason()
 		},
 		func(transport nativeprotocol.Transport) {
-			active = s.setNativeTransport(sess.ID, transport)
-			s.armNativeTimeout(sess.ID, generation.Number, active, manifest.EffectiveTimeout(), generation.CreatedAt)
+			current := s.setNativeTransport(sess.ID, transport)
+			active.Store(current)
+			s.armNativeTimeout(sess.ID, generation.Number, current, manifest.EffectiveTimeout(), generation.CreatedAt)
 		},
 		func(result runtime.ExitResult, streamErr error) {
-			s.clearNativeTransport(sess.ID, active)
+			current := active.Load()
+			s.clearNativeTransport(sess.ID, current)
 			var override durable.SessionState
-			if active != nil {
-				override = active.terminalState()
+			var reason string
+			if current != nil {
+				override = current.terminalState()
+				reason = current.terminalReceiptReason()
 			}
-			s.finalizeV1SessionAs(sess.ID, result, override, streamErr)
+			s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
 		},
 	); err != nil {
 		return err

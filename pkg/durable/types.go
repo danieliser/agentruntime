@@ -210,6 +210,7 @@ type TerminalReceipt struct {
 	SessionID    string
 	Generation   int64
 	State        SessionState
+	Reason       string
 	ExitCode     *int
 	Signal       string
 	StartedAt    time.Time
@@ -217,6 +218,22 @@ type TerminalReceipt struct {
 	OutputHash   string
 	ArtifactHash string
 	LastSequence int64
+}
+
+// NormalizeTerminalReason validates the durable terminal classification.
+// Administrative termination uses cancelled as the lifecycle state while
+// retaining a distinct terminated receipt/event reason.
+func NormalizeTerminalReason(state SessionState, reason string) (string, bool) {
+	if !state.Terminal() {
+		return "", false
+	}
+	if reason == "" {
+		return string(state), true
+	}
+	if reason == string(state) || (state == StateCancelled && reason == "terminated") {
+		return reason, true
+	}
+	return "", false
 }
 
 // FinalizeSessionParams atomically closes the runtime generation, transitions

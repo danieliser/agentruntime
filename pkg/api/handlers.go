@@ -357,28 +357,33 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	// in the session response so callers can retrieve it later.
 	if durableV1 {
 		if usesNativeTransport {
-			var active *activeNativeSession
+			var active activeNativeSessionRef
 			if err := AttachNativeSessionIO(
 				sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
 				"", req.Prompt, !req.Interactive,
 				false, s.eventBroker,
 				func() string {
-					if active == nil {
+					current := active.Load()
+					if current == nil {
 						return ""
 					}
-					return active.terminalReason()
+					return current.terminalReason()
 				},
 				func(transport nativeprotocol.Transport) {
-					active = s.setNativeTransport(sess.ID, transport)
-					s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, active, req.EffectiveTimeout(), admitted.UpdatedAt)
+					current := s.setNativeTransport(sess.ID, transport)
+					active.Store(current)
+					s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, current, req.EffectiveTimeout(), admitted.UpdatedAt)
 				},
 				func(result runtime.ExitResult, streamErr error) {
-					s.clearNativeTransport(sess.ID, active)
+					current := active.Load()
+					s.clearNativeTransport(sess.ID, current)
 					var override durable.SessionState
-					if active != nil {
-						override = active.terminalState()
+					var reason string
+					if current != nil {
+						override = current.terminalState()
+						reason = current.terminalReceiptReason()
 					}
-					s.finalizeV1SessionAs(sess.ID, result, override, streamErr)
+					s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
 				},
 			); err != nil {
 				log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)

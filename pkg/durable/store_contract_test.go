@@ -498,6 +498,9 @@ func runStoreContract(t *testing.T, factory storeFactory) {
 		if !first.Session.State.Terminal() {
 			t.Fatalf("state %q must be terminal", first.Session.State)
 		}
+		if first.Receipt.Reason != "completed" {
+			t.Fatalf("default terminal reason = %q, want completed", first.Receipt.Reason)
+		}
 		second, err := store.FinalizeSession(ctx, durable.FinalizeSessionParams{
 			From:           durable.StateRunning,
 			GenerationFrom: durable.GenerationStarting,

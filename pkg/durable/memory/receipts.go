@@ -22,6 +22,11 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 	if !validFinalTransition(params.From, receipt.State) {
 		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidState, op, "terminal session transition is not allowed", nil)
 	}
+	reason, valid := durable.NormalizeTerminalReason(receipt.State, receipt.Reason)
+	if !valid {
+		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidArgument, op, "terminal reason does not match receipt state", nil)
+	}
+	receipt.Reason = reason
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -98,7 +103,7 @@ func (store *Store) GetTerminalReceipt(ctx context.Context, sessionID string) (d
 
 func receiptsEqual(left, right durable.TerminalReceipt) bool {
 	if left.SessionID != right.SessionID || left.Generation != right.Generation ||
-		left.State != right.State || left.Signal != right.Signal ||
+		left.State != right.State || left.Reason != right.Reason || left.Signal != right.Signal ||
 		!left.StartedAt.Equal(right.StartedAt) || !left.EndedAt.Equal(right.EndedAt) ||
 		left.OutputHash != right.OutputHash || left.ArtifactHash != right.ArtifactHash ||
 		left.LastSequence != right.LastSequence {

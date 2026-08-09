@@ -168,27 +168,32 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		return
 	}
 	provider := nativeprotocol.Provider(stored.Agent)
-	var active *activeNativeSession
+	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, previous.ProviderID, request.Prompt,
 		!request.Interactive, false, s.eventBroker,
 		func() string {
-			if active == nil {
+			current := active.Load()
+			if current == nil {
 				return ""
 			}
-			return active.terminalReason()
+			return current.terminalReason()
 		},
 		func(transport nativeprotocol.Transport) {
-			active = s.setNativeTransport(stored.ID, transport)
-			s.armNativeTimeout(stored.ID, generation.Number, active, request.EffectiveTimeout(), generation.CreatedAt)
+			current := s.setNativeTransport(stored.ID, transport)
+			active.Store(current)
+			s.armNativeTimeout(stored.ID, generation.Number, current, request.EffectiveTimeout(), generation.CreatedAt)
 		},
 		func(result runtime.ExitResult, streamErr error) {
-			s.clearNativeTransport(stored.ID, active)
+			current := active.Load()
+			s.clearNativeTransport(stored.ID, current)
 			var override durable.SessionState
-			if active != nil {
-				override = active.terminalState()
+			var reason string
+			if current != nil {
+				override = current.terminalState()
+				reason = current.terminalReceiptReason()
 			}
-			s.finalizeV1SessionAs(stored.ID, result, override, streamErr)
+			s.finalizeV1SessionClassified(stored.ID, result, override, reason, streamErr)
 		},
 	); err != nil {
 		_ = handle.Kill()
