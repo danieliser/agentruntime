@@ -41,6 +41,22 @@ type TerminalParams struct {
 	Error      string
 }
 
+// ControlParams identifies one caller-idempotent outgoing native operation.
+// Payload is the typed command body captured before provider encoding.
+type ControlParams struct {
+	SessionID      string
+	Generation     int64
+	IdempotencyKey string
+	Timestamp      time.Time
+	Kind           string
+	Payload        json.RawMessage
+}
+
+type ControlBeginResult struct {
+	Requested         durable.Event
+	AlreadyDispatched bool
+}
+
 // Broker is the one canonical append and subscription entry point.
 type Broker struct {
 	store durable.Store
@@ -176,6 +192,89 @@ func (broker *Broker) IngestTerminal(ctx context.Context, params TerminalParams)
 	}
 	broker.publishLocked(state, result.Event)
 	return result.Event, nil
+}
+
+// BeginControl commits intent before any provider side effect. A completed
+// retry is a no-op; requested-without-dispatched is explicitly indeterminate.
+func (broker *Broker) BeginControl(ctx context.Context, params ControlParams) (ControlBeginResult, error) {
+	if err := validateControlParams(params); err != nil {
+		return ControlBeginResult{}, err
+	}
+	state := broker.session(params.SessionID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	requested, created, err := broker.appendControlLocked(ctx, state, params, "requested")
+	if err != nil {
+		return ControlBeginResult{}, err
+	}
+	if created {
+		return ControlBeginResult{Requested: requested}, nil
+	}
+	_, err = broker.store.GetEventByID(ctx, controlEventID(params, "dispatched"))
+	if err == nil {
+		return ControlBeginResult{Requested: requested, AlreadyDispatched: true}, nil
+	}
+	if durable.IsCode(err, durable.CodeNotFound) {
+		return ControlBeginResult{}, durable.NewError(durable.CodeIndeterminate, "begin_control", "control intent exists without durable dispatch proof", nil)
+	}
+	return ControlBeginResult{}, err
+}
+
+// CompleteControl commits proof that the command was written to provider
+// transport. It must only be called after the write succeeds.
+func (broker *Broker) CompleteControl(ctx context.Context, params ControlParams) (durable.Event, error) {
+	if err := validateControlParams(params); err != nil {
+		return durable.Event{}, err
+	}
+	state := broker.session(params.SessionID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	event, _, err := broker.appendControlLocked(ctx, state, params, "dispatched")
+	return event, err
+}
+
+func (broker *Broker) appendControlLocked(ctx context.Context, state *sessionState, params ControlParams, phase string) (durable.Event, bool, error) {
+	payload, err := json.Marshal(map[string]any{
+		"idempotency_key": params.IdempotencyKey, "kind": params.Kind,
+		"phase": phase, "command": json.RawMessage(params.Payload),
+	})
+	if err != nil {
+		return durable.Event{}, false, durable.NewError(durable.CodeInvalidArgument, "append_control", "encode control event", err)
+	}
+	result, err := broker.store.AppendEvent(ctx, durable.AppendEventParams{
+		SchemaVersion: SchemaVersion, EventID: controlEventID(params, phase),
+		SessionID: params.SessionID, Generation: params.Generation, Timestamp: params.Timestamp,
+		Type: "control." + params.Kind + "." + phase, Stream: durable.StreamControl,
+		Payload: payload, Raw: payload,
+	})
+	if err != nil {
+		return durable.Event{}, false, err
+	}
+	if result.Created {
+		if broker.afterCommit != nil {
+			if err := broker.afterCommit(result.Event); err != nil {
+				return durable.Event{}, false, err
+			}
+		}
+		broker.publishLocked(state, result.Event)
+	}
+	return result.Event, result.Created, nil
+}
+
+func validateControlParams(params ControlParams) error {
+	if params.SessionID == "" || params.Generation < 1 || params.IdempotencyKey == "" || params.Timestamp.IsZero() || params.Kind == "" {
+		return durable.NewError(durable.CodeInvalidArgument, "validate_control", "session, generation, idempotency key, timestamp, and kind are required", nil)
+	}
+	if len(params.Payload) == 0 || !json.Valid(params.Payload) {
+		return durable.NewError(durable.CodeInvalidArgument, "validate_control", "control payload must be valid JSON", nil)
+	}
+	return nil
+}
+
+func controlEventID(params ControlParams, phase string) string {
+	digest := sha256.New()
+	_, _ = fmt.Fprintf(digest, "%s\x00%d\x00control\x00%s\x00%s", params.SessionID, params.Generation, params.IdempotencyKey, phase)
+	return "evt_" + hex.EncodeToString(digest.Sum(nil))
 }
 
 func (broker *Broker) publishLocked(state *sessionState, event durable.Event) {

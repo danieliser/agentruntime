@@ -58,6 +58,26 @@ func (store *Store) AppendEvent(ctx context.Context, params durable.AppendEventP
 	return durable.AppendEventResult{Event: cloneEvent(event), Created: true}, nil
 }
 
+func (store *Store) GetEventByID(ctx context.Context, eventID string) (durable.Event, error) {
+	const op = "get_event_by_id"
+	if err := checkContext(ctx); err != nil {
+		return durable.Event{}, err
+	}
+	if eventID == "" {
+		return durable.Event{}, durable.NewError(durable.CodeInvalidArgument, op, "event ID is required", nil)
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if err := store.checkOpen(op); err != nil {
+		return durable.Event{}, err
+	}
+	event, exists := store.eventByID[eventID]
+	if !exists {
+		return durable.Event{}, notFound(op, "event")
+	}
+	return cloneEvent(event), nil
+}
+
 func (store *Store) ListEvents(ctx context.Context, query durable.EventQuery) (durable.EventPage, error) {
 	const op = "list_events"
 	if err := checkContext(ctx); err != nil {

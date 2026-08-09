@@ -83,6 +83,26 @@ type, stream, payload_json, raw, raw_sha256
 	return durable.AppendEventResult{Event: candidate, Created: true}, nil
 }
 
+func (store *Store) GetEventByID(ctx context.Context, eventID string) (durable.Event, error) {
+	const op = "get_event_by_id"
+	if eventID == "" {
+		return durable.Event{}, durable.NewError(durable.CodeInvalidArgument, op, "event ID is required", nil)
+	}
+	tx, err := store.begin(ctx, op)
+	if err != nil {
+		return durable.Event{}, err
+	}
+	defer rollback(tx)
+	event, err := scanEvent(tx.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM events WHERE event_id = ?", eventID))
+	if err != nil {
+		return durable.Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return durable.Event{}, storageError(op, "commit event lookup", err)
+	}
+	return event, nil
+}
+
 func (store *Store) ListEvents(ctx context.Context, query durable.EventQuery) (durable.EventPage, error) {
 	const op = "list_events"
 	if query.SessionID == "" || query.AfterSequence < 0 || query.Limit < 0 {

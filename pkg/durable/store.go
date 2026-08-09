@@ -24,6 +24,7 @@ type GenerationRepository interface {
 // EventRepository owns atomic sequence allocation and immutable replay records.
 type EventRepository interface {
 	AppendEvent(context.Context, AppendEventParams) (AppendEventResult, error)
+	GetEventByID(context.Context, string) (Event, error)
 	ListEvents(context.Context, EventQuery) (EventPage, error)
 }
 

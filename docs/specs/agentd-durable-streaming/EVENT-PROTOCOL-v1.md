@@ -1,6 +1,6 @@
 # AgentD event protocol v1
 
-Status: implemented replay foundation; production native runtime wiring in progress
+Status: production native runtime, replay, terminal, and control ledger implemented
 
 Task IDs: NAT-204, REP-301, REP-302, REP-303, REP-304, REP-305
 
@@ -86,6 +86,20 @@ durable commit. When its buffer is exhausted, AgentD emits a structured
 `backpressure` stream error and closes that subscription. The client reconnects
 using the last contiguous sequence it processed; the durable ledger supplies
 the omitted portion.
+
+## Outgoing control proof
+
+Prompt, steer, and interrupt requests require a caller idempotency key. AgentD
+commits a `control.{kind}.requested` event before writing to provider stdin and
+a `control.{kind}.dispatched` event only after that write succeeds.
+
+- A retry with both phases returns the prior success without another write.
+- Reusing the key for different command content is an immutable conflict.
+- A retry with intent but no dispatch proof returns `indeterminate`; AgentD
+  never guesses whether a paid turn crossed the process boundary.
+
+These events use `stream: control`, share the session sequence domain, and are
+replayed like provider, stderr, lifecycle, and terminal events.
 
 ## Current trust boundary
 

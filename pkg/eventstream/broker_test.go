@@ -173,6 +173,44 @@ func TestIngestTerminalCommitsOneStableTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestControlLedgerIsIdempotentAndExposesAmbiguousDispatch(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-controls")
+	broker := New(store)
+	params := ControlParams{
+		SessionID: "session-controls", Generation: 1, IdempotencyKey: "control-key",
+		Timestamp: time.Unix(330, 0).UTC(), Kind: "prompt", Payload: json.RawMessage(`{"text":"hello"}`),
+	}
+	begin, err := broker.BeginControl(ctx, params)
+	if err != nil || begin.AlreadyDispatched {
+		t.Fatalf("begin control = %+v err=%v", begin, err)
+	}
+	if _, err := broker.CompleteControl(ctx, params); err != nil {
+		t.Fatalf("complete control: %v", err)
+	}
+	repeat, err := broker.BeginControl(ctx, params)
+	if err != nil || !repeat.AlreadyDispatched {
+		t.Fatalf("repeat completed control = %+v err=%v", repeat, err)
+	}
+
+	ambiguous := params
+	ambiguous.IdempotencyKey = "ambiguous-key"
+	if _, err := broker.BeginControl(ctx, ambiguous); err != nil {
+		t.Fatalf("begin ambiguous control: %v", err)
+	}
+	if _, err := broker.BeginControl(ctx, ambiguous); !durable.IsCode(err, durable.CodeIndeterminate) {
+		t.Fatalf("ambiguous retry error = %v, want %s", err, durable.CodeIndeterminate)
+	}
+
+	changed := params
+	changed.Payload = json.RawMessage(`{"text":"different"}`)
+	if _, err := broker.BeginControl(ctx, changed); !durable.IsCode(err, durable.CodeImmutableConflict) {
+		t.Fatalf("changed control reuse error = %v, want %s", err, durable.CodeImmutableConflict)
+	}
+}
+
 func TestSubscribeRejectsFutureCursor(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()

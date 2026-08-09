@@ -387,6 +387,13 @@ func runStoreContract(t *testing.T, factory storeFactory) {
 		if !durable.IsCode(err, durable.CodeImmutableConflict) {
 			t.Fatalf("changed duplicate error = %v, want code %s", err, durable.CodeImmutableConflict)
 		}
+		byID, err := store.GetEventByID(ctx, params.EventID)
+		if err != nil || byID.Sequence != first.Event.Sequence || string(byID.Raw) != string(params.Raw) {
+			t.Fatalf("event lookup = %+v err=%v", byID, err)
+		}
+		if _, err := store.GetEventByID(ctx, "event-does-not-exist"); !durable.IsCode(err, durable.CodeNotFound) {
+			t.Fatalf("missing event lookup error = %v", err)
+		}
 	})
 
 	t.Run("late event timestamps do not move session time backward", func(t *testing.T) {

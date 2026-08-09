@@ -323,13 +323,19 @@ func TestV1NativeInputAndInterruptUseActiveProviderTransport(t *testing.T) {
 	}
 	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 1)
 
-	inputResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", map[string]any{"kind": "prompt", "text": "second"})
+	inputBody := map[string]any{"idempotency_key": "second-turn", "kind": "prompt", "text": "second"}
+	inputResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", inputBody)
 	defer inputResponse.Body.Close()
 	if inputResponse.StatusCode != http.StatusAccepted {
 		t.Fatalf("native input status=%d", inputResponse.StatusCode)
 	}
+	repeatInput := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", inputBody)
+	defer repeatInput.Body.Close()
+	if repeatInput.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent native input status=%d", repeatInput.StatusCode)
+	}
 	waitForEventType(t, store, created.Data.SessionID, "content.delta", 1)
-	interruptResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "interrupt", map[string]any{})
+	interruptResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "interrupt", map[string]any{"idempotency_key": "interrupt-turn"})
 	defer interruptResponse.Body.Close()
 	if interruptResponse.StatusCode != http.StatusAccepted {
 		t.Fatalf("native interrupt status=%d", interruptResponse.StatusCode)
