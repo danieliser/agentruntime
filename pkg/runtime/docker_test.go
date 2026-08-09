@@ -31,6 +31,10 @@ func TestDockerRecover_ReturnsSessionID(t *testing.T) {
 set -eu
 state_dir=%q
 if [ "$1" = "ps" ]; then
+  if [ "$2" != "-aq" ]; then
+    echo "expected stopped-container discovery, got: $*" >&2
+    exit 5
+  fi
   printf '%%s\n' 'container-123'
   exit 0
 fi
@@ -39,7 +43,7 @@ if [ "$1" = "inspect" ]; then
     echo "unexpected container id: $4" >&2
     exit 3
   fi
-  printf '%%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request"}'
+  printf '%%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request","agentruntime.agent":"claude"}'
   exit 0
 fi
 if [ "$1" = "logs" ]; then
@@ -92,7 +96,7 @@ exit 2
 	if info.SessionID != "sess-recovered" {
 		t.Fatalf("expected recovery info session ID %q, got %q", "sess-recovered", info.SessionID)
 	}
-	if info.Generation != 2 || info.IdempotencyKey != "job-recovered" || info.RequestHash != "sha256:request" {
+	if info.Generation != 2 || info.IdempotencyKey != "job-recovered" || info.RequestHash != "sha256:request" || info.AgentName != "claude" {
 		t.Fatalf("expected durable recovery labels, got %+v", info)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "port-called")); !os.IsNotExist(err) {

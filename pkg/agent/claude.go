@@ -13,15 +13,23 @@ type ClaudeAgent struct{}
 func (a *ClaudeAgent) Name() string { return "claude" }
 
 func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) {
-	if !cfg.Interactive && prompt == "" {
+	if !cfg.Interactive && !cfg.NativeStream && prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
 
 	cmd := []string{"claude", "--dangerously-skip-permissions"}
-	if !cfg.Interactive {
+	if cfg.NativeStream {
+		cmd = append(cmd,
+			"--output-format", "stream-json",
+			"--input-format", "stream-json",
+			"--verbose", "--include-partial-messages", "--ide",
+		)
+	} else if !cfg.Interactive {
 		cmd = append(cmd, "-p", prompt)
+		cmd = append(cmd, "--output-format", "stream-json", "--verbose")
+	} else {
+		cmd = append(cmd, "--output-format", "stream-json", "--verbose")
 	}
-	cmd = append(cmd, "--output-format", "stream-json", "--verbose")
 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
@@ -30,11 +38,13 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 		cmd = append(cmd, "--max-turns", fmt.Sprintf("%d", cfg.MaxTokens))
 	}
 	resumeSessionID := cfg.ResumeSessionID
-	if resumeSessionID == "" {
+	if resumeSessionID == "" && !cfg.NativeStream {
 		resumeSessionID = cfg.SessionID
 	}
 	if resumeSessionID != "" {
 		cmd = append(cmd, "--resume", resumeSessionID)
+	} else if cfg.NativeStream && cfg.SessionID != "" {
+		cmd = append(cmd, "--session-id", cfg.SessionID)
 	}
 	for _, tool := range cfg.AllowedTools {
 		cmd = append(cmd, "--allowedTools", tool)

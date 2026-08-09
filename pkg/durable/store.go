@@ -7,6 +7,7 @@ type SessionRepository interface {
 	CreateSession(context.Context, CreateSessionParams) (CreateSessionResult, error)
 	GetSession(context.Context, string) (Session, error)
 	GetSessionByIdempotencyKey(context.Context, string) (Session, error)
+	ListSessions(context.Context) ([]Session, error)
 	TransitionSession(context.Context, TransitionSessionParams) (Session, error)
 	FinalizeSession(context.Context, FinalizeSessionParams) (FinalizeSessionResult, error)
 }

@@ -40,6 +40,10 @@ type AgentConfig struct {
 	// Interactive keeps stdin open and avoids argv prompt injection.
 	Interactive bool
 
+	// NativeStream selects the provider's bidirectional machine protocol. The
+	// initial prompt and later controls arrive over stdin rather than argv.
+	NativeStream bool
+
 	// AllowedTools restricts which tools the agent can use (agent-specific).
 	AllowedTools []string
 

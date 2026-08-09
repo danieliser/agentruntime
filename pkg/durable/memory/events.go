@@ -155,11 +155,12 @@ func cloneEvent(event durable.Event) durable.Event {
 }
 
 func eventsEqual(left, right durable.Event, includeSequence bool) bool {
-	if left.SchemaVersion != right.SchemaVersion || left.EventID != right.EventID ||
-		left.SessionID != right.SessionID || left.Generation != right.Generation ||
-		!left.Timestamp.Equal(right.Timestamp) || left.Type != right.Type ||
-		left.Stream != right.Stream || left.RawSHA256 != right.RawSHA256 ||
-		!bytes.Equal(left.Payload, right.Payload) || !bytes.Equal(left.Raw, right.Raw) {
+	// Reconciliation reobserves a retained source record at a different time
+	// and potentially through newer derivation code. Keep the first envelope;
+	// immutable source identity and exact raw bytes decide idempotency.
+	if left.EventID != right.EventID || left.SessionID != right.SessionID ||
+		left.Generation != right.Generation || left.Stream != right.Stream ||
+		left.RawSHA256 != right.RawSHA256 || !bytes.Equal(left.Raw, right.Raw) {
 		return false
 	}
 	return !includeSequence || left.Sequence == right.Sequence

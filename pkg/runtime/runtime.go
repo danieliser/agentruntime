@@ -177,6 +177,7 @@ type ExitResult struct {
 type RecoveryInfo struct {
 	SessionID      string
 	TaskID         string
+	AgentName      string
 	Generation     int64
 	IdempotencyKey string
 	RequestHash    string

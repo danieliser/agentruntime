@@ -52,6 +52,27 @@ type storeFactory func(t *testing.T) durable.Store
 func runStoreContract(t *testing.T, factory storeFactory) {
 	t.Helper()
 
+	t.Run("list sessions returns durable identities", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+		for _, id := range []string{"session-list-b", "session-list-a"} {
+			if _, err := store.CreateSession(ctx, durable.CreateSessionParams{
+				SessionID: id, IdempotencyKey: "job-" + id, RequestHash: "hash-" + id,
+				RequestManifest: json.RawMessage(`{"agent":"claude"}`), Agent: "claude", Runtime: "docker",
+				CreatedAt: time.Unix(100, 0).UTC(),
+			}); err != nil {
+				t.Fatalf("create %s: %v", id, err)
+			}
+		}
+		sessions, err := store.ListSessions(ctx)
+		if err != nil {
+			t.Fatalf("list sessions: %v", err)
+		}
+		if len(sessions) != 2 || sessions[0].ID != "session-list-a" || sessions[1].ID != "session-list-b" {
+			t.Fatalf("listed sessions = %+v", sessions)
+		}
+	})
+
 	t.Run("idempotent concurrent session creation", func(t *testing.T) {
 		store := factory(t)
 		ctx := context.Background()
@@ -350,11 +371,13 @@ func runStoreContract(t *testing.T, factory storeFactory) {
 		if err != nil {
 			t.Fatalf("first append: %v", err)
 		}
-		second, err := store.AppendEvent(ctx, params)
+		reobserved := params
+		reobserved.Timestamp = params.Timestamp.Add(time.Hour)
+		second, err := store.AppendEvent(ctx, reobserved)
 		if err != nil {
 			t.Fatalf("duplicate append: %v", err)
 		}
-		if !first.Created || second.Created || first.Event.Sequence != second.Event.Sequence {
+		if !first.Created || second.Created || first.Event.Sequence != second.Event.Sequence || !second.Event.Timestamp.Equal(params.Timestamp) {
 			t.Fatalf("idempotent append results = %+v then %+v", first, second)
 		}
 

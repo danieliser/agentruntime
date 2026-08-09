@@ -238,6 +238,36 @@ func TestCodexTransportBootstrapsNewAndResumedThreads(t *testing.T) {
 	}
 }
 
+func TestCodexTransportReconnectsWithoutRepeatingAppServerInitialization(t *testing.T) {
+	adapter, err := NewAdapter(ProviderCodex)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	process := newFakeProcess()
+	transport := NewStreamTransport(adapter, process.IO(), RecoveryMetadata{SessionID: "reconnect", Generation: 2})
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatalf("start transport: %v", err)
+	}
+	if err := transport.Bootstrap(context.Background(), BootstrapRequest{ProviderID: "existing-thread", Reconnect: true}); err != nil {
+		t.Fatalf("reconnect transport: %v", err)
+	}
+	select {
+	case input := <-process.inputs:
+		t.Fatalf("reconnect wrote duplicate app-server bootstrap: %s", input)
+	default:
+	}
+	if err := transport.Send(context.Background(), Input{Kind: InputPrompt, Text: "next turn"}); err != nil {
+		t.Fatalf("send after reconnect: %v", err)
+	}
+	turn := decodeInputObject(t, process.readInput(t))
+	params, _ := turn["params"].(map[string]any)
+	if turn["method"] != "turn/start" || params["threadId"] != "existing-thread" {
+		t.Fatalf("turn after reconnect = %+v", turn)
+	}
+	process.finish(Exit{Code: 0})
+	<-transport.Wait()
+}
+
 func decodeInputObject(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
 	var value map[string]any

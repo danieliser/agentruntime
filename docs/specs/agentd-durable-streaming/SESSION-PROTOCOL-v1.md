@@ -64,6 +64,36 @@ Create/lookup and inspect return the same data shape:
 }
 ```
 
+Terminal proof is available separately:
+
+```text
+GET /api/v1/sessions/{session_id}/receipt
+```
+
+## Reconnect, input, and resume
+
+Event reconnection remains cursor-only and never starts work. While a native
+generation is active, callers may submit typed `prompt` or `steer` input and
+interrupt the current turn:
+
+```text
+POST /api/v1/sessions/{session_id}/input
+POST /api/v1/sessions/{session_id}/interrupt
+```
+
+A confirmed-missing generation is marked `lost`. It can be resumed under the
+same logical session with a new prompt:
+
+```text
+POST /api/v1/sessions/{session_id}/resume
+```
+
+Resume creates generation N+1 exactly once and supplies the prior Claude
+session ID or Codex thread ID. A running or terminal session is returned as a
+`200` lookup/no-op. Environment secret values are never reconstructed from
+disk; approved environment grants must be supplied again in the resume body.
+Nested request-secret paths currently require a new create request.
+
 ## Runtime generation admission
 
 The logical session is committed before runtime admission. A successful spawn
@@ -78,5 +108,6 @@ read from Docker's retained `json-file` log using `docker logs --follow`; and
 the container result comes from `docker wait`. Containers and materialized
 session files remain available after exit for reconciliation and receipt proof.
 
-Resolved image digest capture, startup DB↔Docker ledger reconciliation, and
-stopped-container recovery remain required before Gate G3.
+Resolved image digest capture, crash-before-generation reconciliation,
+signal/OOM/cancel classification, durable control idempotency, and real-Docker
+restart qualification remain required before Gate G3.

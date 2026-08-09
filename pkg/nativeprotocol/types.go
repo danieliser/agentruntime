@@ -84,6 +84,10 @@ type BootstrapRequest struct {
 	ProviderID    string
 	ClientName    string
 	ClientVersion string
+	// Reconnect attaches to an app-server process that AgentD initialized
+	// previously. It restores local correlation state without replaying the
+	// provider handshake on the already-running process.
+	Reconnect bool
 }
 
 // ProcessIO is the already-created process/container connection used by the
@@ -139,6 +143,9 @@ type Error struct {
 func (err *Error) Error() string {
 	if err == nil {
 		return "<nil>"
+	}
+	if err.Err != nil {
+		return fmt.Sprintf("%s: %s: %s: %v", err.Op, err.Code, err.Message, err.Err)
 	}
 	return fmt.Sprintf("%s: %s: %s", err.Op, err.Code, err.Message)
 }

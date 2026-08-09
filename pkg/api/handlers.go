@@ -176,6 +176,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		WorkDir:         workDir,
 		Env:             req.Env,
 		Interactive:     req.Interactive,
+		NativeStream:    durableV1 && nativeV1Agent(req.Agent),
 		ResumeSessionID: resumeSessionID,
 	}
 	prompt := req.Prompt
@@ -297,10 +298,12 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 			writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "activate_v1_generation", "runtime did not expose a reconstructable identity", nil))
 			return
 		}
+		nativeGeneration := nativeV1Agent(req.Agent)
 		generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
 			SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
-			ImageReference: resolvedImageReference(req, rt.Name()),
-			SandboxProfile: rt.Name() + "-compat-v1", CreatedAt: time.Now().UTC(),
+			ImageReference:  resolvedImageReference(req, rt.Name()),
+			SandboxProfile:  runtimeSandboxProfile(rt.Name(), nativeGeneration),
+			DockerLogDriver: generationDockerLogDriver(rt.Name(), nativeGeneration), CreatedAt: time.Now().UTC(),
 		})
 		if err != nil {
 			_ = handle.Kill()
@@ -333,7 +336,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 
 	// Close stdin for prompt-mode agents (claude -p, codex exec).
 	// Interactive sessions keep stdin open so WS stdin frames can steer them.
-	if !req.Interactive && handle.Stdin() != nil && !(usesNativeTransport && req.Agent == string(nativeprotocol.ProviderCodex)) {
+	if !req.Interactive && handle.Stdin() != nil && !usesNativeTransport {
 		handle.Stdin().Close()
 	}
 
@@ -343,11 +346,17 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	// in the session response so callers can retrieve it later.
 	if durableV1 {
 		if usesNativeTransport {
+			var attached nativeprotocol.Transport
 			if err := AttachNativeSessionIO(
 				sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
-				"", req.Prompt, !req.Interactive && req.Agent == string(nativeprotocol.ProviderCodex),
-				s.eventBroker,
+				"", req.Prompt, !req.Interactive,
+				false, s.eventBroker,
+				func(transport nativeprotocol.Transport) {
+					attached = transport
+					s.setNativeTransport(sess.ID, transport)
+				},
 				func(result runtime.ExitResult, streamErr error) {
+					s.clearNativeTransport(sess.ID, attached)
 					s.finalizeV1Session(sess.ID, result, streamErr)
 				},
 			); err != nil {
@@ -389,7 +398,7 @@ func runtimeSpawnCommand(command []string, runtimeName string, durableV1 bool, a
 	if runtimeName != "docker" || len(command) == 0 {
 		return command
 	}
-	if durableV1 && (agentName == string(nativeprotocol.ProviderClaude) || agentName == string(nativeprotocol.ProviderCodex)) {
+	if durableV1 && nativeV1Agent(agentName) {
 		return command
 	}
 	return []string{command[0]}

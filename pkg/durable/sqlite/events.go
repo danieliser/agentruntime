@@ -196,10 +196,12 @@ func eventFromParams(params durable.AppendEventParams, sequence int64, rawHash s
 }
 
 func eventsEqual(left, right durable.Event, includeSequence bool) bool {
-	if left.SchemaVersion != right.SchemaVersion || left.EventID != right.EventID ||
-		left.SessionID != right.SessionID || left.Generation != right.Generation ||
-		!left.Timestamp.Equal(right.Timestamp) || left.Type != right.Type || left.Stream != right.Stream ||
-		left.RawSHA256 != right.RawSHA256 || !bytes.Equal(left.Payload, right.Payload) || !bytes.Equal(left.Raw, right.Raw) {
+	// A recovered log prefix is observed at a new wall-clock time and may be
+	// re-derived by newer code. Source identity plus exact raw bytes determine
+	// idempotency; the first committed envelope remains authoritative.
+	if left.EventID != right.EventID || left.SessionID != right.SessionID ||
+		left.Generation != right.Generation || left.Stream != right.Stream ||
+		left.RawSHA256 != right.RawSHA256 || !bytes.Equal(left.Raw, right.Raw) {
 		return false
 	}
 	return !includeSequence || left.Sequence == right.Sequence

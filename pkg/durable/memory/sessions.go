@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
@@ -97,6 +98,28 @@ func (store *Store) GetSessionByIdempotencyKey(ctx context.Context, key string) 
 		return durable.Session{}, notFound(op, "session")
 	}
 	return cloneSession(store.sessions[sessionID]), nil
+}
+
+func (store *Store) ListSessions(ctx context.Context) ([]durable.Session, error) {
+	const op = "list_sessions"
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if err := store.checkOpen(op); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(store.sessions))
+	for id := range store.sessions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	sessions := make([]durable.Session, 0, len(ids))
+	for _, id := range ids {
+		sessions = append(sessions, cloneSession(store.sessions[id]))
+	}
+	return sessions, nil
 }
 
 func (store *Store) TransitionSession(ctx context.Context, params durable.TransitionSessionParams) (durable.Session, error) {

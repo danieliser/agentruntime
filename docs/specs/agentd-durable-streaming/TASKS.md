@@ -235,18 +235,19 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
 | RES-401 | DONE | Replace duplicate-create `409` with idempotent lookup semantics. | Versioned create passes 16-way concurrent admission with one process/generation, changed-request conflict, terminal lookup, and SQLite close/reopen lookup without respawn. | M |
-| RES-402 | IN PROGRESS | Persist provider session/thread identity and resume inputs. | Migration v2 and typed one-way provider-ID binding pass; native continuation wiring remains. | M |
-| RES-403 | TODO | Implement explicit runtime resume as generation `N+1` for eligible nonterminal sessions. | Logical ID and sequence continue; generation increments once. | L |
-| RES-404 | TODO | Make interrupt/cancel/resume requests idempotent with durable outcomes. | Repeated controls have stable responses and no duplicate side effects. | M |
+| RES-402 | DONE | Persist provider session/thread identity and resume inputs. | Provider identity binds from native output, survives SQLite restart, restores Codex correlation without repeating app-server initialization, and is supplied exactly to Claude/Codex generation resume. | M |
+| RES-403 | DONE | Implement explicit runtime resume as generation `N+1` for eligible nonterminal sessions. | `POST /api/v1/sessions/{id}/resume` accepts only a lost nonterminal generation, retains logical ID/event sequence, creates N+1 once, resumes the exact provider ID, and returns lookup/no-op on repeats or terminal sessions. | L |
+| RES-404 | IN PROGRESS | Make interrupt/cancel/resume requests idempotent with durable outcomes. | Resume is serialized/idempotent and active native interrupt is exposed; durable control keys, cancellation classification, and crash-boundary outcomes remain. | M |
+| RES-405 | DONE | Expose typed follow-up and steer input on an active native generation. | `POST /api/v1/sessions/{id}/input` routes prompt/steer through the registered Claude/Codex native transport; interactive Codex integration proves a second turn and interrupt without a sidecar. | M |
 
 ### Phase 5 — Docker reconstruction
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
 | DKR-501 | IN PROGRESS | Persist and label session ID, job key, request hash, generation, container ID, image reference/digest, and sandbox-profile version. | v1 admission persists session/generation and Docker durable labels/recovery metadata; resolved image digest and native sandbox profile remain. | M |
-| DKR-502 | TODO | Implement startup reconciliation across expected/running/exited/missing/duplicate containers. | Each case has an explicit state transition or `indeterminate`; no implicit rerun. | L |
+| DKR-502 | IN PROGRESS | Implement startup reconciliation across expected/running/exited/missing/duplicate containers. | Expected generations reattach, confirmed-missing generations become `lost`, duplicate claims become terminal `indeterminate`, and stopped labeled containers are discovered; crash-before-generation and full state inspection remain. | L |
 | DKR-503 | IN PROGRESS | Reattach native input/output at the last durable boundary. | Fresh and recovered durable Docker handles use reattachable stdin plus retained logs directly and never query the sidecar port; startup ledger reconciliation remains. | L |
-| DKR-504 | TODO | Recover terminal state when container exits while AgentD is down. | Exit reason/receipt is reconstructed or explicitly indeterminate. | M |
+| DKR-504 | IN PROGRESS | Recover terminal state when container exits while AgentD is down. | Docker recovery now includes stopped containers and uses retained logs plus `docker wait`; signal/OOM/cancel reason qualification remains. | M |
 | DKR-505 | TODO | Add admission stop + bounded drain before daemon shutdown. | New starts are rejected during drain; active Docker generations remain recoverable. | M |
 
 **Gate G3 — Docker durability qualification:** all restart/replay/resume tests pass against a real Docker daemon before declaring the session contract durable.
@@ -333,3 +334,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Durable request manifests now exclude explicit environment and nested request secrets, record grant references without values, and reject obvious undeclared secret environment keys before admission.
 - 2026-08-09 — Durable Claude/Codex Docker generations now bypass the execution sidecar: native stdin uses `docker attach`, canonical output uses retained `docker logs --follow`, and exit status uses `docker wait`. Full provider arguments are preserved, Codex app-server bootstrap is correlated, provider identity binds durably, and a committed terminal event precedes the immutable receipt.
 - 2026-08-09 — Fixed local native pipe ownership after race testing proved `exec.Cmd.Wait` could close fast provider output before ledger ingestion; provider drains are now independent from process wait ordering.
+- 2026-08-09 — Startup reconciliation now reattaches the exact running generation without replaying provider initialization, deduplicates the retained source prefix to its original event identities/timestamps, marks confirmed missing generations `lost`, and commits `indeterminate` terminal proof for duplicate container claims.
+- 2026-08-09 — Added explicit generation N+1 resume for lost nonterminal sessions, immutable terminal-receipt retrieval, bidirectional Claude stream-json launch, active native prompt/steer input, and native interrupt. Resume secret values are launch-only and must be regranted; nested secret paths conservatively require a new create request.

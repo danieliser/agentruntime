@@ -26,7 +26,9 @@ func AttachNativeSessionIO(
 	providerID string,
 	initialPrompt string,
 	stopOnTurnCompletion bool,
+	reconnect bool,
 	broker *eventstream.Broker,
+	onAttach func(nativeprotocol.Transport),
 	onExit func(runtime.ExitResult, error),
 ) error {
 	const op = "attach_native_session_io"
@@ -59,16 +61,19 @@ func AttachNativeSessionIO(
 	bootstrapCtx, cancelBootstrap := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelBootstrap()
 	if err := transport.Bootstrap(bootstrapCtx, nativeprotocol.BootstrapRequest{
-		ProviderID: providerID, ClientName: "agentruntime", ClientVersion: "v1",
+		ProviderID: providerID, ClientName: "agentruntime", ClientVersion: "v1", Reconnect: reconnect,
 	}); err != nil {
 		_ = transport.Close()
 		return err
 	}
-	if provider == nativeprotocol.ProviderCodex && initialPrompt != "" {
+	if initialPrompt != "" {
 		if err := transport.Send(bootstrapCtx, nativeprotocol.Input{Kind: nativeprotocol.InputPrompt, Text: initialPrompt}); err != nil {
 			_ = transport.Close()
 			return err
 		}
+	}
+	if onAttach != nil {
+		onAttach(transport)
 	}
 
 	logWriter, err := session.NewLogWriter(logDir, sess.ID)

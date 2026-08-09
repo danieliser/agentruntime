@@ -83,6 +83,7 @@ const (
 	dockerGenerationLabelKey  = "agentruntime.generation"
 	dockerIdempotencyLabelKey = "agentruntime.idempotency_key"
 	dockerRequestHashLabelKey = "agentruntime.request_hash"
+	dockerAgentLabelKey       = "agentruntime.agent"
 )
 
 type dockerMaterializer interface {
@@ -470,6 +471,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		"--security-opt", "no-new-privileges:true",
 		"--label", fmt.Sprintf("%s=%s", dockerTaskLabelKey, dockerLabelValue(requestTaskID(cfg))),
 		"--label", fmt.Sprintf("%s=%s", dockerSessionLabelKey, dockerLabelValue(cfg.SessionID)),
+		"--label", fmt.Sprintf("%s=%s", dockerAgentLabelKey, dockerLabelValue(cfg.AgentName)),
 		"--name", dockerContainerName(cfg.SessionID),
 		"--workdir", "/workspace",
 		"--env-file", envFile,
@@ -716,11 +718,11 @@ func sessionIDPrefix(sessionID string) string {
 	return sessionID[:8]
 }
 
-// Recover finds running containers with the agentruntime label and returns
-// handles to them. This enables session recovery after daemon restarts.
+// Recover finds running and stopped containers with the agentruntime label.
+// Stopped durable generations still expose retained logs and docker wait proof
+// so AgentD can finish their terminal ledger after a daemon restart.
 func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
-	// List running containers with our label.
-	psCmd := r.dockerCmd(ctx, "ps", "-q",
+	psCmd := r.dockerCmd(ctx, "ps", "-aq",
 		"--filter", fmt.Sprintf("label=%s", dockerSessionLabelKey),
 	)
 	out, err := psCmd.Output()
@@ -750,8 +752,9 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		}
 		idempotencyKey := strings.TrimSpace(labels[dockerIdempotencyLabelKey])
 		requestHash := strings.TrimSpace(labels[dockerRequestHashLabelKey])
+		agentName := strings.TrimSpace(labels[dockerAgentLabelKey])
 		recovery := RecoveryInfo{
-			SessionID: sessionID, TaskID: taskID, Generation: generation,
+			SessionID: sessionID, TaskID: taskID, AgentName: agentName, Generation: generation,
 			IdempotencyKey: idempotencyKey, RequestHash: requestHash,
 		}
 

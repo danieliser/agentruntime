@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -33,6 +34,19 @@ type v1SessionData struct {
 	LastSequence   int64                `json:"last_sequence"`
 	EventsURL      string               `json:"events_url"`
 	EventStreamURL string               `json:"event_stream_url"`
+}
+
+type v1TerminalReceiptData struct {
+	SessionID    string               `json:"session_id"`
+	Generation   int64                `json:"generation"`
+	State        durable.SessionState `json:"state"`
+	ExitCode     *int                 `json:"exit_code,omitempty"`
+	Signal       string               `json:"signal,omitempty"`
+	StartedAt    time.Time            `json:"started_at"`
+	EndedAt      time.Time            `json:"ended_at"`
+	OutputHash   string               `json:"output_hash"`
+	ArtifactHash string               `json:"artifact_hash,omitempty"`
+	LastSequence int64                `json:"last_sequence"`
 }
 
 func (s *Server) handleV1CreateSession(c *gin.Context) {
@@ -55,6 +69,42 @@ func (s *Server) handleV1GetSession(c *gin.Context) {
 		return
 	}
 	s.writeV1Session(c, http.StatusOK, stored)
+}
+
+func (s *Server) handleV1GetTerminalReceipt(c *gin.Context) {
+	if s.durableStore == nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "get_v1_receipt", "durable session store unavailable", nil))
+		return
+	}
+	receipt, err := s.durableStore.GetTerminalReceipt(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1TerminalReceiptData{
+		SessionID: receipt.SessionID, Generation: receipt.Generation, State: receipt.State,
+		ExitCode: receipt.ExitCode, Signal: receipt.Signal, StartedAt: receipt.StartedAt, EndedAt: receipt.EndedAt,
+		OutputHash: receipt.OutputHash, ArtifactHash: receipt.ArtifactHash, LastSequence: receipt.LastSequence,
+	}})
+}
+
+func generationDockerLogDriver(runtimeName string, native bool) string {
+	if runtimeName == "docker" && native {
+		return "json-file"
+	}
+	return ""
+}
+
+func nativeV1Agent(agentName string) bool {
+	return agentName == string(nativeprotocol.ProviderClaude) || agentName == string(nativeprotocol.ProviderCodex)
+}
+
+func runtimeSandboxProfile(runtimeName string, native bool) string {
+	transport := "compat"
+	if native {
+		transport = "native"
+	}
+	return runtimeName + "-" + transport + "-v1"
 }
 
 func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, runtimeName string) (durable.CreateSessionResult, error) {

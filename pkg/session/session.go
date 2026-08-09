@@ -310,15 +310,18 @@ func (m *Manager) Recover(handles []runtime.ProcessHandle, runtimeName string) [
 	for _, h := range handles {
 		sessionID := uuid.New().String()
 		taskID := ""
+		agentName := ""
 		if info := h.RecoveryInfo(); info != nil {
 			if info.SessionID != "" {
 				sessionID = info.SessionID
 			}
 			taskID = info.TaskID
+			agentName = info.AgentName
 		}
 		s := &Session{
 			ID:          sessionID,
 			TaskID:      taskID,
+			AgentName:   agentName,
 			RuntimeName: runtimeName,
 			State:       StateOrphaned,
 			CreatedAt:   time.Now(),

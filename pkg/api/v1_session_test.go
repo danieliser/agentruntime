@@ -251,7 +251,7 @@ func TestV1ClaudeOutputUsesDurableNativeLedger(t *testing.T) {
 		t.Fatalf("first native raw = %q", page.Events[0].Raw)
 	}
 	generation, err := store.GetGeneration(context.Background(), created.Data.SessionID, 1)
-	if err != nil || generation.ProviderID != "claude-fixture-session" {
+	if err != nil || generation.ProviderID != "claude-fixture-session" || generation.SandboxProfile != "test-native-v1" {
 		t.Fatalf("native provider identity = %+v err=%v", generation, err)
 	}
 	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
@@ -295,6 +295,82 @@ func TestV1CodexAppServerBootstrapsAndPersistsNativeLedger(t *testing.T) {
 	}
 }
 
+func TestV1NativeInputAndInterruptUseActiveProviderTransport(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&interactiveCodexFixtureAgent{})
+	manager := session.NewManager()
+	server := NewServer(manager, runtime.NewLocalRuntime(), registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	createdResponse := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-native-controls", "agent": "codex", "runtime": "local",
+		"prompt": "first", "interactive": true,
+	})
+	defer createdResponse.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, createdResponse.Body, &created)
+	if createdResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create interactive native status=%d", createdResponse.StatusCode)
+	}
+	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 1)
+
+	inputResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", map[string]any{"kind": "prompt", "text": "second"})
+	defer inputResponse.Body.Close()
+	if inputResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("native input status=%d", inputResponse.StatusCode)
+	}
+	waitForEventType(t, store, created.Data.SessionID, "content.delta", 1)
+	interruptResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "interrupt", map[string]any{})
+	defer interruptResponse.Body.Close()
+	if interruptResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("native interrupt status=%d", interruptResponse.StatusCode)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+}
+
+func postV1Control(t *testing.T, baseURL, sessionID, operation string, body any) *http.Response {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal control: %v", err)
+	}
+	response, err := http.Post(baseURL+"/api/v1/sessions/"+sessionID+"/"+operation, "application/json", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("post control: %v", err)
+	}
+	return response
+}
+
+func waitForEventType(t *testing.T, store durable.Store, sessionID, eventType string, minimum int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: sessionID, Limit: 100})
+		if err == nil {
+			count := 0
+			for _, event := range page.Events {
+				if event.Type == eventType {
+					count++
+				}
+			}
+			if count >= minimum {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("session %s did not persist %d %s events", sessionID, minimum, eventType)
+}
+
 type v1SessionTestServer struct {
 	*httptest.Server
 	manager *session.Manager
@@ -323,7 +399,8 @@ type nativeClaudeFixtureAgent struct{}
 func (*nativeClaudeFixtureAgent) Name() string { return "claude" }
 
 func (*nativeClaudeFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
-	return []string{"/bin/sh", "-c", `printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-fixture-session"}' '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"hello"}}}' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'`}, nil
+	return []string{"/bin/sh", "-c", `IFS= read -r prompt
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-fixture-session"}' '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"hello"}}}' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'`}, nil
 }
 
 func (*nativeClaudeFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
@@ -349,6 +426,28 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-th
 }
 
 func (*nativeCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
+
+type interactiveCodexFixtureAgent struct{}
+
+func (*interactiveCodexFixtureAgent) Name() string { return "codex" }
+func (*interactiveCodexFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
+	return []string{"/bin/sh", "-c", `
+IFS= read -r initialize
+printf '%s\n' '{"id":0,"result":{"userAgent":"codex-controls"}}'
+IFS= read -r initialized
+IFS= read -r thread_start
+printf '%s\n' '{"id":1,"result":{"threadId":"codex-controls-thread"}}' '{"method":"thread/started","params":{"threadId":"codex-controls-thread"}}'
+IFS= read -r first_turn
+printf '%s\n' '{"id":2,"result":{}}' '{"method":"turn/started","params":{"threadId":"codex-controls-thread","turnId":"turn-1"}}' '{"method":"turn/completed","params":{"threadId":"codex-controls-thread","turnId":"turn-1","status":"completed"}}'
+IFS= read -r second_turn
+printf '%s\n' '{"id":3,"result":{}}' '{"method":"turn/started","params":{"threadId":"codex-controls-thread","turnId":"turn-2"}}' '{"method":"item/agentMessage/delta","params":{"threadId":"codex-controls-thread","turnId":"turn-2","delta":"second answer"}}' '{"method":"turn/completed","params":{"threadId":"codex-controls-thread","turnId":"turn-2","status":"completed"}}'
+IFS= read -r interrupt
+printf '%s\n' '{"id":4,"result":{}}'
+`}, nil
+}
+func (*interactiveCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) {
+	return nil, false
+}
 
 type countingRuntime struct {
 	Runtime runtime.Runtime

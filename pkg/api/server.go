@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -31,6 +33,9 @@ type Server struct {
 	durableStore durable.Store
 	eventBroker  *eventstream.Broker
 	srv          *http.Server
+	resumeMu     sync.Mutex
+	nativeMu     sync.RWMutex
+	native       map[string]nativeprotocol.Transport
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -119,6 +124,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		version:  version,
 		dataDir:  dataDir,
 		logDir:   logDir,
+		native:   make(map[string]nativeprotocol.Transport),
 	}
 	if len(cfgs) > 0 {
 		s.chatRegistry = cfgs[0].ChatRegistry

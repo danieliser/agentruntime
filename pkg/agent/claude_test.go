@@ -46,3 +46,28 @@ func TestClaudeBuildCmd_Interactive(t *testing.T) {
 		t.Fatalf("expected --output-format stream-json in cmd, got %v", cmd)
 	}
 }
+
+func TestClaudeBuildCmd_NativeStreamUsesBidirectionalJSON(t *testing.T) {
+	a := &ClaudeAgent{}
+	cmd, err := a.BuildCmd("", AgentConfig{NativeStream: true, SessionID: "logical-session"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, sequence := range [][2]string{
+		{"--input-format", "stream-json"},
+		{"--output-format", "stream-json"},
+		{"--session-id", "logical-session"},
+	} {
+		if !containsSequence(cmd, sequence[0], sequence[1]) {
+			t.Fatalf("expected %v in native command, got %v", sequence, cmd)
+		}
+	}
+	for _, flag := range []string{"--include-partial-messages", "--ide"} {
+		if !contains(cmd, flag) {
+			t.Fatalf("expected %s in native command, got %v", flag, cmd)
+		}
+	}
+	if contains(cmd, "-p") {
+		t.Fatalf("native stream prompt must arrive over stdin, got %v", cmd)
+	}
+}

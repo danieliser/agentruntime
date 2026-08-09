@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danieliser/agentruntime/pkg/agent"
+	"github.com/danieliser/agentruntime/pkg/api"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -65,7 +67,8 @@ func TestDaemonRecovery_ReplayBufferPopulated(t *testing.T) {
 		t.Fatalf("write prior log: %v", err)
 	}
 
-	restoreRecoveredSessions(logDir, []*session.Session{sess})
+	server := api.NewServer(session.NewManager(), runtime.NewLocalRuntime(), agent.DefaultRegistry(), api.ServerConfig{LogDir: logDir})
+	server.RestoreRecoveredSessions([]*session.Session{sess})
 
 	replayed, next := sess.Replay.ReadFrom(0)
 	if string(replayed) != "prior output\n" {

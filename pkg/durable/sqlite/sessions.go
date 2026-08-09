@@ -79,6 +79,35 @@ func (store *Store) GetSessionByIdempotencyKey(ctx context.Context, key string) 
 	return store.getSession(ctx, "get_session_by_idempotency_key", "idempotency_key", key)
 }
 
+func (store *Store) ListSessions(ctx context.Context) ([]durable.Session, error) {
+	const op = "list_sessions"
+	tx, err := store.begin(ctx, op)
+	if err != nil {
+		return nil, err
+	}
+	defer rollback(tx)
+	rows, err := tx.QueryContext(ctx, "SELECT "+sessionColumns+" FROM sessions ORDER BY id")
+	if err != nil {
+		return nil, storageError(op, "query sessions", err)
+	}
+	defer rows.Close()
+	var sessions []durable.Session
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, storageError(op, "iterate sessions", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, storageError(op, "commit session list", err)
+	}
+	return sessions, nil
+}
+
 func (store *Store) getSession(ctx context.Context, op, column, value string) (durable.Session, error) {
 	if value == "" {
 		return durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "lookup value is required", nil)

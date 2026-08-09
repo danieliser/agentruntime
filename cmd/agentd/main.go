@@ -101,15 +101,18 @@ func main() {
 	allRuntimes = append(allRuntimes, extraRuntimes...)
 
 	totalRecovered := 0
+	var recoveredSessions []*session.Session
+	var recoveredRuntimes []string
 	for _, r := range allRuntimes {
 		recovered, err := r.Recover(context.Background())
 		if err != nil {
 			log.Printf("warning: %s runtime recovery failed: %v", r.Name(), err)
 			continue
 		}
+		recoveredRuntimes = append(recoveredRuntimes, r.Name())
 		if len(recovered) > 0 {
 			orphaned := sessions.Recover(recovered, r.Name())
-			restoreRecoveredSessions(logDir, orphaned)
+			recoveredSessions = append(recoveredSessions, orphaned...)
 			totalRecovered += len(orphaned)
 		}
 	}
@@ -170,6 +173,7 @@ func main() {
 		DurableStore:  durableStore,
 		EventBroker:   eventBroker,
 	})
+	srv.RestoreRecoveredSessions(recoveredSessions, recoveredRuntimes...)
 	// Wire the spawner after server creation to break the circular dependency
 	// between api.Server (needs chatManager) and chatManager (needs spawner).
 	chatManager.SetSpawner(srv)
@@ -207,25 +211,6 @@ func main() {
 		}
 	}
 	log.Println("agentd stopped")
-}
-
-func restoreRecoveredSessions(logDir string, sessions []*session.Session) {
-	for _, sess := range sessions {
-		var restoredBytes int64
-		logPath, exists, err := session.ExistingLogFilePath(logDir, sess.ID)
-		if err != nil {
-			log.Printf("[session %s] warning: check replay log failed: %v", sess.ID, err)
-		} else if exists {
-			if err := sess.Replay.LoadFromFile(logPath); err != nil {
-				log.Printf("[session %s] warning: restore replay from %s failed: %v", sess.ID, logPath, err)
-			} else {
-				restoredBytes = sess.Replay.TotalBytes()
-			}
-		}
-
-		api.AttachSessionIO(sess, logDir)
-		log.Printf("recovered session %s: replay loaded (%d bytes), stdio reattached", sess.ID, restoredBytes)
-	}
 }
 
 // defaultDataDir returns AgentD's private user-state root. An explicit
