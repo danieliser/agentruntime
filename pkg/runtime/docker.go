@@ -68,12 +68,15 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 }
 
 const (
-	dockerTaskLabelKey        = "agentruntime.task_id"
-	dockerSessionLabelKey     = "agentruntime.session_id"
-	dockerGenerationLabelKey  = "agentruntime.generation"
-	dockerIdempotencyLabelKey = "agentruntime.idempotency_key"
-	dockerRequestHashLabelKey = "agentruntime.request_hash"
-	dockerAgentLabelKey       = "agentruntime.agent"
+	dockerTaskLabelKey           = "agentruntime.task_id"
+	dockerSessionLabelKey        = "agentruntime.session_id"
+	dockerGenerationLabelKey     = "agentruntime.generation"
+	dockerIdempotencyLabelKey    = "agentruntime.idempotency_key"
+	dockerRequestHashLabelKey    = "agentruntime.request_hash"
+	dockerAgentLabelKey          = "agentruntime.agent"
+	dockerImageReferenceLabelKey = "agentruntime.image_reference"
+	dockerImageDigestLabelKey    = "agentruntime.image_digest"
+	dockerSandboxProfileLabelKey = "agentruntime.sandbox_profile"
 )
 
 type dockerMaterializer interface {
@@ -125,6 +128,14 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	if err := r.manager().EnsureProxy(ctx); err != nil {
 		return nil, &SpawnError{Reason: "docker proxy", Err: err}
 	}
+	if cfg.Generation > 0 {
+		cfg.ImageReference = resolvedDockerImage(r.cfg.Image, cfg)
+		imageDigest, err := r.imageReferenceDigest(ctx, cfg.ImageReference)
+		if err != nil {
+			return nil, &SpawnError{Reason: "image digest", Err: err}
+		}
+		cfg.ImageDigest = imageDigest
+	}
 	spec, err := r.prepareRun(cfg)
 	if err != nil {
 		return nil, &SpawnError{Reason: "docker run args", Err: err}
@@ -160,6 +171,13 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 			}
 			return nil, &SpawnError{Reason: "container image digest", Err: err}
 		}
+		if imageDigest != cfg.ImageDigest {
+			stopDockerContainerHost(r.cfg.Host, containerID)
+			if spec.cleanup != nil {
+				spec.cleanup()
+			}
+			return nil, &SpawnError{Reason: "container image digest", Err: fmt.Errorf("container image %q does not match admitted digest %q", imageDigest, cfg.ImageDigest)}
+		}
 	}
 	handle, err := newNativeDockerHandle(r.cfg.Host, containerID, RecoveryInfo{})
 	if err != nil {
@@ -175,6 +193,17 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	return handle, nil
 }
 
+func (r *DockerRuntime) imageReferenceDigest(ctx context.Context, imageReference string) (string, error) {
+	var stderr bytes.Buffer
+	cmd := r.dockerCmd(ctx, "image", "inspect", "--format", "{{.Id}}", imageReference)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", dockerCommandError(err, stderr.String())
+	}
+	return validatedSHA256Digest(out)
+}
+
 func (r *DockerRuntime) containerImageDigest(ctx context.Context, containerID string) (string, error) {
 	var stderr bytes.Buffer
 	cmd := r.dockerCmd(ctx, "inspect", "--format", "{{.Image}}", containerID)
@@ -183,9 +212,13 @@ func (r *DockerRuntime) containerImageDigest(ctx context.Context, containerID st
 	if err != nil {
 		return "", dockerCommandError(err, stderr.String())
 	}
-	digest := strings.TrimSpace(string(out))
+	return validatedSHA256Digest(out)
+}
+
+func validatedSHA256Digest(raw []byte) (string, error) {
+	digest := strings.TrimSpace(string(raw))
 	if !strings.HasPrefix(digest, "sha256:") || len(digest) <= len("sha256:") {
-		return "", fmt.Errorf("invalid container image digest %q", digest)
+		return "", fmt.Errorf("invalid image digest %q", digest)
 	}
 	return digest, nil
 }
@@ -296,10 +329,7 @@ func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string,
 
 func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	req := cfg.Request
-	image := r.cfg.Image
-	if req != nil && req.Container != nil && req.Container.Image != "" {
-		image = req.Container.Image
-	}
+	image := resolvedDockerImage(r.cfg.Image, cfg)
 	if image == "" {
 		return nil, fmt.Errorf("no container image configured")
 	}
@@ -450,6 +480,9 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 			"--label", fmt.Sprintf("%s=%d", dockerGenerationLabelKey, cfg.Generation),
 			"--label", fmt.Sprintf("%s=%s", dockerIdempotencyLabelKey, dockerLabelValue(cfg.IdempotencyKey)),
 			"--label", fmt.Sprintf("%s=%s", dockerRequestHashLabelKey, dockerLabelValue(cfg.RequestHash)),
+			"--label", fmt.Sprintf("%s=%s", dockerImageReferenceLabelKey, dockerLabelValue(image)),
+			"--label", fmt.Sprintf("%s=%s", dockerImageDigestLabelKey, dockerLabelValue(cfg.ImageDigest)),
+			"--label", fmt.Sprintf("%s=%s", dockerSandboxProfileLabelKey, dockerLabelValue(cfg.SandboxProfile)),
 		)
 	}
 	if cfg.PTY || (req != nil && req.PTY) {
@@ -491,6 +524,16 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		args:    args,
 		cleanup: cleanup,
 	}, nil
+}
+
+func resolvedDockerImage(defaultImage string, cfg SpawnConfig) string {
+	if cfg.ImageReference != "" {
+		return cfg.ImageReference
+	}
+	if cfg.Request != nil && cfg.Request.Container != nil && cfg.Request.Container.Image != "" {
+		return cfg.Request.Container.Image
+	}
+	return defaultImage
 }
 
 func requestEnv(cfg SpawnConfig) map[string]string {

@@ -105,6 +105,7 @@ func TestDockerRunCarriesDurableGenerationLabels(t *testing.T) {
 	args, err := rt.buildRunArgs(SpawnConfig{
 		Cmd: []string{"echo"}, SessionID: "durable-session", TaskID: "task",
 		Generation: 3, IdempotencyKey: "job-123", RequestHash: "sha256:abc",
+		ImageReference: "ubuntu:22.04", ImageDigest: "sha256:image-id", SandboxProfile: "docker-native-v1",
 	})
 	if err != nil {
 		t.Fatalf("build durable args: %v", err)
@@ -114,6 +115,9 @@ func TestDockerRunCarriesDurableGenerationLabels(t *testing.T) {
 		"agentruntime.generation=3",
 		"agentruntime.idempotency_key=job-123",
 		"agentruntime.request_hash=sha256:abc",
+		"agentruntime.image_reference=ubuntu:22.04",
+		"agentruntime.image_digest=sha256:image-id",
+		"agentruntime.sandbox_profile=docker-native-v1",
 	} {
 		if !hasFlagValue(args, "--label", label) {
 			t.Errorf("missing label %q in %v", label, args)
@@ -284,6 +288,9 @@ set -eu
 state_dir=%q
 printf '%%s\n' "$*" >>"$state_dir/commands"
 case "$1" in
+  image)
+    printf 'sha256:native-image\n'
+    ;;
   network)
     [ "$2" = "inspect" ]
     ;;

@@ -131,6 +131,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		RequestHash: stored.RequestHash, AgentName: stored.Agent, Cmd: command, Prompt: request.Prompt,
 		Model: request.Model, Env: request.Env, WorkDir: workDir, TaskID: request.TaskID,
 		Request: &request, SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: request.PTY,
+		SandboxProfile: runtimeSandboxProfile(rt.Name(), true),
 	})
 	if err != nil {
 		s.sessions.Remove(stored.ID)

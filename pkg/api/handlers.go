@@ -291,6 +291,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		SessionDir:     &sess.SessionDir,
 		VolumeName:     volumeNameForSpawn,
 		PTY:            req.PTY,
+		SandboxProfile: runtimeSandboxProfile(rt.Name(), durableV1 && nativeV1Agent(req.Agent)),
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)

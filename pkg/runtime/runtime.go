@@ -42,6 +42,9 @@ type SpawnConfig struct {
 	Generation     int64
 	IdempotencyKey string
 	RequestHash    string
+	ImageReference string
+	ImageDigest    string
+	SandboxProfile string
 
 	// AgentName identifies the agent type ("claude", "codex").
 	AgentName string

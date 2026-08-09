@@ -107,10 +107,11 @@ Nested request-secret paths currently require a new create request.
 The logical session is committed before runtime admission. A successful spawn
 then records generation identity and transitions generation/session to
 `running`. Docker launches receive labels for logical session ID, generation,
-idempotency key, request hash, and task ID. Recovery reads those labels instead
-of guessing identity from a container name. After launch, AgentD inspects and
-validates the concrete container image ID and stores that `sha256:` digest in
-the runtime-generation record rather than trusting a mutable image tag alone.
+idempotency key, request hash, task ID, image reference/digest, and sandbox
+profile. Recovery reads those labels instead of guessing identity from a
+container name. AgentD resolves the reference before launch and then verifies
+that the created container used that exact `sha256:` image ID, preventing a
+mutable tag race from entering the runtime-generation record.
 
 Durable Claude/Codex generations do not publish or dial the execution-sidecar
 port. Native input is connected with `docker attach`; exact provider output is
