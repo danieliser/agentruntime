@@ -484,6 +484,7 @@ func TestRuntimeTerminalStateDistinguishesFailureSignalAndOOM(t *testing.T) {
 	}{
 		{name: "success", result: runtime.ExitResult{Code: 0}, want: durable.StateCompleted},
 		{name: "failure", result: runtime.ExitResult{Code: 7}, want: durable.StateFailed},
+		{name: "unproven signal shaped exit", result: runtime.ExitResult{Code: 143}, want: durable.StateIndeterminate},
 		{name: "signal", result: runtime.ExitResult{Code: 143, Signal: "SIGTERM"}, want: durable.StateCrashed},
 		{name: "oom", result: runtime.ExitResult{Code: 137, Signal: "SIGKILL", OOMKilled: true}, want: durable.StateCrashed},
 	} {
@@ -492,6 +493,22 @@ func TestRuntimeTerminalStateDistinguishesFailureSignalAndOOM(t *testing.T) {
 				t.Fatalf("terminal state = %s, want %s", got, test.want)
 			}
 		})
+	}
+}
+
+func TestFinalizeV1SessionDoesNotGuessUnprovenSignal(t *testing.T) {
+	store, sessionID := runningRecoveryStore(t)
+	server := NewServer(session.NewManager(), &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.finalizeV1Session(sessionID, runtime.ExitResult{Code: 143})
+	receipt, err := store.GetTerminalReceipt(context.Background(), sessionID)
+	if err != nil || receipt.State != durable.StateIndeterminate || receipt.Signal != "" {
+		t.Fatalf("ambiguous signal receipt = %+v err=%v", receipt, err)
+	}
+	generation, err := store.GetGeneration(context.Background(), sessionID, 1)
+	if err != nil || generation.State != durable.GenerationIndeterminate {
+		t.Fatalf("ambiguous signal generation = %+v err=%v", generation, err)
 	}
 }
 

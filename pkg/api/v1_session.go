@@ -317,6 +317,12 @@ func runtimeTerminalState(result runtime.ExitResult) durable.SessionState {
 	if result.OOMKilled || result.Signal != "" || result.ErrorDetail != "" || result.Err != nil {
 		return durable.StateCrashed
 	}
+	// Unix shells conventionally encode signal exits as 128+signal. Without
+	// runtime proof, the same numeric code could also be an application exit;
+	// never guess which terminal reason occurred.
+	if result.Code >= 129 && result.Code <= 192 {
+		return durable.StateIndeterminate
+	}
 	if result.Code != 0 {
 		return durable.StateFailed
 	}
@@ -341,6 +347,9 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 	}
 	state := runtimeTerminalState(result)
 	generationTo := durable.GenerationExited
+	if state == durable.StateIndeterminate {
+		generationTo = durable.GenerationIndeterminate
+	}
 	streamErr := errors.Join(streamErrors...)
 	if streamErr != nil {
 		state = durable.StateIndeterminate
