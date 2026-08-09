@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -28,56 +30,89 @@ type v1InterruptRequest struct {
 type activeNativeSession struct {
 	transport nativeprotocol.Transport
 
-	mu              sync.Mutex
-	cancelRequested bool
-	cancelOutcome   durable.SessionState
-	terminalClaimed bool
-	cancelSettled   chan struct{}
-	cancelOnce      sync.Once
+	mu                 sync.Mutex
+	terminalRequested  durable.SessionState
+	terminalOutcome    durable.SessionState
+	terminalClaimed    bool
+	terminalSettled    chan struct{}
+	terminalSettleOnce sync.Once
+	finished           chan struct{}
+	finishedOnce       sync.Once
 }
 
 func newActiveNativeSession(transport nativeprotocol.Transport) *activeNativeSession {
-	return &activeNativeSession{transport: transport, cancelSettled: make(chan struct{})}
+	return &activeNativeSession{
+		transport: transport, terminalSettled: make(chan struct{}), finished: make(chan struct{}),
+	}
 }
 
 func (active *activeNativeSession) beginCancel() bool {
+	return active.beginTerminal(durable.StateCancelled)
+}
+
+func (active *activeNativeSession) beginTimeout() bool {
+	return active.beginTerminal(durable.StateTimedOut)
+}
+
+func (active *activeNativeSession) beginTerminal(state durable.SessionState) bool {
 	active.mu.Lock()
 	defer active.mu.Unlock()
 	if active.terminalClaimed {
 		return false
 	}
-	active.cancelRequested = true
+	active.terminalClaimed = true
+	active.terminalRequested = state
 	return true
 }
 
 func (active *activeNativeSession) settleCancel(state durable.SessionState) {
-	active.cancelOnce.Do(func() {
+	active.settleTerminal(state)
+}
+
+func (active *activeNativeSession) settleTimeout(state durable.SessionState) {
+	active.settleTerminal(state)
+}
+
+func (active *activeNativeSession) settleTerminal(state durable.SessionState) {
+	active.terminalSettleOnce.Do(func() {
 		active.mu.Lock()
-		active.cancelOutcome = state
+		active.terminalOutcome = state
 		active.mu.Unlock()
-		close(active.cancelSettled)
+		close(active.terminalSettled)
 	})
 }
 
 func (active *activeNativeSession) terminalReason() string {
 	active.mu.Lock()
-	if !active.cancelRequested {
+	if !active.terminalClaimed {
 		active.terminalClaimed = true
 		active.mu.Unlock()
+		active.markFinished()
 		return ""
 	}
+	requested := active.terminalRequested
 	active.mu.Unlock()
-	<-active.cancelSettled
-	if active.terminalState() == durable.StateCancelled {
-		return "cancelled"
+	if requested == "" {
+		active.markFinished()
+		return ""
 	}
-	return "indeterminate"
+	<-active.terminalSettled
+	outcome := active.terminalState()
+	active.markFinished()
+	if outcome == durable.StateCancelled || outcome == durable.StateTimedOut {
+		return string(outcome)
+	}
+	return string(durable.StateIndeterminate)
 }
 
 func (active *activeNativeSession) terminalState() durable.SessionState {
 	active.mu.Lock()
 	defer active.mu.Unlock()
-	return active.cancelOutcome
+	return active.terminalOutcome
+}
+
+func (active *activeNativeSession) markFinished() {
+	active.finishedOnce.Do(func() { close(active.finished) })
 }
 
 func (s *Server) setNativeTransport(sessionID string, transport nativeprotocol.Transport) *activeNativeSession {
@@ -100,6 +135,63 @@ func (s *Server) nativeSession(sessionID string) *activeNativeSession {
 	s.nativeMu.RLock()
 	defer s.nativeMu.RUnlock()
 	return s.native[sessionID]
+}
+
+func (s *Server) armNativeTimeout(sessionID string, generation int64, active *activeNativeSession, timeout time.Duration, startedAt time.Time) {
+	if active == nil {
+		return
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	wait := time.Until(startedAt.Add(timeout))
+	if wait < 0 {
+		wait = 0
+	}
+	timer := time.NewTimer(wait)
+	go func() {
+		defer timer.Stop()
+		select {
+		case <-active.finished:
+			return
+		case <-timer.C:
+			s.expireNativeSession(sessionID, generation, active, timeout)
+		}
+	}()
+}
+
+func (s *Server) expireNativeSession(sessionID string, generation int64, active *activeNativeSession, timeout time.Duration) {
+	if !active.beginTimeout() {
+		return
+	}
+	controlCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	control, alreadyDispatched, err := s.beginNativeControlContext(
+		controlCtx, sessionID, fmt.Sprintf("timeout:%s:g%d", sessionID, generation), "timeout",
+		map[string]any{"duration": timeout.String()},
+	)
+	cancel()
+	if err != nil {
+		_ = active.transport.Close()
+		active.settleTimeout(durable.StateIndeterminate)
+		log.Printf("[session %s] timeout intent could not be committed: %v", sessionID, err)
+		return
+	}
+	if err := active.transport.Close(); err != nil {
+		active.settleTimeout(durable.StateIndeterminate)
+		log.Printf("[session %s] timeout termination could not be confirmed: %v", sessionID, err)
+		return
+	}
+	if !alreadyDispatched {
+		dispatchCtx, dispatchCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = s.eventBroker.CompleteControl(dispatchCtx, control)
+		dispatchCancel()
+		if err != nil {
+			active.settleTimeout(durable.StateIndeterminate)
+			log.Printf("[session %s] process stopped without durable timeout dispatch proof: %v", sessionID, err)
+			return
+		}
+	}
+	active.settleTimeout(durable.StateTimedOut)
 }
 
 func (s *Server) handleV1NativeInput(c *gin.Context) {

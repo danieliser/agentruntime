@@ -370,6 +370,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 				},
 				func(transport nativeprotocol.Transport) {
 					active = s.setNativeTransport(sess.ID, transport)
+					s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, active, req.EffectiveTimeout(), admitted.UpdatedAt)
 				},
 				func(result runtime.ExitResult, streamErr error) {
 					s.clearNativeTransport(sess.ID, active)

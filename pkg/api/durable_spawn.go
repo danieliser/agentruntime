@@ -183,7 +183,10 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 			}
 			return active.terminalReason()
 		},
-		func(transport nativeprotocol.Transport) { active = s.setNativeTransport(sess.ID, transport) },
+		func(transport nativeprotocol.Transport) {
+			active = s.setNativeTransport(sess.ID, transport)
+			s.armNativeTimeout(sess.ID, generation.Number, active, req.EffectiveTimeout(), generation.CreatedAt)
+		},
 		func(result runtime.ExitResult, streamErr error) {
 			s.clearNativeTransport(sess.ID, active)
 			var override durable.SessionState

@@ -304,9 +304,7 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	if provider != nativeprotocol.ProviderClaude && provider != nativeprotocol.ProviderCodex {
 		return durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("agent %q has no native recovery transport", stored.Agent), nil)
 	}
-	var manifest struct {
-		Interactive bool `json:"interactive"`
-	}
+	var manifest SessionRequest
 	if len(stored.RequestManifest) > 0 {
 		if err := json.Unmarshal(stored.RequestManifest, &manifest); err != nil {
 			return durable.NewError(durable.CodeIndeterminate, op, "decode stored request manifest", err)
@@ -327,6 +325,7 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 		},
 		func(transport nativeprotocol.Transport) {
 			active = s.setNativeTransport(sess.ID, transport)
+			s.armNativeTimeout(sess.ID, generation.Number, active, manifest.EffectiveTimeout(), generation.CreatedAt)
 		},
 		func(result runtime.ExitResult, streamErr error) {
 			s.clearNativeTransport(sess.ID, active)

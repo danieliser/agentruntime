@@ -42,11 +42,18 @@ func AttachNativeSessionIO(
 	}
 	handle := sess.Handle
 	nativeWait := make(chan nativeprotocol.Exit, 1)
+	terminalReasons := make(chan string, 1)
 	go func() {
 		result, ok := <-handle.Wait()
 		if !ok {
 			result.Err = io.EOF
 		}
+		reason := ""
+		if terminalReason != nil {
+			reason = terminalReason()
+		}
+		terminalReasons <- reason
+		close(terminalReasons)
 		nativeWait <- nativeprotocol.Exit{
 			Code: result.Code, Signal: result.Signal, OOMKilled: result.OOMKilled,
 			ErrorDetail: result.ErrorDetail, StartedAt: result.StartedAt, EndedAt: result.EndedAt, Err: result.Err,
@@ -125,6 +132,9 @@ func AttachNativeSessionIO(
 		if !ok {
 			nativeExit.Err = io.EOF
 		}
+		// The handle-wait goroutine claims the boundary before transport drain,
+		// so already-produced records cannot let a later deadline reclassify it.
+		reason := <-terminalReasons
 		drains.Wait()
 		ingestMu.Lock()
 		streamErr := errors.Join(ingestErr, nativeExit.Err)
@@ -136,10 +146,6 @@ func AttachNativeSessionIO(
 			endedAt = time.Now().UTC()
 		}
 		if streamErr == nil {
-			reason := ""
-			if terminalReason != nil {
-				reason = terminalReason()
-			}
 			if reason == "" {
 				reason = string(runtimeTerminalState(runtime.ExitResult{
 					Code: nativeExit.Code, Signal: nativeExit.Signal, OOMKilled: nativeExit.OOMKilled,

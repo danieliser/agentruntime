@@ -32,7 +32,7 @@ func TestRestoreRecoveredNativeSessionDeduplicatesRetainedPrefix(t *testing.T) {
 	createdAt := time.Unix(1_000, 0).UTC()
 	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
 		SessionID: "recovered-session", IdempotencyKey: "recovered-job", RequestHash: "sha256:recovered",
-		RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","timeout":"1000000h"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -85,6 +85,59 @@ func TestRestoreRecoveredNativeSessionDeduplicatesRetainedPrefix(t *testing.T) {
 	}
 }
 
+func TestRestoreRecoveredNativeSessionHonorsOriginalTimeoutDeadline(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: "overdue-session", IdempotencyKey: "overdue-job", RequestHash: "sha256:overdue",
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","timeout":"1s","interactive":true}`),
+		Agent:           "claude", Runtime: "docker", CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+		SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: createdAt.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if _, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{
+		SessionID: created.Session.ID, Runtime: "docker", ContainerID: "container-overdue",
+		ProviderID: "provider-overdue", CreatedAt: createdAt.Add(2 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("create generation: %v", err)
+	}
+	if _, err := store.TransitionGeneration(ctx, durable.TransitionGenerationParams{
+		SessionID: created.Session.ID, Generation: 1, From: durable.GenerationStarting,
+		To: durable.GenerationRunning, At: createdAt.Add(3 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("run generation: %v", err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+		SessionID: created.Session.ID, From: durable.StateStarting, To: durable.StateRunning, At: createdAt.Add(4 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+
+	handle := newBlockingRecoveredNativeTestHandle(created.Session.ID, "container-overdue")
+	manager := session.NewManager()
+	orphaned := manager.Recover([]runtime.ProcessHandle{handle}, "docker")
+	server := NewServer(manager, &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.RestoreRecoveredSessions(orphaned)
+	waitForDurableTerminal(t, store, created.Session.ID)
+	receipt, err := store.GetTerminalReceipt(ctx, created.Session.ID)
+	if err != nil || receipt.State != durable.StateTimedOut {
+		t.Fatalf("overdue recovered receipt = %+v err=%v", receipt, err)
+	}
+}
+
 func TestRestoreRecoveredNativeSessionAdoptsCrashBeforeGenerationCommit(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {
@@ -95,7 +148,7 @@ func TestRestoreRecoveredNativeSessionAdoptsCrashBeforeGenerationCommit(t *testi
 	createdAt := time.Unix(1_500, 0).UTC()
 	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
 		SessionID: "orphaned-start", IdempotencyKey: "orphaned-job", RequestHash: "sha256:orphaned",
-		RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","timeout":"1000000h"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -151,7 +204,7 @@ func TestRestoreRecoveredNativeSessionSettlesUnverifiableStartingContainer(t *te
 	createdAt := time.Unix(1_600, 0).UTC()
 	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
 		SessionID: "unverifiable-start", IdempotencyKey: "expected-job", RequestHash: "sha256:expected",
-		RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","timeout":"1000000h"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -344,7 +397,7 @@ func runningRecoveryStore(t *testing.T) (durable.Store, string) {
 	createdAt := time.Unix(2_000, 0).UTC()
 	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
 		SessionID: "missing-session", IdempotencyKey: "missing-job", RequestHash: "sha256:missing",
-		RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","timeout":"1000000h"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -376,8 +429,26 @@ type recoveredNativeTestHandle struct {
 	stderr    io.ReadCloser
 	stdin     *testWriteCloser
 	wait      chan runtime.ExitResult
+	kill      func() error
 	runtimeID string
 	recovery  runtime.RecoveryInfo
+}
+
+func newBlockingRecoveredNativeTestHandle(sessionID, runtimeID string) *recoveredNativeTestHandle {
+	stdout, stdoutWriter := io.Pipe()
+	wait := make(chan runtime.ExitResult, 1)
+	handle := &recoveredNativeTestHandle{
+		stdout: stdout, stderr: io.NopCloser(strings.NewReader("")), stdin: &testWriteCloser{},
+		wait: wait, runtimeID: runtimeID,
+		recovery: runtime.RecoveryInfo{SessionID: sessionID, AgentName: "claude", Generation: 1},
+	}
+	handle.kill = func() error {
+		_ = stdoutWriter.Close()
+		wait <- runtime.ExitResult{Code: -1}
+		close(wait)
+		return nil
+	}
+	return handle
 }
 
 func newRecoveredNativeTestHandle(stdout string) *recoveredNativeTestHandle {
@@ -394,10 +465,15 @@ func (handle *recoveredNativeTestHandle) Stdin() io.WriteCloser           { retu
 func (handle *recoveredNativeTestHandle) Stdout() io.ReadCloser           { return handle.stdout }
 func (handle *recoveredNativeTestHandle) Stderr() io.ReadCloser           { return handle.stderr }
 func (handle *recoveredNativeTestHandle) Wait() <-chan runtime.ExitResult { return handle.wait }
-func (handle *recoveredNativeTestHandle) Kill() error                     { return nil }
-func (handle *recoveredNativeTestHandle) PID() int                        { return 0 }
-func (handle *recoveredNativeTestHandle) RuntimeID() string               { return handle.runtimeID }
-func (handle *recoveredNativeTestHandle) NativeStdio() bool               { return true }
+func (handle *recoveredNativeTestHandle) Kill() error {
+	if handle.kill != nil {
+		return handle.kill()
+	}
+	return nil
+}
+func (handle *recoveredNativeTestHandle) PID() int          { return 0 }
+func (handle *recoveredNativeTestHandle) RuntimeID() string { return handle.runtimeID }
+func (handle *recoveredNativeTestHandle) NativeStdio() bool { return true }
 func (handle *recoveredNativeTestHandle) RecoveryInfo() *runtime.RecoveryInfo {
 	copy := handle.recovery
 	return &copy

@@ -180,6 +180,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		},
 		func(transport nativeprotocol.Transport) {
 			active = s.setNativeTransport(stored.ID, transport)
+			s.armNativeTimeout(stored.ID, generation.Number, active, request.EffectiveTimeout(), generation.CreatedAt)
 		},
 		func(result runtime.ExitResult, streamErr error) {
 			s.clearNativeTransport(stored.ID, active)

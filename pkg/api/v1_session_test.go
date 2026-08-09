@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -419,6 +420,52 @@ func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
 	}
 }
 
+func TestV1NativeSessionTimeoutCommitsDurableTerminalProof(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&cancelCodexFixtureAgent{})
+	server := NewServer(session.NewManager(), runtime.NewLocalRuntime(), registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+
+	createdResponse := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-native-timeout", "agent": "codex", "runtime": "local",
+		"prompt": "start", "interactive": true, "timeout": "250ms",
+	})
+	defer createdResponse.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, createdResponse.Body, &created)
+	if createdResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create timeout session status=%d", createdResponse.StatusCode)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateTimedOut {
+		t.Fatalf("timeout receipt = %+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 100})
+	if err != nil {
+		t.Fatalf("list timeout events: %v", err)
+	}
+	types := make([]string, 0, len(page.Events))
+	for _, event := range page.Events {
+		types = append(types, event.Type)
+	}
+	wantSuffix := []string{"control.timeout.requested", "control.timeout.dispatched", "session.timed_out"}
+	if len(types) < len(wantSuffix) || !slices.Equal(types[len(types)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("timeout event suffix = %v, want %v", types, wantSuffix)
+	}
+}
+
 func TestActiveNativeSessionDoesNotReclassifyClaimedTerminalAsCancelled(t *testing.T) {
 	active := newActiveNativeSession(nil)
 	if reason := active.terminalReason(); reason != "" {
@@ -487,6 +534,32 @@ func TestActiveNativeSessionWaitsForDurableCancelOutcome(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("terminal reason did not unblock after cancel settled")
+	}
+}
+
+func TestActiveNativeSessionTimeoutWinsTerminalBoundary(t *testing.T) {
+	active := newActiveNativeSession(nil)
+	if !active.beginTimeout() {
+		t.Fatal("timeout did not claim active process")
+	}
+	if active.beginCancel() {
+		t.Fatal("cancel claimed process after timeout won")
+	}
+	reason := make(chan string, 1)
+	go func() { reason <- active.terminalReason() }()
+	select {
+	case got := <-reason:
+		t.Fatalf("terminal reason returned before timeout settled: %q", got)
+	case <-time.After(10 * time.Millisecond):
+	}
+	active.settleTimeout(durable.StateTimedOut)
+	select {
+	case got := <-reason:
+		if got != "timed_out" {
+			t.Fatalf("settled terminal reason = %q, want timed_out", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal reason did not unblock after timeout settled")
 	}
 }
 
