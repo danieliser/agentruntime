@@ -1,300 +1,164 @@
-# Architecture
+# AgentRuntime Architecture
 
-## Why Go
+## Ownership boundary
 
-- **Concurrency model:** goroutines and channels map directly to multiplexing
-  agent stdio streams over WebSocket connections. Each session runs 3–4
-  concurrent I/O loops without callback spaghetti or thread pools.
-- **Single static binary:** one `agentd` binary, one `agentruntime-sidecar`
-  binary. No interpreter, no runtime deps. The sidecar binary can be injected
-  into Docker containers as-is — CGo-free builds mean zero shared-library
-  dependencies.
-- **Docker SDK:** the official Docker client is native Go — no FFI or shelling
-  out for container management.
-- **Low-latency I/O:** minimal memory overhead per session; the replay buffer,
-  bridge, and drain goroutines all operate on raw byte slices.
+AgentD is an isolated execution runtime. It owns logical session identity, concrete runtime generations, native provider transport, durable event ingestion/replay, lifecycle controls, Docker reconstruction, and immutable terminal receipts.
 
-## Two-Tier Topology
+The caller owns workflow state, retries, approvals, scheduling, budgets, and final artifact admission. AgentD never independently retries an entire paid model session.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Host                                                               │
-│                                                                     │
-│  Client ──HTTP/WS──→ agentd (:8090)                                │
-│                        │                                            │
-│                        ├─ SessionManager (state, replay, logs)      │
-│                        ├─ Runtime.Spawn(cfg)                        │
-│                        │    ├─ local: fork sidecar on host          │
-│                        │    └─ docker: docker run -d -p 0:9090 ...  │
-│                        │                                            │
-│  ┌─────────────────────┼────────────────────────────────────────┐   │
-│  │  Container / Host   │  (depends on runtime)                  │   │
-│  │                     ▼                                        │   │
-│  │  agentruntime-sidecar (:9090)                                │   │
-│  │    ├─ /health          HTTP health check                     │   │
-│  │    ├─ /ws              event stream + command input           │   │
-│  │    ├─ AgentBackend     claude | codex | generic               │   │
-│  │    │    └─ stdio ──→ agent process (claude, codex, ...)       │   │
-│  │    └─ [MCP server]    localhost-only, Claude --ide mode only  │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  agentd ◄──WS dial localhost:<mapped-port>/ws──► sidecar            │
-│         ◄──wsHandle (SteerableHandle)──► normalized NDJSON events   │
-└─────────────────────────────────────────────────────────────────────┘
+## Core data flow
+
+```text
+caller input
+  → versioned AgentD control intent (durably requested)
+  → Claude stream-json or Codex app-server JSON-RPC
+  → exact provider/runtime record
+  → SQLite append + sequence allocation
+  → post-commit live publication
+  → replay/live clients
 ```
 
-In Docker mode, `agentd` also manages a bridge network (`agentruntime-agents`)
-and a Squid proxy container (`agentruntime-proxy`) for controlled egress.
+Provider stdout, runtime stderr, lifecycle, control, and terminal records remain separate streams. Derived event types make querying convenient, but never replace or mutate the exact raw provider bytes.
 
-## Runtime Interface
+## Durable model
 
-The runtime interface is the extension point. Adding a new runtime (Kubernetes,
-Firecracker, SSH) means implementing four methods:
+SQLite under the data root contains four authorities:
 
-```go
-type Runtime interface {
-    Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandle, error)
-    Recover(ctx context.Context) ([]ProcessHandle, error)
-    Name() string
-    Cleanup(ctx context.Context) error
-}
+- `sessions`: caller idempotency key, canonical request hash/manifest, agent/runtime, lifecycle state, active generation, last sequence;
+- `runtime_generations`: runtime/container identity, image reference/digest, sandbox profile, provider session/thread ID, log configuration, generation state;
+- `events`: immutable sequence, event ID, type/stream, payload, exact raw bytes/hash, timestamp;
+- `terminal_receipts`: immutable final state, code/signal, timestamps, hashes, and final sequence.
+
+Logical sequence numbers are contiguous across runtime generations. A terminal logical session never returns to running.
+
+Provider identity is immutable after discovery. A generation may bind an initially empty Claude session ID or Codex thread ID once; later observations must match.
+
+## Session state
+
+```text
+created → starting → running → completed
+                    ↘ failed
+                    ↘ cancelled
+                    ↘ timed_out
+                    ↘ crashed
+                    ↘ indeterminate
 ```
 
-`Spawn` creates the agent process and returns a `ProcessHandle` for I/O.
-`Recover` finds orphaned sessions from a previous daemon run. `Cleanup` tears
-down runtime infrastructure (proxy containers, networks). The daemon never
-knows how the process was created — it only interacts through `ProcessHandle`.
+Runtime generations move from `starting` to `running`, then `exited`, `lost`, or `indeterminate`. Explicit resume creates generation `N+1` under the same nonterminal logical session.
 
-### Current Implementations
+Reconnect, reconstruct, and resume are distinct:
 
-| CLI flag       | Type                    | Handle type   | Notes |
-|----------------|-------------------------|---------------|-------|
-| `local` (default) | `LocalSidecarRuntime` | `*wsHandle`   | Forks sidecar on host, dials WS after health check |
-| `local-pipe`   | `LocalRuntime`          | `*localHandle`| Legacy direct pipe to agent process, no normalization |
-| `docker`       | `DockerRuntime`         | `*wsHandle`   | `docker run` with materialization, network, proxy |
+- reconnect replays after a client sequence and continues live;
+- reconstruct reattaches AgentD to the same Docker generation after daemon restart;
+- resume creates a replacement generation only after the previous generation is durably lost.
 
-Both `LocalSidecarRuntime` and `DockerRuntime` produce a `*wsHandle`, which
-implements `SteerableHandle` — adding `SendPrompt`, `SendInterrupt`,
-`SendSteer`, `SendContext`, and `SendMention` on top of the base
-`ProcessHandle` (Stdin/Stdout/Stderr/Wait/Kill/PID/RecoveryInfo).
+## Native provider transport
 
-## Sidecar Architecture
+`pkg/nativeprotocol` is the single provider-wire boundary.
 
-The sidecar (`cmd/sidecar/`) is a per-session process that sits between the
-runtime and the agent. It exists to solve three problems:
+Claude:
 
-1. **Protocol normalization.** Claude and Codex speak completely different
-   protocols (JSONL vs JSON-RPC). The sidecar translates both into a unified
-   event schema so the daemon and clients never deal with agent-specific wire
-   formats.
+- `--input-format stream-json`
+- `--output-format stream-json`
+- prompt, steer, interrupt, approval, content, tools, usage, and terminal records stay native JSON
 
-2. **Structured control.** The sidecar exposes a WebSocket at `/ws` that
-   accepts typed commands (prompt, interrupt, steer, context, mention) and
-   emits typed events. This replaces raw stdin/stdout byte wrangling.
+Codex:
 
-3. **IDE simulation.** For Claude's `--ide` mode, the sidecar runs a local MCP
-   WebSocket server that presents IDE tools (openFile, getDiagnostics, etc.) so
-   Claude behaves as if it's connected to an editor.
+- `codex app-server --listen stdio://`
+- initialization and thread start/resume are correlated JSON-RPC calls
+- retained `thread/started` output can restore a thread ID after a daemon crash without repeating initialization
 
-The sidecar is started by the runtime, not by the daemon directly. After spawn,
-the runtime polls `GET /health` every 200ms (15s timeout) until the sidecar
-reports the agent type, then dials `ws://localhost:<port>/ws` to get a
-`*wsHandle`. The agent process itself is started lazily — on first WebSocket
-connection — not at sidecar boot.
+The shared transport exposes start, bootstrap/reconnect, typed input, interrupt, exact stdout/stderr records, wait, close, and recovery metadata.
 
-### Environment Variables
+## Commit-before-publish replay
 
-| Var | Required | Purpose |
-|-----|----------|---------|
-| `AGENT_CMD` | Yes (v2) | JSON array of agent command, e.g. `["claude"]` |
-| `AGENT_PROMPT` | No | If set, prompt mode (fire-and-forget); if empty, interactive |
-| `AGENT_CONFIG` | No | JSON `AgentConfig` (model, resume_session, approval_mode, etc.) |
-| `SIDECAR_PORT` | No | Listen port, default `9090` |
-| `SIDECAR_CLEANUP_TIMEOUT` | No | Self-terminate delay after agent exit, default `60s` |
+`pkg/eventstream` owns append and subscription.
 
-## Agent Backends
+1. Decode only enough to derive type/payload/provider identity.
+2. Allocate event ID and next sequence transactionally.
+3. Store the exact raw record and hash.
+4. Publish the committed event to live subscribers.
 
-### Claude (two modes)
+A subscriber snapshots the durable tail, replays through that boundary, then consumes live events. Contiguity is checked at both stages. Slow subscribers are disconnected with an explicit recovery error and reconnect from their last contiguous sequence.
 
-**Prompt mode** (`AGENT_PROMPT` set): spawns
-`claude -p "<prompt>" --output-format stream-json --dangerously-skip-permissions`.
-Stdin closed immediately. One-shot execution. No MCP server.
+Future cursors, deleted rows, divergent raw hashes, and missing ranges fail explicitly; no cursor is silently advanced.
 
-**Interactive/IDE mode** (`AGENT_PROMPT` empty): spawns
-`claude --output-format stream-json --input-format stream-json --ide --dangerously-skip-permissions`.
-Stdin stays open for JSONL commands. An MCP WebSocket server runs on a random
-localhost port to provide IDE tools. Claude connects to it via
-`CLAUDE_CODE_SSE_PORT`. Tool permission requests are auto-approved by the
-sidecar.
+## Idempotent controls
 
-### Codex (two modes)
+Prompt, steer, interrupt, and cancel use two durable control events:
 
-**Exec mode** (`AGENT_PROMPT` set): spawns
-`codex exec --json --full-auto --skip-git-repo-check "<prompt>"`.
-Stdin closed. Flat JSONL output. No handshake, no steering.
-
-**App-server mode** (`AGENT_PROMPT` empty): spawns
-`codex app-server --listen stdio://`.
-JSON-RPC 2.0 over stdin/stdout. Requires initialization handshake
-(`initialize` → `initialized`), then `thread/start` + `turn/start` to begin
-work. Supports native steering via `turn/steer` and interrupts via
-`turn/interrupt`. Tool approval requests are auto-accepted.
-
-### Generic
-
-Fallback for unknown agent binaries. Raw stdout/stderr lines emitted as
-`stdout`/`stderr` events — no normalization. Prompt written to stdin if set.
-Interrupt sends SIGINT.
-
-## Unified Event Schema
-
-Every event from the sidecar shares this envelope:
-
-```json
-{
-  "type": "<event_type>",
-  "data": { ... },
-  "exit_code": null,
-  "offset": 12345,
-  "timestamp": 1773732712345
-}
+```text
+control.<kind>.requested
+  → one provider/runtime side effect
+  → control.<kind>.dispatched
 ```
 
-The `offset` is the byte position in the replay buffer; `timestamp` is Unix
-milliseconds.
+An identical completed retry is a no-op. Reusing a key for changed content conflicts. A requested-only retry is `indeterminate` because AgentD cannot prove whether the provider observed the side effect.
 
-### Event Types
+Cancellation commits intent before termination and waits for dispatch proof before emitting `session.cancelled` and the receipt.
 
-| Type | Data shape | Source |
-|------|-----------|--------|
-| `agent_message` | `{text, delta, model, usage}` | Agent text output (streaming or final) |
-| `tool_use` | `{id, name, input}` | Tool invocation started |
-| `tool_result` | `{id, name, output, is_error, duration_ms}` | Tool completed (Codex only) |
-| `result` | `{session_id, status, cost_usd, duration_ms, num_turns}` | Turn/session finished |
-| `progress` | passthrough `map[string]any` | Claude progress updates |
-| `system` | `{subtype, ...}` | Stderr lines, thread_started, hooks |
-| `error` | `{message}` | Errors from any source |
-| `exit` | `{code, error_detail}` | Agent process exited |
+## Docker runtime
 
-The normalization layer (`cmd/sidecar/normalize.go`) converts agent-specific
-output into these shapes. Claude `assistant` envelopes become `agent_message` +
-`tool_use` events. Codex JSON-RPC notifications become the same types. Clients
-always see the unified schema regardless of backend.
+The durable Docker workload is the provider process itself. There is no in-container execution broker or port 9090.
 
-## Session Lifecycle
+Fresh/recovered handles use:
 
-```
-NewSession()         → Pending
-  Runtime.Spawn()    → Running   (handle attached)
-    exit code 0      → Completed
-    exit code != 0   → Failed
-  Recover()          → Orphaned  (recovered from previous daemon run)
-```
+- `docker attach --sig-proxy=false` for writable native stdin;
+- `docker logs --follow --since=0` for retained plus live output;
+- `docker wait` for exit code;
+- `docker inspect` for labels, image identity, and terminal-state proof.
 
-Each session carries a `ReplayBuffer` (1 MiB circular ring buffer) and a
-persistent NDJSON log file. All stdout from the process handle is teed to both
-via `io.MultiWriter`. An exit watcher goroutine waits on `handle.Wait()`,
-drains remaining output, closes the replay buffer, and transitions the session
-to its terminal state.
+Before launch AgentD resolves the configured image reference to an immutable `sha256:` ID and labels the container with the logical admission and sandbox identity. After launch it verifies the container used the admitted digest.
 
-### Recovery
+On startup, DB and Docker are reconciled:
 
-On daemon restart, `Runtime.Recover()` finds orphaned processes:
-- **Local runtimes:** return nothing — host processes don't survive restarts.
-- **Docker:** queries `docker ps --filter label=agentruntime.session_id`, tries
-  to dial each container's sidecar WS. Success → `*wsHandle` with
-  `RecoveryInfo`. Failure → fallback `docker logs --follow` handle.
+- exact expected generation: attach and reconcile retained records;
+- stopped generation: ingest retained output and terminal state;
+- confirmed missing generation: mark `lost`;
+- duplicate generation claim: terminate candidates and finalize `indeterminate`;
+- container started before generation commit: reconstruct only after exact job/hash/agent/image/profile/container validation;
+- any unverifiable boundary: finalize `indeterminate` rather than guessing.
 
-Recovered handles are registered as orphaned sessions. If a log file exists
-from the previous run, the replay buffer is populated from it.
+Controlled shutdown closes admission under a shared gate. Active Docker sessions are preserved for restart; non-reconstructable local work is bounded by the shutdown deadline.
 
-## WebSocket Bridge
+## Local runtime
 
-The bridge (`pkg/bridge/`) connects a session's `ReplayBuffer` to a WebSocket
-client. It does not read process pipes directly — it subscribes to the replay
-buffer via `WaitFor()`.
+The local runtime launches the provider command directly and preserves output-drain ownership independently from `exec.Cmd.Wait`. It supports the native event and control contract while the daemon is alive. Durable restart reconstruction is intentionally a Docker-only qualification boundary.
 
-```
-process → drain goroutine → ReplayBuffer → Bridge → WS client
+## Named chats
+
+Chat records are JSON under `<data-root>/chats` and hold configuration plus a logical session chain. Production Claude/Codex chat sessions enter through durable v1 admission, and follow-ups use the same idempotent native control ledger.
+
+Compatibility NDJSON chat pagination remains during migration. SQLite session events are the durable execution authority.
+
+## Module map
+
+```text
+cmd/agentd/              daemon and CLI commands
+pkg/agent/               Claude/Codex command adapters
+pkg/api/                 HTTP/WS v1 API, lifecycle, recovery, compatibility routes
+pkg/chat/                named-chat JSON registry and orchestration
+pkg/durable/             typed store contracts and state model
+pkg/durable/sqlite/      SQLite authority, migrations, backup/integrity
+pkg/eventstream/         immutable ingestion and replay/live subscriptions
+pkg/nativeprotocol/      provider-native JSON adapters and transport
+pkg/runtime/             local and direct Docker process handles
+pkg/session/             live session manager and compatibility replay/log sink
+docs/specs/              task sheet, ADRs, and qualification evidence
 ```
 
-### Frame Types
+## Persistence root
 
-**Server → client:** `connected`, `stdout`, `replay`, `exit`, `pong`, `error`
+Default: `~/.agentd` (or `AGENTRUNTIME_DATA_DIR`, or `--data-dir`).
 
-**Client → server:** `stdin`, `steer`, `interrupt`, `context`, `mention`,
-`ping`, `resize`
+Database, backups, chat JSON, logs, credentials, and reconstructable materialized files move together as one unit. SQLite is opened with private permissions and checked for integrity at daemon startup.
 
-The bridge checks whether the `ProcessHandle` implements `SteerableHandle`. If
-so, `steer`, `interrupt`, `context`, and `mention` frames are forwarded to the
-sidecar. If not, they return `ErrNotSteerable`.
+## Security posture
 
-### Reconnect
+Docker command construction validates mounts, environment, paths, and runtime arguments. Durable secret grants record names without values. The runtime records image and sandbox identity for reconstruction.
 
-Clients connect with `?since=<byte_offset>`. The bridge reads the replay buffer
-from that offset and sends a `replay` frame before switching to live streaming.
-Every `stdout`/`replay` frame includes an `offset` field for position tracking.
+The broader authenticated API and full sandbox-hardening epics are not complete. Until then, deploy AgentD only on a trusted interface or behind authenticated transport.
 
-### Keepalive
+## Compatibility boundary
 
-Ping every 30s, pong timeout 10s, write timeout 5s, read timeout 60s.
-
-## Materialization
-
-Before spawning a Docker container, the materializer (`pkg/materialize/`)
-writes agent-specific configuration files into a session directory and produces
-bind mounts.
-
-### Claude
-
-| File | Source | Notes |
-|------|--------|-------|
-| `settings.json` | `ClaudeConfig.SettingsJSON` | Auto-injects `skipDangerousModePermissionPrompt: true` |
-| `CLAUDE.md` | `ClaudeConfig.ClaudeMD` | Plain text project instructions |
-| `.mcp.json` | `ClaudeConfig.McpJSON` merged with `MCPServers` | `${HOST_GATEWAY}` resolved, URLs validated |
-| `.claude.json` | Hardcoded | Pre-trusts `/workspace`, skips onboarding |
-| `credentials.json` | Explicit path or auto-discovered | From keychain cache, sync cache, or host `~/.claude/` |
-
-### Codex
-
-| File | Source |
-|------|--------|
-| `config.toml` | `CodexConfig.ConfigTOML` + hardcoded workspace trust |
-| `instructions.md` | `CodexConfig.Instructions` |
-| `auth.json` | Auto-discovered from sync cache or `~/.codex/auth.json` |
-
-The caller provides configuration content (not file paths) in the
-`SessionRequest`. This design means the API is self-contained — clients don't
-need to know the agent's filesystem layout, and the materializer handles
-platform-specific credential discovery, HOST_GATEWAY resolution, and MCP
-config merging.
-
-## Directory Structure
-
-```
-cmd/
-  agentd/              daemon entrypoint + dispatch CLI client
-  sidecar/             sidecar binary: backends, normalization, MCP, WS server
-  dashboard/           web dashboard (separate binary)
-pkg/
-  agent/               Agent interface, ClaudeAgent, CodexAgent, Registry
-  api/                 HTTP routes, session handlers, bridge wiring
-    schema/            SessionRequest, response types, config sub-types
-  bridge/              WebSocket bridge (ReplayBuffer → WS frames)
-  client/              Go client for agentd HTTP+WS API
-  credentials/         Platform credential extraction (keychain, secret-tool)
-  e2e/                 End-to-end test helpers
-  materialize/         Pre-spawn config writer (settings, CLAUDE.md, mcp, creds)
-  runtime/             Runtime interface + local, local-sidecar, docker impls
-  session/             Session struct, Manager, ReplayBuffer, NDJSON log
-    agentsessions/     Claude/Codex session dir init and resume helpers
-sdk/
-  python/              Placeholder (future auto-generated from OpenAPI)
-  node/                Placeholder (future auto-generated from OpenAPI)
-docs/
-  IMPLEMENTATION-GUIDE.md  Developer reference (session lifecycle, event schema)
-  architecture-flows.md    Detailed sequence diagrams
-  specs/               Protocol and design specifications (historical)
-  research/            Agent protocol research notes
-  design/              Config shape analysis
-```
+The old execution sidecar is deleted. Remaining unversioned session/WS/log routes and byte cursors are migration-only surfaces for the TUI, dashboards, Go client, and legacy chat history. They are a different cursor domain and will be removed after those consumers move to v1.
