@@ -193,13 +193,20 @@ acknowledged sequence.
 
 ## OpenTraces boundary
 
-The OpenTraces adapter should be maintained with the OpenTraces capture layer,
-where agent-specific `SessionParser` and `FormatImporter` integrations are
-defined. AgentD deliberately does not write OpenTraces bucket files or call
-private Python APIs. Until OpenTraces publishes a stable generic live-ingest
-command, the separately versioned adapter is the compatibility boundary.
+The OpenTraces adapter is maintained with the independent OpenTraces capture
+layer as the `opentraces-agentd-adapter` console executable and registered
+`AgentDSessionParser`. The adapter first stores the exact frame in private,
+append-only local evidence, then derives normal `TraceRecord` data through
+OpenTraces's supported session-ingest pipeline. AgentD deliberately does not
+write OpenTraces bucket files or call private Python APIs. The separately
+versioned executable remains the compatibility boundary.
 
 Remote synchronization is outside this protocol. AgentD emits no sync,
 publish, authentication, or authorization message. Any OpenTraces security,
 redaction, review, and remote publishing policy remains configured and
 enforced by OpenTraces.
+
+The qualified local setup keeps remote sync unconfigured and uses
+`~/.opentraces/agentd` by default. A private ready-to-copy AgentD plugin config
+may point at the globally installed executable, but AgentD does not activate
+that config automatically.
