@@ -81,16 +81,16 @@ func runDispatch(configPath, serverURL string) error {
 	defer stop()
 
 	cl := client.New(serverURL)
-	resp, err := cl.Dispatch(ctx, req)
+	resp, err := cl.DispatchDurable(ctx, req)
 	if err != nil {
 		return fmt.Errorf("dispatch session: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "session_id: %s\n", resp.SessionID)
-	fmt.Fprintf(os.Stderr, "ws_url: %s\n", resp.WSURL)
-	fmt.Fprintf(os.Stderr, "log_url: %s\n", resp.LogURL)
+	fmt.Fprintf(os.Stderr, "event_stream_url: %s\n", resp.EventStreamURL)
+	fmt.Fprintf(os.Stderr, "events_url: %s\n", resp.EventsURL)
 
-	logs, err := cl.StreamLogs(ctx, resp.SessionID)
+	logs, err := cl.StreamEventRaw(ctx, resp.SessionID, 0)
 	if err != nil {
 		return fmt.Errorf("stream logs: %w", err)
 	}
@@ -100,18 +100,20 @@ func runDispatch(configPath, serverURL string) error {
 		return fmt.Errorf("copy logs: %w", err)
 	}
 
-	sess, err := cl.GetSession(ctx, resp.SessionID)
+	sess, err := cl.GetDurableSession(ctx, resp.SessionID)
 	if err != nil {
 		return fmt.Errorf("get final session status: %w", err)
 	}
 
-	switch sess.Status {
+	switch sess.State {
 	case "completed":
 		return nil
-	case "failed":
+	case "failed", "cancelled", "timed_out", "crashed":
 		return dispatchExitError{code: 1}
+	case "indeterminate":
+		return fmt.Errorf("session %s ended indeterminate; inspect its terminal receipt", resp.SessionID)
 	default:
-		return fmt.Errorf("session %s ended with unexpected status %q", resp.SessionID, sess.Status)
+		return fmt.Errorf("session %s ended with unexpected status %q", resp.SessionID, sess.State)
 	}
 }
 
