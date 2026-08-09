@@ -42,6 +42,10 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	if cfg.Effort != "" {
 		cmd = append(cmd, "--effort", cfg.Effort)
 	}
+	if cfg.Fast {
+		// Fast mode has no CLI flag — it's a settings key (Opus 5 / 4.8 only).
+		cmd = append(cmd, "--settings", `{"fastMode":true}`)
+	}
 
 	return cmd, nil
 }

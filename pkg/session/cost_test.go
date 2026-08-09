@@ -12,11 +12,17 @@ func TestEstimateCost_KnownModels(t *testing.T) {
 		output int
 		want   float64 // approximate
 	}{
-		{"claude-sonnet-4-6", 1000, 500, 0.0105},   // 1000*3/1e6 + 500*15/1e6
-		{"claude-opus-4-6", 1000, 500, 0.0525},      // 1000*15/1e6 + 500*75/1e6
-		{"claude-haiku-4-5", 10000, 2000, 0.016},     // 10000*0.8/1e6 + 2000*4/1e6
-		{"claude", 1000, 500, 0.0105},                // alias → sonnet pricing
+		{"claude-sonnet-4-6", 1000, 500, 0.0105},          // 1000*3/1e6 + 500*15/1e6
+		{"claude-opus-4-6", 1000, 500, 0.0175},            // 1000*5/1e6 + 500*25/1e6
+		{"claude-haiku-4-5", 10000, 2000, 0.02},           // 10000*1/1e6 + 2000*5/1e6
+		{"claude-fable-5", 1000, 500, 0.035},              // 1000*10/1e6 + 500*50/1e6
+		{"claude-opus-5", 1000, 500, 0.0175},              // 1000*5/1e6 + 500*25/1e6
+		{"claude-sonnet-5", 1000, 500, 0.0105},            // 1000*3/1e6 + 500*15/1e6
+		{"gpt-5.5", 1000, 500, 0.00625},                   // 1000*1.25/1e6 + 500*10/1e6
+		{"gpt-5.6-sol", 1000, 500, 0.0125},                // 1000*2.5/1e6 + 500*20/1e6
+		{"claude", 1000, 500, 0.0105},                     // alias → sonnet pricing
 		{"claude-sonnet-4-6-20260101", 1000, 500, 0.0105}, // versioned prefix match
+		{"claude-opus-5-20260901", 1000, 500, 0.0175},     // longest prefix wins over "claude" alias
 	}
 
 	for _, tt := range tests {

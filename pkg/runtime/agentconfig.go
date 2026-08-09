@@ -13,6 +13,7 @@ type sidecarAgentConfig struct {
 	MaxTurns      int               `json:"max_turns,omitempty"`
 	AllowedTools  []string          `json:"allowed_tools,omitempty"`
 	Effort        string            `json:"effort,omitempty"`
+	Fast          bool              `json:"fast,omitempty"`
 	ServiceTier   string            `json:"service_tier,omitempty"`
 	SystemPrompt  string            `json:"system_prompt,omitempty"`
 	Context       string            `json:"context,omitempty"`
@@ -55,6 +56,10 @@ func buildAgentConfigJSON(cfg SpawnConfig) string {
 		}
 		if cfg.Request.Effort != "" {
 			ac.Effort = cfg.Request.Effort
+			hasContent = true
+		}
+		if cfg.Request.Fast {
+			ac.Fast = true
 			hasContent = true
 		}
 		if cfg.Request.Context != "" {

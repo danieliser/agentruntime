@@ -34,6 +34,7 @@ type ChatConfig struct {
 	Runtime      string               `json:"runtime,omitempty"`
 	Model        string               `json:"model,omitempty"`
 	Effort       string               `json:"effort,omitempty"`
+	Fast         bool                 `json:"fast,omitempty"`
 	Context      string               `json:"context,omitempty"` // "" | "clean" — forwarded to every session this chat spawns
 	MCPServers   []schema.MCPServer   `json:"mcp_servers,omitempty"`
 	AutoDiscover interface{}          `json:"auto_discover,omitempty"`

@@ -268,6 +268,43 @@ func hasArg(args []string, flag string) bool {
 	return false
 }
 
+func countArg(args []string, flag string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == flag {
+			count++
+		}
+	}
+	return count
+}
+
+func TestClaudeBackend_FastComposesWithEffortSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	spec := spawnClaudePromptMode(t, func(cfg *ClaudeBackendConfig) {
+		cfg.Effort = "xhigh"
+		cfg.Fast = true
+	})
+
+	if got := countArg(spec.Args, "--settings"); got != 1 {
+		t.Fatalf("--settings count = %d, want 1; args = %v", got, spec.Args)
+	}
+	settingsJSON, ok := argValue(spec.Args, "--settings")
+	if !ok {
+		t.Fatalf("expected --settings, args = %v", spec.Args)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+		t.Fatalf("settings JSON invalid: %v", err)
+	}
+	if settings["alwaysThinkingEnabled"] != true {
+		t.Fatalf("alwaysThinkingEnabled = %#v, want true", settings["alwaysThinkingEnabled"])
+	}
+	if settings["fastMode"] != true {
+		t.Fatalf("fastMode = %#v, want true", settings["fastMode"])
+	}
+}
+
 func TestClaudeBackend_EffortXHighPairsAlwaysThinking(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

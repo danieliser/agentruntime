@@ -376,6 +376,36 @@ func TestCodexPromptMode_EffortAndServiceTierFlags(t *testing.T) {
 	}
 }
 
+func TestCodexPromptMode_FastDefaultsToPriorityServiceTier(t *testing.T) {
+	_, runner := startPromptModeBackend(t, AgentConfig{Fast: true})
+
+	runner.mu.Lock()
+	cmd := append([]string(nil), runner.cmd...)
+	runner.mu.Unlock()
+
+	if !containsPair(cmd, "-c", "service_tier=priority") {
+		t.Fatalf("missing fast-mode priority tier, cmd = %v", cmd)
+	}
+}
+
+func TestCodexPromptMode_ExplicitServiceTierOverridesFastDefault(t *testing.T) {
+	_, runner := startPromptModeBackend(t, AgentConfig{
+		Fast:        true,
+		ServiceTier: "flex",
+	})
+
+	runner.mu.Lock()
+	cmd := append([]string(nil), runner.cmd...)
+	runner.mu.Unlock()
+
+	if !containsPair(cmd, "-c", "service_tier=flex") {
+		t.Fatalf("missing explicit service tier, cmd = %v", cmd)
+	}
+	if containsPair(cmd, "-c", "service_tier=priority") {
+		t.Fatalf("fast default must not override explicit service tier, cmd = %v", cmd)
+	}
+}
+
 func TestCodexPromptMode_CleanHomeMaterialization(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

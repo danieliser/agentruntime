@@ -28,6 +28,12 @@ func (a *CodexAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) 
 	if cfg.Model != "" {
 		cmd = append(cmd, "--model", cfg.Model)
 	}
+	if cfg.Effort != "" {
+		cmd = append(cmd, "-c", "model_reasoning_effort="+cfg.Effort)
+	}
+	if cfg.Fast {
+		cmd = append(cmd, "-c", "service_tier=priority")
+	}
 	resumeSessionID := cfg.ResumeSessionID
 	if resumeSessionID == "" {
 		resumeSessionID = cfg.SessionID

@@ -21,7 +21,8 @@ type Agent interface {
 
 // AgentConfig holds per-invocation configuration for an agent.
 type AgentConfig struct {
-	// Model overrides the default model for this invocation (e.g., "claude-sonnet-4-6").
+	// Model overrides the default model for this invocation
+	// (e.g., "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "gpt-5.6-sol").
 	Model string
 
 	// MaxTokens limits the response length.
@@ -45,8 +46,13 @@ type AgentConfig struct {
 	// Env provides additional environment variables.
 	Env map[string]string
 
-	// Effort controls the agent's effort level (e.g., "low", "medium", "high").
+	// Effort controls the agent's effort level.
+	// Claude: low|medium|high|xhigh|max. Codex: low|medium|high|xhigh ("ultra" on gpt-5.6-sol).
 	Effort string
+
+	// Fast enables fast mode where supported.
+	// Claude: settings fastMode (Opus 5 / 4.8 only). Codex: priority service tier (gpt-5.5 only).
+	Fast bool
 }
 
 // AgentResult holds structured output extracted from agent process output.

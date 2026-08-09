@@ -451,6 +451,7 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 		Runtime:      rt,
 		Model:        rec.Config.Model,
 		Effort:       rec.Config.Effort,
+		Fast:         rec.Config.Fast,
 		Prompt:       message,
 		Interactive:  true,
 		Context:      rec.Config.Context,

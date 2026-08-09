@@ -22,6 +22,7 @@ func chatConfigFromAPI(c apischema.ChatAPIConfig) chat.ChatConfig {
 		Runtime:      c.Runtime,
 		Model:        c.Model,
 		Effort:       c.Effort,
+		Fast:         c.Fast,
 		Context:      c.Context,
 		MCPServers:   c.MCPServers,
 		AutoDiscover: c.AutoDiscover,
@@ -42,6 +43,7 @@ func chatConfigToAPI(c chat.ChatConfig) apischema.ChatAPIConfig {
 		Runtime:      c.Runtime,
 		Model:        c.Model,
 		Effort:       c.Effort,
+		Fast:         c.Fast,
 		Context:      c.Context,
 		MCPServers:   c.MCPServers,
 		AutoDiscover: c.AutoDiscover,
@@ -356,6 +358,9 @@ func (s *Server) handleUpdateChatConfig(c *gin.Context) {
 	}
 	if req.Config.Effort != "" {
 		rec.Config.Effort = req.Config.Effort
+	}
+	if req.Config.Fast {
+		rec.Config.Fast = true
 	}
 	if req.Config.WorkDir != "" {
 		rec.Config.WorkDir = req.Config.WorkDir

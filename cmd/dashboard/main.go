@@ -409,8 +409,8 @@ func (s *dashSession) sendStdin(data string) error {
 // recordUserEvent injects a synthetic event into the buffer for display.
 func (s *dashSession) recordUserEvent(content string) {
 	frame, _ := json.Marshal(map[string]any{
-		"type": "user_message",
-		"data": map[string]any{"content": content},
+		"type":      "user_message",
+		"data":      map[string]any{"content": content},
 		"timestamp": time.Now().UnixMilli(),
 	})
 	s.eventMu.Lock()
@@ -700,9 +700,9 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type benchResult struct {
-		Run      int   `json:"run"`
-		CreateMs int64 `json:"create_ms"`
-		TtftMs   int64 `json:"ttft_ms"`
+		Run      int    `json:"run"`
+		CreateMs int64  `json:"create_ms"`
+		TtftMs   int64  `json:"ttft_ms"`
 		Error    string `json:"error,omitempty"`
 	}
 
@@ -714,8 +714,8 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
 		body := map[string]any{
-			"agent":   agent,
-			"prompt":  "Reply with exactly: BENCHMARK_OK",
+			"agent":    agent,
+			"prompt":   "Reply with exactly: BENCHMARK_OK",
 			"work_dir": workDir,
 		}
 		if agent == "claude" {
@@ -733,7 +733,9 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			line, _ := json.Marshal(benchResult{Run: i + 1, Error: err.Error()})
 			w.Write(append(line, '\n'))
-			if canFlush { flusher.Flush() }
+			if canFlush {
+				flusher.Flush()
+			}
 			continue
 		}
 
@@ -748,7 +750,9 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 		if sessResp.SessionID == "" {
 			line, _ := json.Marshal(benchResult{Run: i + 1, CreateMs: createMs, Error: "no session_id"})
 			w.Write(append(line, '\n'))
-			if canFlush { flusher.Flush() }
+			if canFlush {
+				flusher.Flush()
+			}
 			continue
 		}
 
@@ -805,7 +809,9 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 		}
 		line, _ := json.Marshal(result)
 		w.Write(append(line, '\n'))
-		if canFlush { flusher.Flush() }
+		if canFlush {
+			flusher.Flush()
+		}
 	}
 }
 
@@ -1031,8 +1037,12 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; letter-spacing: 1px; }
       <button class="btn btn-dd" onclick="toggleDD('dd-bench')">&#9662;</button>
       <div class="dd-menu" id="dd-bench">
         <div class="dd-item" onclick="runBenchmark('claude','',3)">Claude (default)</div>
-        <div class="dd-item" onclick="runBenchmark('claude','claude-haiku-4-5',3)">Claude Haiku</div>
-        <div class="dd-item" onclick="runBenchmark('claude','claude-sonnet-4-6',3)">Claude Sonnet</div>
+        <div class="dd-item" onclick="runBenchmark('claude','claude-haiku-4-5',3)">Claude Haiku 4.5</div>
+        <div class="dd-item" onclick="runBenchmark('claude','claude-sonnet-5',3)">Claude Sonnet 5</div>
+        <div class="dd-item" onclick="runBenchmark('claude','claude-opus-5',3)">Claude Opus 5</div>
+        <div class="dd-item" onclick="runBenchmark('claude','claude-fable-5',3)">Claude Fable 5</div>
+        <div class="dd-item" onclick="runBenchmark('codex','gpt-5.5',3)">Codex GPT-5.5</div>
+        <div class="dd-item" onclick="runBenchmark('codex','gpt-5.6-sol',3)">Codex GPT-5.6-sol</div>
         <div class="dd-item" onclick="runBenchmark('codex','',3)">Codex (default)</div>
         <div class="dd-item" onclick="runBenchmarkAll()">All Combinations</div>
       </div>
@@ -1225,7 +1235,8 @@ function runBenchmarkAll() {
   var combos = [
     ['claude', '', 3],
     ['claude', 'claude-haiku-4-5', 3],
-    ['claude', 'claude-sonnet-4-6', 3],
+    ['claude', 'claude-sonnet-5', 3],
+    ['claude', 'claude-opus-5', 3],
     ['codex', '', 3]
   ];
   var idx = 0;

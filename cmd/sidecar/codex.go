@@ -23,8 +23,9 @@ type codexBackend struct {
 	binary       string
 	prompt       string // if set, fire-and-forget exec mode
 	model        string // --model flag override
+	fast         bool   // -c service_tier=priority (gpt-5.5 only; gpt-5.6-sol has no fast tier)
 	approvalMode string // "full-auto" | "auto-edit" | "suggest"
-	effort       string // -c model_reasoning_effort=<tier>
+	effort       string // -c model_reasoning_effort=<tier> ("ultra" supported by gpt-5.6-sol)
 	serviceTier  string // -c service_tier=<tier>
 	contextMode  string // "clean" = ephemeral CODEX_HOME with only auth + minimal config
 	extraEnv     map[string]string
@@ -151,8 +152,9 @@ func newCodexBackendConfig(binary, prompt string, logger *log.Logger, spawner co
 		binary:       binary,
 		prompt:       prompt,
 		model:        cfg.Model,
-		approvalMode: cfg.ApprovalMode,
 		effort:       cfg.Effort,
+		fast:         cfg.Fast,
+		approvalMode: cfg.ApprovalMode,
 		serviceTier:  cfg.ServiceTier,
 		contextMode:  cfg.Context,
 		extraEnv:     cfg.Env,
@@ -1012,6 +1014,8 @@ func (b *codexBackend) configOverrides() []string {
 	}
 	if b.serviceTier != "" {
 		flags = append(flags, "-c", "service_tier="+b.serviceTier)
+	} else if b.fast {
+		flags = append(flags, "-c", "service_tier=priority")
 	}
 	return flags
 }

@@ -28,10 +28,11 @@ type ClaudeBackendConfig struct {
 	Prompt string
 
 	// Fields from AGENT_CONFIG passthrough.
-	Model        string            // --model flag (e.g. "claude-opus-4-5")
+	Model        string            // --model flag (e.g. "claude-fable-5", "claude-opus-5")
 	MaxTurns     int               // --max-turns flag
 	AllowedTools []string          // --allowedTools flag (repeatable)
-	Effort       string            // --effort flag
+	Effort       string            // --effort flag (low|medium|high|xhigh|max)
+	Fast         bool              // fast mode via --settings fastMode (Opus 5 / 4.8 only)
 	SystemPrompt string            // --system-prompt override
 	ExtraEnv     map[string]string // merged into buildCleanEnv
 
@@ -93,6 +94,7 @@ type ClaudeBackend struct {
 	maxTurns     int
 	allowedTools []string
 	effort       string
+	fast         bool
 	systemPrompt string
 	extraEnv     map[string]string
 
@@ -202,6 +204,7 @@ func NewClaudeBackend(cfg ClaudeBackendConfig) *ClaudeBackend {
 		maxTurns:      cfg.MaxTurns,
 		allowedTools:  cfg.AllowedTools,
 		effort:        cfg.Effort,
+		fast:          cfg.Fast,
 		systemPrompt:  cfg.SystemPrompt,
 		extraEnv:      cfg.ExtraEnv,
 		teamName:      cfg.TeamName,
@@ -323,7 +326,6 @@ func (b *ClaudeBackend) Spawn(ctx context.Context) error {
 		if b.effort != "" {
 			args = append(args, "--effort", b.effort)
 		}
-
 		if b.systemPrompt != "" {
 			args = append(args, "--system-prompt", b.systemPrompt)
 		}
@@ -535,7 +537,7 @@ func (b *ClaudeBackend) PID() int {
 }
 
 // buildSettingsOverride assembles the --settings JSON for this session.
-// Two independent concerns feed it:
+// Three independent concerns feed it:
 //
 //   - clean context: {"hooks":{},"statusLine":null,"enabledPlugins":{}} rides
 //     along with --safe-mode as defense-in-depth. (On the 2026-07-20 CLI this
@@ -545,6 +547,8 @@ func (b *ClaudeBackend) PID() int {
 //     unless settings include "alwaysThinkingEnabled": true. The adapter pairs
 //     them automatically; "max" gets the same pairing (higher tier of the same
 //     thinking requirement — xhigh is the empirically verified case).
+//   - fast mode: sets "fastMode": true in the same settings object so it
+//     composes with clean-context and effort overrides.
 func (b *ClaudeBackend) buildSettingsOverride() map[string]any {
 	settings := map[string]any{}
 	if b.cleanContext {
@@ -554,6 +558,9 @@ func (b *ClaudeBackend) buildSettingsOverride() map[string]any {
 	}
 	if b.effort == "xhigh" || b.effort == "max" {
 		settings["alwaysThinkingEnabled"] = true
+	}
+	if b.fast {
+		settings["fastMode"] = true
 	}
 	return settings
 }

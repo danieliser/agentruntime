@@ -26,8 +26,9 @@ type SessionRequest struct {
 	// What to run
 	Agent   string `json:"agent"              yaml:"agent"`
 	Runtime string `json:"runtime,omitempty"  yaml:"runtime,omitempty"` // "local" | "docker" (default: server default)
-	Model   string `json:"model,omitempty"    yaml:"model,omitempty"`   // cross-agent convenience (e.g. "claude-opus-4-5")
-	Effort  string `json:"effort,omitempty"   yaml:"effort,omitempty"`  // cross-agent effort tier (claude --effort; codex model_reasoning_effort; grok --reasoning-effort)
+	Model   string `json:"model,omitempty"    yaml:"model,omitempty"`   // cross-agent convenience (e.g. "claude-fable-5", "claude-opus-5", "gpt-5.6-sol")
+	Effort  string `json:"effort,omitempty"   yaml:"effort,omitempty"`  // cross-agent effort tier (claude: low..max; codex: low..xhigh/ultra; grok --reasoning-effort)
+	Fast    bool   `json:"fast,omitempty"     yaml:"fast,omitempty"`    // fast mode (claude: Opus 5/4.8 fastMode; codex: priority tier, gpt-5.5 only)
 	Prompt  string `json:"prompt"             yaml:"prompt"`
 
 	// Timing
@@ -337,6 +338,7 @@ type ChatAPIConfig struct {
 	Runtime      string            `json:"runtime,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	Effort       string            `json:"effort,omitempty"`
+	Fast         bool              `json:"fast,omitempty"`
 	Context      string            `json:"context,omitempty"` // "" | "clean" — forwarded to every session this chat spawns
 	MCPServers   []MCPServer       `json:"mcp_servers,omitempty"`
 	AutoDiscover interface{}       `json:"auto_discover,omitempty"`

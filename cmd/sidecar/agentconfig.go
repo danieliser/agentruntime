@@ -11,7 +11,8 @@ import (
 // JSON into the AGENT_CONFIG env var; the sidecar parses it at startup and
 // threads the fields into the appropriate backend.
 type AgentConfig struct {
-	// Model overrides the agent's default model (e.g. "claude-opus-4-5", "o3").
+	// Model overrides the agent's default model
+	// (e.g. "claude-fable-5", "claude-opus-5", "gpt-5.6-sol", "gpt-5.5").
 	Model string `json:"model,omitempty"`
 
 	// ResumeSession is the session ID to resume instead of starting fresh.
@@ -34,8 +35,14 @@ type AgentConfig struct {
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 
 	// Effort controls the agent's effort level.
-	// Claude: --effort. Codex: -c model_reasoning_effort=<tier>.
+	// Claude --effort: low|medium|high|xhigh|max.
+	// Codex -c model_reasoning_effort: low|medium|high|xhigh, plus "ultra" on gpt-5.6-sol.
 	Effort string `json:"effort,omitempty"`
+
+	// Fast enables fast mode where the agent/model supports it.
+	// Claude: settings fastMode (Opus 5 / 4.8 only; no CLI flag).
+	// Codex: -c service_tier=priority (gpt-5.5 only; gpt-5.6-sol has no fast tier).
+	Fast bool `json:"fast,omitempty"`
 
 	// ServiceTier selects the Codex service tier (-c service_tier=<tier>).
 	// Ignored by other agents.
