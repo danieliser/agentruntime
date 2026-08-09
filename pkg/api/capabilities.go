@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/danieliser/agentruntime/pkg/eventstream"
+	"github.com/danieliser/agentruntime/pkg/observer"
 )
 
 type replayCapabilities struct {
@@ -16,15 +17,16 @@ type replayCapabilities struct {
 }
 
 type v1Capabilities struct {
-	AgentDVersion        string             `json:"agentd_version"`
-	APIVersions          []string           `json:"api_versions"`
-	EventSchemaVersions  []string           `json:"event_schema_versions"`
-	NativeProviders      []string           `json:"native_providers"`
-	Runtimes             []string           `json:"runtimes"`
-	LifecycleControls    []string           `json:"lifecycle_controls"`
-	Replay               replayCapabilities `json:"replay"`
-	DockerReconstruction bool               `json:"docker_reconstruction"`
-	PluginAPIVersions    []string           `json:"plugin_api_versions"`
+	AgentDVersion        string                  `json:"agentd_version"`
+	APIVersions          []string                `json:"api_versions"`
+	EventSchemaVersions  []string                `json:"event_schema_versions"`
+	NativeProviders      []string                `json:"native_providers"`
+	Runtimes             []string                `json:"runtimes"`
+	LifecycleControls    []string                `json:"lifecycle_controls"`
+	Replay               replayCapabilities      `json:"replay"`
+	DockerReconstruction bool                    `json:"docker_reconstruction"`
+	PluginAPIVersions    []string                `json:"plugin_api_versions"`
+	Plugins              []observer.PluginStatus `json:"plugins"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -44,6 +46,10 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		}
 	}
 	durableReplay := s.durableStore != nil && s.eventBroker != nil
+	plugins := []observer.PluginStatus{}
+	if s.observers != nil {
+		plugins = s.observers.Status()
+	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, APIVersions: []string{"v1"},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, NativeProviders: providers,
@@ -52,6 +58,6 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
 		},
 		DockerReconstruction: dockerReconstruction && durableReplay,
-		PluginAPIVersions:    []string{},
+		PluginAPIVersions:    []string{observer.APIVersion}, Plugins: plugins,
 	}})
 }

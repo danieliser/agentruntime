@@ -109,6 +109,33 @@ func TestClientListsDurableSessions(t *testing.T) {
 	}
 }
 
+func TestClientReadsObserverHealthAndTraceLinks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/plugins":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": []map[string]any{{
+				"name": "opentraces", "version": "0.9.0", "policy": "best_effort", "state": "degraded", "unacknowledged_events": 3,
+			}}})
+		case "/api/v1/sessions/native/traces":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": []map[string]any{{
+				"plugin": "opentraces", "session_id": "native", "trace_id": "851ad0da-3f90-4ea8-9094-9b644d1913f7", "acknowledged_sequence": 12,
+			}}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL)
+	plugins, err := client.ListPlugins(context.Background())
+	if err != nil || len(plugins) != 1 || plugins[0].Unacknowledged != 3 {
+		t.Fatalf("plugins = %+v err=%v", plugins, err)
+	}
+	links, err := client.GetTraceLinks(context.Background(), "native")
+	if err != nil || len(links) != 1 || links[0].AcknowledgedSequence != 12 {
+		t.Fatalf("trace links = %+v err=%v", links, err)
+	}
+}
+
 func TestClientUsesV1LifecycleControlsAndReceipt(t *testing.T) {
 	type observedRequest struct {
 		Method string

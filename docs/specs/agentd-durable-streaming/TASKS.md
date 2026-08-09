@@ -1,6 +1,6 @@
 # AgentD Durable Native Streaming — Task Sheet
 
-Status: **G0 + G1 + G2 + G3 + G4 APPROVED / PHASE 7 IN PROGRESS**
+Status: **G0 + G1 + G2 + G3 + G4 APPROVED / COMPLETE**
 
 Last updated: 2026-08-09
 
@@ -285,13 +285,13 @@ retirement of non-native methods after this parity checkpoint.
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| PLG-701 | IN PROGRESS | Define observer plugin API v1 over NDJSON stdio: version/capability handshake, immutable event delivery, exact acknowledgements, flush, health, and graceful shutdown. | Contract tests reject incompatible API/event schemas and acknowledgements with the wrong session, event ID, or sequence. No protocol message grants execution-control authority. | M |
-| PLG-702 | TODO | Add explicit allowlisted plugin configuration under the AgentD data root, with sanitized environment grants and `best_effort`/`required` policy. | Tests prove no inherited ambient secrets, no dynamic/model installation path, private filesystem modes, and required-policy admission rejection for absent/unhealthy/incompatible adapters. | M |
-| PLG-703 | TODO | Supervise external observer processes without coupling their lifecycle to provider execution. | Unavailable, slow, crashing, noisy, and cleanly exiting fixtures produce healthy/degraded/down status without blocking durable event ingestion or silently losing the replay position. | L |
-| PLG-704 | TODO | Deliver committed events from the durable ledger and persist atomic per-plugin/session acknowledgement checkpoints. | Restarting AgentD or the plugin replays from the last acknowledgement with unchanged identities; duplicate acknowledgements are harmless; corrupt/future checkpoints and missing ledger ranges are explicit. | L |
-| PLG-705 | TODO | Implement the OpenTraces adapter boundary and deterministic Trading Floor job → AgentD session/generation → OpenTraces trace linkage without owning OpenTraces storage. | A separately executed adapter fixture receives prompts, context manifests, model/tool/output/error/lifecycle/raw events, returns a UUID trace ID, survives replay without duplicate effects, and can be replaced/upgraded independently. | L |
-| PLG-706 | TODO | Expose configured plugin capabilities, compatibility, linkage, lag, and healthy/degraded/down state through versioned API/SDK surfaces. | Capability and health tests distinguish unsupported, incompatible, degraded, and healthy plugins and let a caller reject incompatibility before submission. | M |
-| PLG-707 | TODO | Document configuration, failure policies, privacy boundary, external OpenTraces ownership, and operational recovery. | README/config example explain local-only defaults, checkpoint/spool paths, required-policy semantics, adapter upgrades, and replay recovery. | S |
+| PLG-701 | DONE | Define observer plugin API v1 over NDJSON stdio: version/capability handshake, immutable event delivery, exact acknowledgements, flush, health, and graceful shutdown. | `pkg/observer` contract tests reject incompatible API/event schemas, missing trace/idempotency capabilities, and acknowledgements with the wrong delivery/session/event/sequence identity. Supported messages contain no execution controls. | M |
+| PLG-702 | DONE | Add explicit allowlisted plugin configuration under the AgentD data root, with sanitized environment grants and `best_effort`/`required` policy. | `plugins.example.json`; config tests require an absolute executable, private file mode, safe names, unique allowlist entries, explicit clean environment, and valid policies. API tests prove required first-admission rejection and idempotent lookup preservation. | M |
+| PLG-703 | DONE | Supervise external observer processes without coupling their lifecycle to provider execution. | Subprocess tests cover clean environment, active health, bounded slow response, bad acknowledgement, missing/incompatible executable, crash, flush, and shutdown. Durable append remains available while the adapter is down. | L |
+| PLG-704 | DONE | Deliver committed events from the durable ledger and persist atomic per-plugin/session acknowledgement checkpoints. | Manager tests prove ledger scan plus nonblocking commit wakeup, atomic private checkpoints, restart replay, future/corrupt identity rejection, and accepted-before-checkpoint crash recovery through duplicate acknowledgement. | L |
+| PLG-705 | DONE | Implement the OpenTraces adapter boundary and deterministic Trading Floor job → AgentD session/generation → OpenTraces trace linkage without owning OpenTraces storage. | External adapter fixture receives exact events plus scrubbed job/session/provider/image/sandbox context, returns a stable UUID trace ID, deduplicates replay, and upgrades independently. AgentD writes no OpenTraces bucket/schema state. | L |
+| PLG-706 | DONE | Expose configured plugin capabilities, compatibility, linkage, lag, and healthy/degraded/down state through versioned API/SDK surfaces. | `/api/v1/capabilities`, `/api/v1/plugins`, and `/api/v1/sessions/{id}/traces` plus typed Go-client methods expose API version, adapter version/policy/state/error/lag, and stable acknowledged linkage. | M |
+| PLG-707 | DONE | Document configuration, failure policies, privacy boundary, external OpenTraces ownership, and operational recovery. | README, `plugins.example.json`, and `docs/observer-plugin-protocol.md` document local stdio, clean environment, policies, `~/.agentd/plugins`, replay, upgrades, and the external OpenTraces ownership/privacy boundary. | S |
 
 **Gate G4 — APPROVED 2026-08-09:** user approved OpenTraces scope and clarified that the traces system remains externally maintained. AgentD owns only the generic observer protocol, replay/checkpoint delivery, supervision, linkage, and health boundary.
 
@@ -317,12 +317,12 @@ These are release blockers, not optional follow-ups.
 - [x] `Q-16` Run a long stream larger than all in-memory buffers; durable replay remains complete from sequence 0.
 - [x] `Q-17` Prove no old sidecar byte offset can be confused with a v1 sequence cursor.
 - [x] `Q-18` Expire a native session before and after AgentD restart; both retain requested/dispatched timeout proof and finish `timed_out` without resetting the generation deadline.
-- [ ] `Q-19` Start with the OpenTraces adapter absent, slow, or crashing; `best_effort` execution continues while health and unacknowledged lag are explicit.
-- [ ] `Q-20` Restart AgentD and the adapter independently; delivery resumes after the last acknowledged sequence and replay produces no duplicate trace effects.
-- [ ] `Q-21` Reject incompatible plugin API/event-schema handshakes before required-policy work is admitted.
-- [ ] `Q-22` Send a forged/mismatched acknowledgement or corrupt/future checkpoint; AgentD refuses advancement and replays safely or reports the ledger gap.
-- [ ] `Q-23` Prove a plugin cannot invoke lifecycle controls, inherit ambient credentials, dynamically install itself, or trigger OpenTraces remote synchronization.
-- [ ] `Q-24` Upgrade/replace the external OpenTraces adapter while AgentD retains its event ledger and resumes delivery from a compatible checkpoint.
+- [x] `Q-19` Start with the OpenTraces adapter absent, slow, or crashing; `best_effort` execution continues while health and unacknowledged lag are explicit.
+- [x] `Q-20` Restart AgentD and the adapter independently; delivery resumes after the last acknowledged sequence and replay produces no duplicate trace effects.
+- [x] `Q-21` Reject incompatible plugin API/event-schema handshakes before required-policy work is admitted.
+- [x] `Q-22` Send a forged/mismatched acknowledgement or corrupt/future checkpoint; AgentD refuses advancement and replays safely or reports the ledger gap.
+- [x] `Q-23` Prove a plugin cannot invoke lifecycle controls, inherit ambient credentials, dynamically install itself, or trigger OpenTraces remote synchronization.
+- [x] `Q-24` Upgrade/replace the external OpenTraces adapter while AgentD retains its event ledger and resumes delivery from a compatible checkpoint.
 
 ## 8. Definition of done
 
@@ -409,3 +409,4 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Reconciled qualification evidence for Q-01/02 and Q-05–18. Added an explicit WebSocket disconnect/reconnect test across an in-flight Codex tool call, strengthened cancellation qualification so a pending tool call is followed by `session.cancelled` without a fabricated tool result, and repeated the queued-admission shutdown race test under `-race`. Q-03/04 remain reserved for whole-daemon real-Docker restart qualification.
 - 2026-08-09 — Completed Q-03/Q-04 against Docker 29.4.0 with real `alpine:3.20` containers running direct Claude stream-json and Codex app-server protocol fixtures. The harness kills the AgentD process group, restarts over the same private data root, proves the exact event-ID/sequence/raw-hash prefix is replayed, sends a second prompt over reattached stdin, and verifies generation 1 still owns exactly one container. Qualification exposed and fixed Docker `ps` ID truncation during recovery and missing constructor invariants on recovered sessions. All Q-series release blockers are complete.
 - 2026-08-09 — Opened Phase 7 after Gate G4 approval. The locked boundary is an allowlisted external observer process over versioned NDJSON stdio, driven from AgentD's immutable durable ledger with acknowledgement checkpoints; OpenTraces remains independently maintained.
+- 2026-08-09 — Completed Phase 7 and Q-19–24. AgentD now supervises explicitly allowlisted trace adapters with a clean environment, active compatibility/health handshake, nonblocking durable-ledger delivery, exact acknowledgement checkpoints, crash/upgrade-safe replay, scrubbed job/provider/sandbox context, caller-selectable admission policy, versioned health/link APIs, and typed SDK support. OpenTraces storage/schema/sync remain external. Full tests, vet, and targeted race suites pass.

@@ -42,12 +42,13 @@ Useful daemon flags:
 --port 8090
 --runtime local|docker
 --data-dir ~/.agentd
+--plugin-config ~/.agentd/plugins.json
 --docker-host ssh://user@host
 --max-sessions 0
 --credential-sync
 ```
 
-`AGENTRUNTIME_DATA_DIR` overrides the complete data root. `--data-dir` takes precedence when explicitly supplied.
+`AGENTRUNTIME_DATA_DIR` overrides the complete data root. `--data-dir` takes precedence when explicitly supplied. `AGENTRUNTIME_PLUGIN_CONFIG` overrides the external observer allowlist path when `--plugin-config` is omitted.
 
 ## Durable v1 session API
 
@@ -57,7 +58,21 @@ Check compatibility before submitting work:
 curl -sS http://127.0.0.1:8090/api/v1/capabilities
 ```
 
-The handshake reports the AgentD/API/event-schema versions, native providers, configured runtimes, replay persistence, Docker reconstruction, and plugin API versions. An empty plugin-version list means no plugin contract is currently available.
+The handshake reports the AgentD/API/event-schema versions, native providers, configured runtimes, replay persistence, Docker reconstruction, observer API versions, and configured observer health.
+
+## External OpenTraces observer
+
+AgentD supports separately installed trace systems through observer protocol
+`1.0`. It sends committed immutable events from the durable ledger and stores
+per-adapter acknowledgement checkpoints below `~/.agentd/plugins`. OpenTraces
+remains responsible for its own schema, bucket, upgrades, privacy tools, and
+remote synchronization; AgentD does not embed or mutate them.
+
+Copy [`plugins.example.json`](plugins.example.json) to
+`~/.agentd/plugins.json`, set the absolute path to an externally maintained
+OpenTraces adapter, and run `chmod 600 ~/.agentd/plugins.json`. See the
+[observer protocol](docs/observer-plugin-protocol.md) for the handshake,
+event/ack schema, replay rules, failure policies, and adapter boundary.
 
 Create a session with a caller-owned idempotency key:
 

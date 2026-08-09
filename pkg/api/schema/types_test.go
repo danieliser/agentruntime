@@ -129,6 +129,21 @@ func TestSessionRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionRequestTracePolicyRoundTrip(t *testing.T) {
+	want := SessionRequest{Agent: "codex", Prompt: "trace", Trace: &TraceConfig{Plugin: "opentraces", Policy: "required"}}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got SessionRequest
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Trace == nil || got.Trace.Plugin != "opentraces" || got.Trace.Policy != "required" {
+		t.Fatalf("trace config = %+v", got.Trace)
+	}
+}
+
 func TestParseVolumes(t *testing.T) {
 	tests := []struct {
 		name    string

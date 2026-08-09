@@ -19,6 +19,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/credentials"
 	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
+	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -41,6 +42,7 @@ func main() {
 	port := flag.Int("port", 8090, "HTTP server port")
 	rtName := flag.String("runtime", "local", "Execution runtime (local, docker)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "Data root for database, chat history, logs, credentials, and backups")
+	pluginConfigPath := flag.String("plugin-config", "", "External observer allowlist (default: <data-dir>/plugins.json)")
 	credSync := flag.Bool("credential-sync", false, "Enable background credential sync from Keychain")
 	maxSessions := flag.Int("max-sessions", 0, "Maximum concurrent sessions (0 = unlimited)")
 	dockerHost := flag.String("docker-host", "", "Remote Docker daemon (e.g., ssh://deploy@host, tcp://host:2376)")
@@ -67,6 +69,30 @@ func main() {
 		log.Fatalf("durable store integrity check failed: %v", err)
 	}
 	eventBroker := eventstream.New(durableStore)
+	resolvedPluginConfig := *pluginConfigPath
+	if resolvedPluginConfig == "" {
+		resolvedPluginConfig = defaultPluginConfigPath(*dataDir)
+	}
+	pluginConfig, err := observer.LoadOptionalConfig(resolvedPluginConfig)
+	if err != nil {
+		log.Fatalf("failed to load observer config: %v", err)
+	}
+	traceObservers, err := observer.NewManager(*dataDir, durableStore, pluginConfig, Version, eventstream.SchemaVersion)
+	if err != nil {
+		log.Fatalf("failed to initialize observers: %v", err)
+	}
+	eventBroker.SetCommittedObserver(traceObservers.Notify)
+	if err := traceObservers.Sync(context.Background()); err != nil {
+		log.Printf("observer startup degraded: %v", err)
+	}
+	traceObservers.Start(context.Background())
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := traceObservers.Close(ctx); err != nil {
+			log.Printf("observer shutdown error: %v", err)
+		}
+	}()
 
 	// Initialize runtimes. The --runtime flag sets the default; both local
 	// and docker are always available so callers can select per-session.
@@ -163,14 +189,15 @@ func main() {
 	// Start HTTP server.
 	addr := fmt.Sprintf(":%d", *port)
 	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{
-		Version:       Version,
-		DataDir:       *dataDir,
-		LogDir:        logDir,
-		ExtraRuntimes: extraRuntimes,
-		ChatRegistry:  chatRegistry,
-		ChatManager:   chatManager,
-		DurableStore:  durableStore,
-		EventBroker:   eventBroker,
+		Version:         Version,
+		DataDir:         *dataDir,
+		LogDir:          logDir,
+		ExtraRuntimes:   extraRuntimes,
+		ChatRegistry:    chatRegistry,
+		ChatManager:     chatManager,
+		DurableStore:    durableStore,
+		EventBroker:     eventBroker,
+		ObserverService: traceObservers,
 	})
 	srv.RestoreRecoveredSessions(recoveredSessions, recoveredRuntimes...)
 	// Wire the spawner after server creation to break the circular dependency
@@ -207,6 +234,13 @@ func defaultDataDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".agentd")
+}
+
+func defaultPluginConfigPath(dataDir string) string {
+	if path := os.Getenv("AGENTRUNTIME_PLUGIN_CONFIG"); path != "" {
+		return path
+	}
+	return filepath.Join(dataDir, "plugins.json")
 }
 
 func openDurableStore(dataDir string) (*durablesqlite.Store, error) {

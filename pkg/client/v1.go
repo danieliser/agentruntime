@@ -49,6 +49,24 @@ type Capabilities struct {
 	Replay               ReplayCapabilities `json:"replay"`
 	DockerReconstruction bool               `json:"docker_reconstruction"`
 	PluginAPIVersions    []string           `json:"plugin_api_versions"`
+	Plugins              []PluginStatus     `json:"plugins"`
+}
+
+type PluginStatus struct {
+	Name           string    `json:"name"`
+	Version        string    `json:"version,omitempty"`
+	Policy         string    `json:"policy"`
+	State          string    `json:"state"`
+	LastError      string    `json:"last_error,omitempty"`
+	Unacknowledged int64     `json:"unacknowledged_events"`
+	CheckedAt      time.Time `json:"checked_at,omitempty"`
+}
+
+type TraceLink struct {
+	Plugin               string `json:"plugin"`
+	SessionID            string `json:"session_id"`
+	TraceID              string `json:"trace_id"`
+	AcknowledgedSequence int64  `json:"acknowledged_sequence"`
 }
 
 // Event is one immutable v1 AgentD event with decoded exact raw bytes.
@@ -184,6 +202,40 @@ func (c *Client) ListDurableSessions(ctx context.Context) ([]DurableSession, err
 	}
 	if envelope.Data == nil {
 		envelope.Data = []DurableSession{}
+	}
+	return envelope.Data, nil
+}
+
+func (c *Client) ListPlugins(ctx context.Context) ([]PluginStatus, error) {
+	httpRequest, err := c.newRequest(ctx, http.MethodGet, "/api/v1/plugins", nil)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Data []PluginStatus `json:"data"`
+	}
+	if err := c.doJSON(httpRequest, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Data == nil {
+		envelope.Data = []PluginStatus{}
+	}
+	return envelope.Data, nil
+}
+
+func (c *Client) GetTraceLinks(ctx context.Context, sessionID string) ([]TraceLink, error) {
+	httpRequest, err := c.newRequest(ctx, http.MethodGet, v1SessionPath(sessionID)+"/traces", nil)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Data []TraceLink `json:"data"`
+	}
+	if err := c.doJSON(httpRequest, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Data == nil {
+		envelope.Data = []TraceLink{}
 	}
 	return envelope.Data, nil
 }

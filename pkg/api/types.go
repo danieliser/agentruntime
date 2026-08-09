@@ -11,3 +11,4 @@ type ContainerConfig = apischema.ContainerConfig
 type HealthResponse = apischema.HealthResponse
 type Resources = apischema.Resources
 type TeamConfig = apischema.TeamConfig
+type TraceConfig = apischema.TraceConfig

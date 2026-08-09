@@ -59,9 +59,11 @@ type ControlBeginResult struct {
 
 // Broker is the one canonical append and subscription entry point.
 type Broker struct {
-	store durable.Store
-	mu    sync.Mutex
-	state map[string]*sessionState
+	store             durable.Store
+	mu                sync.Mutex
+	state             map[string]*sessionState
+	observerMu        sync.RWMutex
+	committedObserver func(durable.Event)
 
 	// afterCommit is a fault-injection seam used to prove recovery from the
 	// append/publish crash boundary.
@@ -96,6 +98,15 @@ func (subscriber *liveSubscriber) failure() error {
 // New constructs a broker over the AgentD durable store.
 func New(store durable.Store) *Broker {
 	return &Broker{store: store, state: make(map[string]*sessionState)}
+}
+
+// SetCommittedObserver registers the non-blocking notification used to wake an
+// external observer ledger scan. The durable store, not this notification, is
+// the delivery authority.
+func (broker *Broker) SetCommittedObserver(observer func(durable.Event)) {
+	broker.observerMu.Lock()
+	broker.committedObserver = observer
+	broker.observerMu.Unlock()
 }
 
 // Ingest derives one typed envelope, commits it, and only then publishes the
@@ -278,6 +289,12 @@ func controlEventID(params ControlParams, phase string) string {
 }
 
 func (broker *Broker) publishLocked(state *sessionState, event durable.Event) {
+	broker.observerMu.RLock()
+	observer := broker.committedObserver
+	broker.observerMu.RUnlock()
+	if observer != nil {
+		observer(event)
+	}
 	for id, subscriber := range state.subscribers {
 		select {
 		case <-subscriber.done:

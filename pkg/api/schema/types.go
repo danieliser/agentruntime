@@ -42,6 +42,9 @@ type SessionRequest struct {
 	Interactive    bool   `json:"interactive,omitempty"    yaml:"interactive,omitempty"`      // keep stdin open and steer via WS stdin frames
 	ResumeSession  string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"`   // session ID to resume
 	PersistSession bool   `json:"persist_session,omitempty" yaml:"persist_session,omitempty"` // create named Docker volume for session persistence
+	// Trace optionally selects an external observer and whether its compatible,
+	// healthy presence is required before first admission.
+	Trace *TraceConfig `json:"trace,omitempty" yaml:"trace,omitempty"`
 
 	// Context selects the context materialization mode.
 	//   ""      — default: the agent sees whatever its environment provides
@@ -106,6 +109,11 @@ type SessionRequest struct {
 	// flags and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 env var.
 	// The orchestrator must scaffold the team directory before spawning.
 	Team *TeamConfig `json:"team,omitempty" yaml:"team,omitempty"`
+}
+
+type TraceConfig struct {
+	Plugin string `json:"plugin" yaml:"plugin"`
+	Policy string `json:"policy,omitempty" yaml:"policy,omitempty"` // best_effort (default) | required
 }
 
 // Mount describes a bind-mount or named volume mount between host/volume and container.

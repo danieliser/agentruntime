@@ -60,7 +60,7 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		!containsString(envelope.Data.Runtimes, "local") || !envelope.Data.Replay.SequenceCursor ||
 		!containsString(envelope.Data.LifecycleControls, "terminate") || !containsString(envelope.Data.LifecycleControls, "resume") ||
 		!envelope.Data.Replay.StoredThenLive || !envelope.Data.Replay.RestartPersistence ||
-		!envelope.Data.DockerReconstruction || len(envelope.Data.PluginAPIVersions) != 0 {
+		!envelope.Data.DockerReconstruction || !containsString(envelope.Data.PluginAPIVersions, "1.0") {
 		t.Fatalf("capability data = %+v", envelope.Data)
 	}
 }

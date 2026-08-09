@@ -16,6 +16,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
+	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -32,6 +33,7 @@ type Server struct {
 	logDir       string // directory for persistent session NDJSON logs
 	durableStore durable.Store
 	eventBroker  *eventstream.Broker
+	observers    ObserverService
 	srv          *http.Server
 	resumeMu     sync.Mutex
 	admissionMu  sync.RWMutex
@@ -101,6 +103,16 @@ type ServerConfig struct {
 	// EventBroker commits native events before live publication and owns the
 	// stored-to-live subscription handshake.
 	EventBroker *eventstream.Broker
+
+	// ObserverService exposes independently supervised immutable-event plugins.
+	ObserverService ObserverService
+}
+
+type ObserverService interface {
+	Status() []observer.PluginStatus
+	TraceLink(pluginName, sessionID string) (observer.TraceLink, bool)
+	RequireHealthy(pluginName string) error
+	Policy(pluginName string) (observer.Policy, bool)
 }
 
 // NewServer creates a configured HTTP server ready to start.
@@ -148,6 +160,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		s.chatManager = cfgs[0].ChatManager
 		s.durableStore = cfgs[0].DurableStore
 		s.eventBroker = cfgs[0].EventBroker
+		s.observers = cfgs[0].ObserverService
 	}
 
 	RegisterRoutes(router, s)

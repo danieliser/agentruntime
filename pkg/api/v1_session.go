@@ -20,6 +20,7 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
+	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -136,6 +137,9 @@ func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, run
 	if request.IdempotencyKey == "" {
 		return durable.CreateSessionResult{}, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil)
 	}
+	if err := s.validateTraceAdmission(ctx, request); err != nil {
+		return durable.CreateSessionResult{}, err
+	}
 	manifest, grants, requestHash, err := durableRequestManifest(request, runtimeName)
 	if err != nil {
 		return durable.CreateSessionResult{}, err
@@ -149,6 +153,43 @@ func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, run
 		RequestHash: requestHash, RequestManifest: manifest, SecretGrants: grants,
 		Agent: request.Agent, Runtime: runtimeName, CreatedAt: time.Now().UTC(),
 	})
+}
+
+func (s *Server) validateTraceAdmission(ctx context.Context, request SessionRequest) error {
+	const op = "validate_trace_admission"
+	if request.Trace == nil {
+		return nil
+	}
+	if request.Trace.Plugin == "" {
+		return durable.NewError(durable.CodeInvalidArgument, op, "trace.plugin is required", nil)
+	}
+	policy := request.Trace.Policy
+	if policy == "" {
+		policy = string(observer.PolicyBestEffort)
+		if s.observers != nil {
+			if configured, ok := s.observers.Policy(request.Trace.Plugin); ok {
+				policy = string(configured)
+			}
+		}
+	}
+	if policy != string(observer.PolicyBestEffort) && policy != string(observer.PolicyRequired) {
+		return durable.NewError(durable.CodeInvalidArgument, op, "trace.policy must be best_effort or required", nil)
+	}
+	if policy != string(observer.PolicyRequired) {
+		return nil
+	}
+	if _, err := s.durableStore.GetSessionByIdempotencyKey(ctx, request.IdempotencyKey); err == nil {
+		return nil
+	} else if !durable.IsCode(err, durable.CodeNotFound) {
+		return err
+	}
+	if s.observers == nil {
+		return durable.NewError(durable.CodeInvalidState, op, "required observer is not configured", nil)
+	}
+	if err := s.observers.RequireHealthy(request.Trace.Plugin); err != nil {
+		return durable.NewError(durable.CodeInvalidState, op, "required observer is unavailable or incompatible", err)
+	}
+	return nil
 }
 
 func durableRequestManifest(request SessionRequest, runtimeName string) (json.RawMessage, []string, string, error) {

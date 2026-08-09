@@ -46,6 +46,40 @@ func TestIngestCommitsBeforePublishAndReplaysAfterFault(t *testing.T) {
 	}
 }
 
+func TestCommittedObserverReceivesEachNewIdentityOnce(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-observer")
+	broker := New(store)
+	observed := make(chan durable.Event, 2)
+	broker.SetCommittedObserver(func(event durable.Event) { observed <- event })
+	params := IngestParams{
+		SessionID: "session-observer", Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 1, Timestamp: time.Unix(201, 0).UTC(), Raw: []byte(`{"type":"result","result":"done"}`)},
+	}
+	first, err := broker.Ingest(ctx, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Ingest(ctx, params); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-observed:
+		if got.EventID != first.EventID || got.Sequence != first.Sequence {
+			t.Fatalf("observed = %+v, want %+v", got, first)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("committed observer was not notified")
+	}
+	select {
+	case duplicate := <-observed:
+		t.Fatalf("duplicate append notified observer: %+v", duplicate)
+	default:
+	}
+}
+
 func TestSubscribeClosesStoredThenLiveRace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

@@ -1,0 +1,14 @@
+{
+  "version": "1",
+  "plugins": [
+    {
+      "name": "opentraces",
+      "enabled": true,
+      "command": "/absolute/path/to/opentraces-agentd-adapter",
+      "args": [],
+      "environment": {},
+      "policy": "best_effort",
+      "timeout": "5s"
+    }
+  ]
+}

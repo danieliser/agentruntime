@@ -99,6 +99,19 @@ func TestDefaultDataDirHonorsExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestDefaultPluginConfigUsesDataRootAndExplicitOverride(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTRUNTIME_PLUGIN_CONFIG", "")
+	if got, want := defaultPluginConfigPath(dataDir), filepath.Join(dataDir, "plugins.json"); got != want {
+		t.Fatalf("defaultPluginConfigPath() = %q, want %q", got, want)
+	}
+	want := filepath.Join(t.TempDir(), "observers.json")
+	t.Setenv("AGENTRUNTIME_PLUGIN_CONFIG", want)
+	if got := defaultPluginConfigPath(dataDir); got != want {
+		t.Fatalf("defaultPluginConfigPath() = %q, want override %q", got, want)
+	}
+}
+
 func TestOpenDurableStoreUsesDataRoot(t *testing.T) {
 	root := t.TempDir()
 	store, err := openDurableStore(root)
