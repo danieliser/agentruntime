@@ -121,7 +121,7 @@ func (s *Server) handleV1NativeInput(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
 		return
 	}
-	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, string(request.Kind), map[string]any{"text": request.Text})
+	alreadyDispatched, err := s.sendSessionInput(c.Request.Context(), c.Param("id"), request.IdempotencyKey, request.Kind, request.Text)
 	if err != nil {
 		writeDurableError(c, err)
 		return
@@ -130,22 +130,42 @@ func (s *Server) handleV1NativeInput(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
 		return
 	}
-	active := s.nativeSession(c.Param("id"))
-	if active == nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "control intent is durable but the native transport is unavailable", nil))
-		return
-	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-	if err := active.transport.Send(ctx, nativeprotocol.Input{Kind: request.Kind, Text: request.Text}); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "send provider input", err))
-		return
-	}
-	if _, err := s.eventBroker.CompleteControl(ctx, control); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "provider input may have been sent without durable dispatch proof", err))
-		return
-	}
 	c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true}})
+}
+
+// SendSessionInput lets the named-chat layer use the same durable control path
+// as the public v1 endpoint without writing raw provider stdin.
+func (s *Server) SendSessionInput(ctx context.Context, sessionID, idempotencyKey, kind, text string) error {
+	inputKind := nativeprotocol.InputKind(kind)
+	if inputKind != nativeprotocol.InputPrompt && inputKind != nativeprotocol.InputSteer {
+		return durable.NewError(durable.CodeInvalidArgument, "send_session_input", "kind must be prompt or steer", nil)
+	}
+	if idempotencyKey == "" || strings.TrimSpace(text) == "" {
+		return durable.NewError(durable.CodeInvalidArgument, "send_session_input", "idempotency key and input text are required", nil)
+	}
+	_, err := s.sendSessionInput(ctx, sessionID, idempotencyKey, inputKind, text)
+	return err
+}
+
+func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey string, kind nativeprotocol.InputKind, text string) (bool, error) {
+	const op = "send_v1_native_input"
+	control, alreadyDispatched, err := s.beginNativeControlContext(ctx, sessionID, idempotencyKey, string(kind), map[string]any{"text": text})
+	if err != nil || alreadyDispatched {
+		return alreadyDispatched, err
+	}
+	active := s.nativeSession(sessionID)
+	if active == nil {
+		return false, durable.NewError(durable.CodeIndeterminate, op, "control intent is durable but the native transport is unavailable", nil)
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := active.transport.Send(sendCtx, nativeprotocol.Input{Kind: kind, Text: text}); err != nil {
+		return false, durable.NewError(durable.CodeIndeterminate, op, "send provider input", err)
+	}
+	if _, err := s.eventBroker.CompleteControl(sendCtx, control); err != nil {
+		return false, durable.NewError(durable.CodeIndeterminate, op, "provider input may have been sent without durable dispatch proof", err)
+	}
+	return false, nil
 }
 
 func (s *Server) handleV1NativeInterrupt(c *gin.Context) {
@@ -232,11 +252,15 @@ func (s *Server) handleV1NativeCancel(c *gin.Context) {
 }
 
 func (s *Server) beginNativeControl(c *gin.Context, idempotencyKey, kind string, command any) (eventstream.ControlParams, bool, error) {
+	return s.beginNativeControlContext(c.Request.Context(), c.Param("id"), idempotencyKey, kind, command)
+}
+
+func (s *Server) beginNativeControlContext(ctx context.Context, sessionID, idempotencyKey, kind string, command any) (eventstream.ControlParams, bool, error) {
 	const op = "begin_v1_native_control"
 	if s.durableStore == nil || s.eventBroker == nil {
 		return eventstream.ControlParams{}, false, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
 	}
-	stored, err := s.durableStore.GetSession(c.Request.Context(), c.Param("id"))
+	stored, err := s.durableStore.GetSession(ctx, sessionID)
 	if err != nil {
 		return eventstream.ControlParams{}, false, err
 	}
@@ -251,7 +275,7 @@ func (s *Server) beginNativeControl(c *gin.Context, idempotencyKey, kind string,
 		SessionID: stored.ID, Generation: stored.ActiveGeneration, IdempotencyKey: idempotencyKey,
 		Timestamp: time.Now().UTC(), Kind: kind, Payload: payload,
 	}
-	begin, err := s.eventBroker.BeginControl(c.Request.Context(), params)
+	begin, err := s.eventBroker.BeginControl(ctx, params)
 	if err != nil {
 		return eventstream.ControlParams{}, false, err
 	}

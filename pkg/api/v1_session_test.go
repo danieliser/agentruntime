@@ -134,6 +134,36 @@ func TestV1CreateSessionIsConcurrentAndRestartIdempotent(t *testing.T) {
 	}
 }
 
+func TestSpawnSessionUsesDurableNativePipelineForChat(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&resumeClaudeAgent{configs: make(chan agent.AgentConfig, 1)})
+	manager := session.NewManager()
+	server := NewServer(manager, runtime.NewLocalRuntime(), registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	sess, err := server.SpawnSession(context.Background(), SessionRequest{
+		Agent: "claude", Runtime: "local", Prompt: "chat follow-up", Interactive: true,
+		Tags: map[string]string{"chat_name": "durable-chat"},
+	})
+	if err != nil {
+		t.Fatalf("spawn chat session: %v", err)
+	}
+	stored, err := store.GetSession(context.Background(), sess.ID)
+	if err != nil || stored.IdempotencyKey == "" || stored.State != durable.StateRunning || stored.ActiveGeneration != 1 {
+		t.Fatalf("durable chat session = %+v err=%v", stored, err)
+	}
+	waitForDurableTerminal(t, store, sess.ID)
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: sess.ID, Limit: 100})
+	if err != nil || len(page.Events) < 2 || page.Events[len(page.Events)-1].Stream != durable.StreamTerminal {
+		t.Fatalf("durable chat event ledger = %+v err=%v", page, err)
+	}
+}
+
 func TestV1DockerNativeSpawnKeepsProviderArguments(t *testing.T) {
 	command := []string{"claude", "-p", "hello", "--output-format", "stream-json"}
 	got := runtimeSpawnCommand(command, "docker", "claude")

@@ -678,6 +678,10 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 		return nil, errAdmissionClosed
 	}
 	defer s.endAdmission()
+	if s.durableStore != nil && s.eventBroker != nil && nativeV1Agent(req.Agent) {
+		sess, _, err := s.spawnDurableSession(ctx, req)
+		return sess, err
+	}
 	rt := s.RuntimeFor(req.Runtime)
 	if rt == nil {
 		return nil, fmt.Errorf("unknown runtime: %s", req.Runtime)

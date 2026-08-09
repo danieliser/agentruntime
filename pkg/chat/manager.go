@@ -2,6 +2,8 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -30,6 +32,13 @@ type VolumeManager interface {
 // pipeline (session dir prep, runtime spawn, IO attach).
 type SessionSpawner interface {
 	SpawnSession(ctx context.Context, req apischema.SessionRequest) (*session.Session, error)
+}
+
+// SessionInputSender is implemented by the durable AgentD spawner. The
+// separate interface lets transitional tests use simple process handles while
+// production chat follow-ups use the native v1 control ledger.
+type SessionInputSender interface {
+	SendSessionInput(ctx context.Context, sessionID, idempotencyKey, kind, text string) error
 }
 
 // SendResult describes the outcome of SendMessage.
@@ -226,7 +235,7 @@ func (m *Manager) SendMessage(name, message string) (*SendResult, error) {
 			// Session disappeared — transition to idle and re-spawn.
 			return m.respawnAfterMissing(rec, message, now)
 		}
-		if err := m.injectStdin(sess, message); err != nil {
+		if err := m.injectSessionInput(rec, sess, message); err != nil {
 			// Handle is broken — respawn instead of returning a 500.
 			log.Printf("[chat %s] inject stdin failed, respawning: %v", name, err)
 			return m.respawnAfterMissing(rec, message, now)
@@ -511,9 +520,13 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 	return sess.ID, nil
 }
 
-// injectStdin writes a message to the running session's stdin.
-// Uses SteerableHandle.SendPrompt if available, otherwise raw stdin write.
-func (m *Manager) injectStdin(sess *session.Session, message string) error {
+// injectSessionInput sends a follow-up through AgentD's durable native control
+// ledger. Raw/steerable handle fallbacks remain only for transitional tests
+// and disappear with the unversioned compatibility session path.
+func (m *Manager) injectSessionInput(rec *ChatRecord, sess *session.Session, message string) error {
+	if sender, ok := m.spawner.(SessionInputSender); ok {
+		return sender.SendSessionInput(context.Background(), sess.ID, chatInputIdempotencyKey(rec, message), "prompt", message)
+	}
 	if sess.Handle == nil {
 		return fmt.Errorf("session has no process handle")
 	}
@@ -530,6 +543,12 @@ func (m *Manager) injectStdin(sess *session.Session, message string) error {
 	}
 	_, err := fmt.Fprintf(stdin, "%s\n", message)
 	return err
+}
+
+func chatInputIdempotencyKey(rec *ChatRecord, message string) string {
+	digest := sha256.New()
+	_, _ = fmt.Fprintf(digest, "%s\x00%s\x00%d\x00%s", rec.Name, rec.CurrentSession, rec.UpdatedAt.UnixNano(), message)
+	return "chat-input:" + hex.EncodeToString(digest.Sum(nil))
 }
 
 // killSession terminates a session by ID.
