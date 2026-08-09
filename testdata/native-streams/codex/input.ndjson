@@ -1,0 +1,8 @@
+{"id":0,"method":"initialize","params":{"clientInfo":{"name":"agentruntime","version":"fixture"},"capabilities":{"experimentalApi":true}}}
+{"method":"initialized","params":{}}
+{"id":1,"method":"thread/start","params":{}}
+{"id":2,"method":"thread/resume","params":{"threadId":"codex-fixture-thread"}}
+{"id":3,"method":"turn/start","params":{"threadId":"codex-fixture-thread","input":[{"type":"text","text":"fixture prompt"}],"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}}}
+{"id":4,"method":"turn/steer","params":{"threadId":"codex-fixture-thread","expectedTurnId":"codex-fixture-turn","input":[{"type":"text","text":"fixture steer"}]}}
+{"id":5,"method":"turn/interrupt","params":{"threadId":"codex-fixture-thread","reason":"user"}}
+{"id":99,"result":{"decision":"accept"}}

@@ -1,0 +1,9 @@
+{"id":0,"result":{"userAgent":"codex-cli/fixture"}}
+{"method":"thread/started","params":{"threadId":"codex-fixture-thread"}}
+{"method":"turn/started","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn"}}
+{"method":"item/agentMessage/delta","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","delta":"fixture delta"}}
+{"method":"item/started","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","item":{"id":"cmd-fixture","type":"command_execution","command":"fixture"}}}
+{"method":"item/completed","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","item":{"id":"cmd-fixture","type":"command_execution","aggregatedOutput":"fixture result","exitCode":0}}}
+{"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","itemId":"cmd-fixture"}}
+{"method":"error","params":{"message":"fixture error"}}
+{"method":"turn/completed","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","status":"completed","usage":{"inputTokens":12,"outputTokens":8}}}
