@@ -67,6 +67,40 @@ func (store *Store) CreateGeneration(ctx context.Context, params durable.CreateG
 	return cloneGeneration(generation), nil
 }
 
+func (store *Store) BindGenerationProvider(ctx context.Context, params durable.BindGenerationProviderParams) (durable.Generation, error) {
+	const op = "bind_generation_provider"
+	if err := checkContext(ctx); err != nil {
+		return durable.Generation{}, err
+	}
+	if params.SessionID == "" || params.Generation < 1 || params.ProviderID == "" {
+		return durable.Generation{}, durable.NewError(durable.CodeInvalidArgument, op, "session, generation, and provider ID are required", nil)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.checkOpen(op); err != nil {
+		return durable.Generation{}, err
+	}
+	generation, err := store.generation(op, params.SessionID, params.Generation)
+	if err != nil {
+		return durable.Generation{}, err
+	}
+	if generation.ProviderID == params.ProviderID {
+		return cloneGeneration(generation), nil
+	}
+	if generation.ProviderID != "" {
+		return durable.Generation{}, durable.NewError(durable.CodeImmutableConflict, op, "provider identity is already bound", nil)
+	}
+	generation.ProviderID = params.ProviderID
+	at := normalizedTime(params.At)
+	if at.Before(generation.UpdatedAt) {
+		at = generation.UpdatedAt
+	}
+	generation.UpdatedAt = at
+	store.generations[params.SessionID][params.Generation-1] = generation
+	return cloneGeneration(generation), nil
+}
+
 func (store *Store) GetGeneration(ctx context.Context, sessionID string, number int64) (durable.Generation, error) {
 	const op = "get_generation"
 	if err := checkContext(ctx); err != nil {

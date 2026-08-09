@@ -19,6 +19,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/credentials"
 	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
+	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -66,6 +67,7 @@ func main() {
 	if err := durableStore.CheckIntegrity(context.Background()); err != nil {
 		log.Fatalf("durable store integrity check failed: %v", err)
 	}
+	eventBroker := eventstream.New(durableStore)
 
 	// Initialize runtimes. The --runtime flag sets the default; both local
 	// and docker are always available so callers can select per-session.
@@ -166,6 +168,7 @@ func main() {
 		ChatRegistry:  chatRegistry,
 		ChatManager:   chatManager,
 		DurableStore:  durableStore,
+		EventBroker:   eventBroker,
 	})
 	// Wire the spawner after server creation to break the circular dependency
 	// between api.Server (needs chatManager) and chatManager (needs spawner).

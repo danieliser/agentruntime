@@ -139,7 +139,14 @@ func (store *Store) ListEvents(ctx context.Context, query durable.EventQuery) (d
 	if err := tx.Commit(); err != nil {
 		return durable.EventPage{}, storageError(op, "commit event list", err)
 	}
-	return durable.EventPage{Events: events, LastSequence: session.LastSequence, HasMore: expected <= session.LastSequence}, nil
+	earliest := int64(0)
+	if session.LastSequence > 0 {
+		earliest = 1
+	}
+	return durable.EventPage{
+		Events: events, EarliestSequence: earliest,
+		LastSequence: session.LastSequence, HasMore: expected <= session.LastSequence,
+	}, nil
 }
 
 func scanEvent(row rowScanner) (durable.Event, error) {

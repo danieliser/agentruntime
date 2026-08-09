@@ -137,6 +137,16 @@ type CreateGenerationParams struct {
 	CreatedAt        time.Time
 }
 
+// BindGenerationProviderParams records a provider-native session/thread ID
+// learned after the runtime generation has started. An empty identity may bind
+// once; subsequent calls must repeat the exact same identity.
+type BindGenerationProviderParams struct {
+	SessionID  string
+	Generation int64
+	ProviderID string
+	At         time.Time
+}
+
 // TransitionGenerationParams is a compare-and-set generation transition.
 type TransitionGenerationParams struct {
 	SessionID  string
@@ -189,9 +199,10 @@ type EventQuery struct {
 
 // EventPage returns committed events and the session's current durable tail.
 type EventPage struct {
-	Events       []Event
-	LastSequence int64
-	HasMore      bool
+	Events           []Event
+	EarliestSequence int64
+	LastSequence     int64
+	HasMore          bool
 }
 
 // TerminalReceipt is the immutable final proof for a logical session.

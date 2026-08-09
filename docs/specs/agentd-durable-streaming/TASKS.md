@@ -1,6 +1,6 @@
 # AgentD Durable Native Streaming — Task Sheet
 
-Status: **G0 APPROVED / G1 SCHEMA REVIEW PENDING**
+Status: **G0 + G1 APPROVED / G2 IN PROGRESS**
 
 Last updated: 2026-08-09
 
@@ -212,11 +212,11 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| NAT-201 | TODO | Add one canonical native transport interface for start, input, interrupt, output records, stderr, wait, and recovery metadata. | Claude and Codex adapters pass the same contract suite. | M |
-| NAT-202 | TODO | Route Claude native stream-json input/output directly into AgentD ingestion. | Raw records round-trip byte-for-byte; content/tools/results remain streamable. | L |
-| NAT-203 | TODO | Route Codex app-server JSON-RPC directly into AgentD ingestion. | Initialize/thread/turn/steer/interrupt/resume and notifications pass fixtures and live opt-in test. | L |
-| NAT-204 | TODO | Add envelope derivation without raw-record loss. | Every stored native record has one stable envelope; derived types match fixtures. | M |
-| NAT-205 | TODO | Separate provider stdout, runtime stderr, lifecycle, control acknowledgment, and terminal events. | No mixed writer/log can make stderr parse as provider JSON. | M |
+| NAT-201 | DONE | Add one canonical native transport interface for start, input, interrupt, output records, stderr, wait, and recovery metadata. | `pkg/nativeprotocol`; Claude and Codex pass the same transport contract, including observable stream-read failure. | M |
+| NAT-202 | IN PROGRESS | Route Claude native stream-json input/output directly into AgentD ingestion. | Claude input/output adapter and byte-exact fixture derivation pass; production Docker path still uses the compatibility transport. | L |
+| NAT-203 | IN PROGRESS | Route Codex app-server JSON-RPC directly into AgentD ingestion. | Codex JSON-RPC input/output/control adapter and fixtures pass; initialize/resume and production Docker wiring remain. | L |
+| NAT-204 | DONE | Add envelope derivation without raw-record loss. | `pkg/eventstream`; source-position IDs, exact raw bytes/hash, stable envelope, and derived fixture types pass. | M |
+| NAT-205 | IN PROGRESS | Separate provider stdout, runtime stderr, lifecycle, control acknowledgment, and terminal events. | Native transport and durable envelope keep stdout/stderr distinct; process terminal/control integration remains. | M |
 
 **Gate G2 — Native-stream parity:** Claude/Codex streaming, control, resume, usage, and terminal parity must pass before old sidecar semantics are removed.
 
@@ -224,11 +224,11 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| REP-301 | TODO | Build commit-before-publish event fanout over the durable store. | Crash between append/publish replays the committed event once with the same identity. | L |
-| REP-302 | TODO | Add paginated replay API using `after_sequence`. | Boundaries 0, middle, latest, future, terminal, and large histories are deterministic. | M |
-| REP-303 | TODO | Add live stream handshake that closes the replay/live race. | Forced event during subscription appears exactly once by stable identity. | L |
-| REP-304 | TODO | Detect sequence corruption/missing rows and return `event_gap`/`indeterminate`. | Intentionally removed event is detected; later events are not presented as contiguous. | M |
-| REP-305 | TODO | Define retention/archive policy with no silent truncation. | Earliest available cursor is discoverable; archived sessions remain explicit. | M |
+| REP-301 | DONE | Build commit-before-publish event fanout over the durable store. | Post-commit fault injection replays the committed event once with the same identity; slow subscribers cannot block commits. | L |
+| REP-302 | DONE | Add paginated replay API using `after_sequence`. | Versioned API passes zero/middle/latest/future, terminal, raw-byte, 1,001-event history, limit-cap, and pagination tests. | M |
+| REP-303 | DONE | Add live stream handshake that closes the replay/live race. | WebSocket `stream.ready` snapshots the durable tail; forced replay-to-live event appears exactly once. | L |
+| REP-304 | DONE | Detect sequence corruption/missing rows and return `event_gap`/`indeterminate`. | SQLite gap/hash corruption tests and subscription contiguity checks reject silent advancement. | M |
+| REP-305 | DONE | Define retention/archive policy with no silent truncation. | Event protocol v1 exposes earliest/tail; v1 retains the complete ledger and forbids silent truncation. | M |
 
 ### Phase 4 — Idempotent reconnect and resume
 
@@ -315,6 +315,8 @@ Do not parallelize work across a gate whose contract has not been approved.
 
 - 2026-08-09 — Initial sheet created from the AgentD/Trading Floor gap review.
 - 2026-08-09 — User clarified priorities: native Claude/Codex JSON replaces sidecar semantics; chat output must be buffered/stored/replayable by pointer; duplicate create must resume/lookup rather than `409`; proper streaming supplies the event protocol; Docker sessions must be durable/reconstructable.
+- 2026-08-09 — User approved removing non-native/sidecar execution methods after Claude and Codex native parity; retained lifecycle surface is start, fire-and-forget, attach/reconnect, follow-up/steer, generation resume, interrupt/cancel/terminate, inspect, receipt, and history.
+- 2026-08-09 — User approved migration v2 for one-way provider identity discovery: an empty generation provider ID may bind once, while a known ID remains immutable.
 
 ## 11. Progress log
 
@@ -325,3 +327,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — User approved G0 and direct removal of sidecar semantics. Durable typed contracts, structured errors, race-tested in-memory reference store, and the no-migration G1 schema proposal were added.
 - 2026-08-09 — User approved G1. Pinned pure-Go SQLite, added the approved migration/store, verified concurrent idempotency and contiguous append, restart-stable active/terminal state, deliberate gap/raw corruption detection, and consistent hashed backup/restore.
 - 2026-08-09 — User selected `~/.agentd` as the default persistence root. Database, backups, chat JSON/history, logs, credentials, and reconstructable runtime files share that root; `--data-dir` and `AGENTRUNTIME_DATA_DIR` still relocate it as one unit.
+- 2026-08-09 — Added the shared Claude/Codex native transport, exact-record event broker, commit-before-publish fanout, sequence replay API, race-free stored-to-live WebSocket handshake, explicit slow-subscriber recovery, and discoverable replay boundaries.
+- 2026-08-09 — Added reviewed migration v2 and typed one-way provider identity binding, including v1 database upgrade coverage and immutable second-bind rejection.

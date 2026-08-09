@@ -13,6 +13,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -28,6 +29,7 @@ type Server struct {
 	dataDir      string
 	logDir       string // directory for persistent session NDJSON logs
 	durableStore durable.Store
+	eventBroker  *eventstream.Broker
 	srv          *http.Server
 
 	// Chat subsystem (named persistent chats).
@@ -73,6 +75,10 @@ type ServerConfig struct {
 	// and terminal receipts. Current compatibility handlers are migrated to it
 	// incrementally rather than treating legacy logs as proven durable events.
 	DurableStore durable.Store
+
+	// EventBroker commits native events before live publication and owns the
+	// stored-to-live subscription handshake.
+	EventBroker *eventstream.Broker
 }
 
 // NewServer creates a configured HTTP server ready to start.
@@ -118,6 +124,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		s.chatRegistry = cfgs[0].ChatRegistry
 		s.chatManager = cfgs[0].ChatManager
 		s.durableStore = cfgs[0].DurableStore
+		s.eventBroker = cfgs[0].EventBroker
 	}
 
 	RegisterRoutes(router, s)

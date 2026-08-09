@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,46 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/durable"
 )
+
+func TestMigrationV2AllowsOneWayProviderIdentityBinding(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agentd.sqlite")
+	db, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("open v1 fixture: %v", err)
+	}
+	migration, err := migrations.ReadFile("migrations/001_durable_store_v1.sql")
+	if err != nil {
+		t.Fatalf("read v1 migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+		t.Fatalf("apply v1 migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+		t.Fatalf("set v1 schema: %v", err)
+	}
+	legacy := &Store{db: db, path: path}
+	createTestHistory(t, ctx, legacy, "v1-provider-session", 0)
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close v1 fixture: %v", err)
+	}
+
+	upgraded := openTestStore(t, path)
+	bound, err := upgraded.BindGenerationProvider(ctx, durable.BindGenerationProviderParams{
+		SessionID: "v1-provider-session", Generation: 1, ProviderID: "provider-v2",
+		At: time.Unix(105, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("bind provider after v2 migration: %v", err)
+	}
+	if bound.ProviderID != "provider-v2" {
+		t.Fatalf("provider ID = %q, want provider-v2", bound.ProviderID)
+	}
+	_, err = upgraded.db.ExecContext(ctx, "UPDATE runtime_generations SET provider_id = 'changed' WHERE session_id = 'v1-provider-session'")
+	if err == nil {
+		t.Fatal("second provider identity mutation unexpectedly succeeded")
+	}
+}
 
 func TestStoreSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
@@ -194,7 +235,7 @@ func TestBackupRestoresConsistentHistory(t *testing.T) {
 		t.Fatalf("read backup for hash: %v", err)
 	}
 	digest := sha256.Sum256(backupBytes)
-	if metadata.SchemaVersion != 1 || metadata.DatabaseSHA256 != fmt.Sprintf("sha256:%x", digest) {
+	if metadata.SchemaVersion != 2 || metadata.DatabaseSHA256 != fmt.Sprintf("sha256:%x", digest) {
 		t.Fatalf("backup metadata = %+v", metadata)
 	}
 	if len(metadata.SessionTails) != 1 || metadata.SessionTails[0].SessionID != "backup-session" || metadata.SessionTails[0].LastSequence != 3 {

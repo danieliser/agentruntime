@@ -1,0 +1,218 @@
+package eventstream
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/durable/memory"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
+)
+
+func TestIngestCommitsBeforePublishAndReplaysAfterFault(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-fault")
+	broker := New(store)
+	fault := errors.New("simulated crash after commit")
+	broker.afterCommit = func(durable.Event) error { return fault }
+
+	raw := []byte(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"committed"}}}`)
+	_, err := broker.Ingest(ctx, IngestParams{
+		SessionID: "session-fault", Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 1, Timestamp: time.Unix(200, 0).UTC(), Raw: raw},
+	})
+	if !errors.Is(err, fault) {
+		t.Fatalf("ingest error = %v, want injected fault", err)
+	}
+	broker.afterCommit = nil
+
+	subscription, err := broker.Subscribe(ctx, "session-fault", 0, 4)
+	if err != nil {
+		t.Fatalf("subscribe after fault: %v", err)
+	}
+	t.Cleanup(func() { _ = subscription.Close() })
+	event, err := subscription.Next(ctx)
+	if err != nil {
+		t.Fatalf("replay committed event: %v", err)
+	}
+	if event.Sequence != 1 || event.Type != "content.delta" || string(event.Raw) != string(raw) {
+		t.Fatalf("replayed event = %+v", event)
+	}
+}
+
+func TestSubscribeClosesStoredThenLiveRace(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-race")
+	broker := New(store)
+	for ordinal := int64(1); ordinal <= 3; ordinal++ {
+		ingestClaudeDelta(t, ctx, broker, "session-race", ordinal)
+	}
+
+	subscription, err := broker.Subscribe(ctx, "session-race", 1, 4)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = subscription.Close() })
+	ingestErr := make(chan error, 1)
+	go func() {
+		raw := []byte(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"4"}}}`)
+		_, err := broker.Ingest(ctx, IngestParams{
+			SessionID: "session-race", Generation: 1,
+			Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 4, Timestamp: time.Unix(204, 0).UTC(), Raw: raw},
+		})
+		ingestErr <- err
+	}()
+	for want := int64(2); want <= 4; want++ {
+		event, err := subscription.Next(ctx)
+		if err != nil {
+			t.Fatalf("next sequence %d: %v", want, err)
+		}
+		if event.Sequence != want {
+			t.Fatalf("sequence = %d, want %d", event.Sequence, want)
+		}
+	}
+	if err := <-ingestErr; err != nil {
+		t.Fatalf("live ingest: %v", err)
+	}
+}
+
+func TestIngestKeepsStderrSeparateAndEventIDsStable(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-streams")
+	broker := New(store)
+	params := IngestParams{
+		SessionID: "session-streams", Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderCodex, Stream: nativeprotocol.StreamRuntimeStderr, Ordinal: 1, Timestamp: time.Unix(300, 0).UTC(), Raw: []byte("warning")},
+	}
+	first, err := broker.Ingest(ctx, params)
+	if err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	second, err := broker.Ingest(ctx, params)
+	if err != nil {
+		t.Fatalf("repeat ingest: %v", err)
+	}
+	if first.EventID != second.EventID || first.Sequence != second.Sequence {
+		t.Fatalf("stable event identity = %+v then %+v", first, second)
+	}
+	changed := params
+	changed.Record.Raw = []byte("different warning")
+	if _, err := broker.Ingest(ctx, changed); !durable.IsCode(err, durable.CodeImmutableConflict) {
+		t.Fatalf("changed source position error = %v, want %s", err, durable.CodeImmutableConflict)
+	}
+	if first.Stream != durable.StreamRuntimeStderr || first.Type != "runtime.stderr" {
+		t.Fatalf("stderr envelope = %+v", first)
+	}
+	page, err := store.ListEvents(ctx, durable.EventQuery{SessionID: "session-streams"})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("stored events = %d, want 1", len(page.Events))
+	}
+}
+
+func TestSubscribeRejectsFutureCursor(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-cursor")
+	broker := New(store)
+	_, err := broker.Subscribe(ctx, "session-cursor", 1, 1)
+	if !durable.IsCode(err, durable.CodeInvalidCursor) {
+		t.Fatalf("future cursor error = %v, want %s", err, durable.CodeInvalidCursor)
+	}
+}
+
+func TestSlowSubscriberNeverBlocksDurableIngestion(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-backpressure")
+	broker := New(store)
+	subscription, err := broker.Subscribe(ctx, "session-backpressure", 0, 1)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = subscription.Close() })
+	ingestClaudeDelta(t, ctx, broker, "session-backpressure", 1)
+
+	done := make(chan error, 1)
+	go func() {
+		raw := []byte(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"2"}}}`)
+		_, err := broker.Ingest(ctx, IngestParams{
+			SessionID: "session-backpressure", Generation: 1,
+			Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 2, Timestamp: time.Unix(202, 0).UTC(), Raw: raw},
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ingest with slow subscriber: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("slow subscriber blocked durable ingestion")
+	}
+
+	first, err := subscription.Next(ctx)
+	if err != nil || first.Sequence != 1 {
+		t.Fatalf("buffered first event = %+v, err=%v", first, err)
+	}
+	if _, err := subscription.Next(ctx); !durable.IsCode(err, durable.CodeBackpressure) {
+		t.Fatalf("overflowed subscription error = %v, want %s", err, durable.CodeBackpressure)
+	}
+	reconnected, err := broker.Subscribe(ctx, "session-backpressure", 1, 1)
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	defer reconnected.Close()
+	second, err := reconnected.Next(ctx)
+	if err != nil || second.Sequence != 2 {
+		t.Fatalf("replayed second event = %+v, err=%v", second, err)
+	}
+}
+
+func createStreamSession(t *testing.T, ctx context.Context, store durable.Store, sessionID string) {
+	t.Helper()
+	_, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: sessionID, IdempotencyKey: "job-" + sessionID, RequestHash: "sha256:" + sessionID,
+		RequestManifest: json.RawMessage(`{"agent":"claude","runtime":"docker"}`),
+		Agent:           "claude", Runtime: "docker", CreatedAt: time.Unix(100, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	_, err = store.CreateGeneration(ctx, durable.CreateGenerationParams{
+		SessionID: sessionID, Runtime: "docker", ContainerID: "container-" + sessionID,
+		ImageReference: "agent:fixture", ImageDigest: "sha256:image", SandboxProfile: "sandbox-v1",
+		CreatedAt: time.Unix(101, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("create generation: %v", err)
+	}
+}
+
+func ingestClaudeDelta(t *testing.T, ctx context.Context, broker *Broker, sessionID string, ordinal int64) durable.Event {
+	t.Helper()
+	raw := []byte(fmt.Sprintf(`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"%d"}}}`, ordinal))
+	event, err := broker.Ingest(ctx, IngestParams{
+		SessionID: sessionID, Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamProviderStdout, Ordinal: ordinal, Timestamp: time.Unix(200+ordinal, 0).UTC(), Raw: raw},
+	})
+	if err != nil {
+		t.Fatalf("ingest ordinal %d: %v", ordinal, err)
+	}
+	return event
+}

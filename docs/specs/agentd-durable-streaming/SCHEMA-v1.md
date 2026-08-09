@@ -19,8 +19,11 @@ Approved one AgentD-owned SQLite database with four domain tables:
 
 Approval was granted on 2026-08-09. Migration `001_durable_store_v1.sql`, the
 SQLite implementation, integrity checks, snapshot metadata, and daemon-owned
-store initialization are implemented. Public v1 routes and removal of the
-current sidecar transport remain gated separately.
+store initialization are implemented. Reviewed migration
+`002_durable_store_v2.sql` permits a provider ID learned after process startup
+to bind exactly once from empty to non-empty; a known provider ID remains
+immutable. Sequence replay routes are implemented, while production native
+transport wiring and removal of the current sidecar remain gated separately.
 
 ## Driver and file
 

@@ -220,6 +220,52 @@ func runStoreContract(t *testing.T, factory storeFactory) {
 		}
 	})
 
+	t.Run("generation provider identity binds once", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+		createContractSession(t, ctx, store, "session-provider-bind")
+		generation := createContractGeneration(t, ctx, store, "session-provider-bind")
+		if generation.ProviderID != "" {
+			t.Fatalf("initial provider ID = %q, want empty", generation.ProviderID)
+		}
+
+		bound, err := store.BindGenerationProvider(ctx, durable.BindGenerationProviderParams{
+			SessionID:  generation.SessionID,
+			Generation: generation.Number,
+			ProviderID: "provider-session-123",
+			At:         time.Unix(52, 0).UTC(),
+		})
+		if err != nil {
+			t.Fatalf("bind provider identity: %v", err)
+		}
+		if bound.ProviderID != "provider-session-123" {
+			t.Fatalf("bound provider ID = %q", bound.ProviderID)
+		}
+
+		repeated, err := store.BindGenerationProvider(ctx, durable.BindGenerationProviderParams{
+			SessionID:  generation.SessionID,
+			Generation: generation.Number,
+			ProviderID: "provider-session-123",
+			At:         time.Unix(53, 0).UTC(),
+		})
+		if err != nil {
+			t.Fatalf("repeat provider bind: %v", err)
+		}
+		if repeated.ProviderID != bound.ProviderID || !repeated.UpdatedAt.Equal(bound.UpdatedAt) {
+			t.Fatalf("repeat bind mutated generation: first=%+v repeated=%+v", bound, repeated)
+		}
+
+		_, err = store.BindGenerationProvider(ctx, durable.BindGenerationProviderParams{
+			SessionID:  generation.SessionID,
+			Generation: generation.Number,
+			ProviderID: "provider-session-changed",
+			At:         time.Unix(54, 0).UTC(),
+		})
+		if !durable.IsCode(err, durable.CodeImmutableConflict) {
+			t.Fatalf("changed provider error = %v, want code %s", err, durable.CodeImmutableConflict)
+		}
+	})
+
 	t.Run("concurrent event append allocates a contiguous sequence", func(t *testing.T) {
 		store := factory(t)
 		ctx := context.Background()
@@ -278,7 +324,7 @@ func runStoreContract(t *testing.T, factory storeFactory) {
 		if err != nil {
 			t.Fatalf("list events: %v", err)
 		}
-		if len(page.Events) != 10 || page.Events[0].Sequence != 91 || page.LastSequence != 100 {
+		if len(page.Events) != 10 || page.Events[0].Sequence != 91 || page.EarliestSequence != 1 || page.LastSequence != 100 {
 			t.Fatalf("unexpected event page: len=%d first=%d last=%d", len(page.Events), page.Events[0].Sequence, page.LastSequence)
 		}
 	})

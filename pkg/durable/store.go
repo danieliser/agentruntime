@@ -14,6 +14,7 @@ type SessionRepository interface {
 // GenerationRepository owns concrete runtime incarnation identity and state.
 type GenerationRepository interface {
 	CreateGeneration(context.Context, CreateGenerationParams) (Generation, error)
+	BindGenerationProvider(context.Context, BindGenerationProviderParams) (Generation, error)
 	GetGeneration(context.Context, string, int64) (Generation, error)
 	ListGenerations(context.Context, string) ([]Generation, error)
 	TransitionGeneration(context.Context, TransitionGenerationParams) (Generation, error)

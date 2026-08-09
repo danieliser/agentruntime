@@ -16,6 +16,7 @@ const (
 	CodeInvalidState        ErrorCode = "invalid_state"
 	CodeInvalidCursor       ErrorCode = "invalid_cursor"
 	CodeEventGap            ErrorCode = "event_gap"
+	CodeBackpressure        ErrorCode = "backpressure"
 	CodeIndeterminate       ErrorCode = "indeterminate"
 	CodeStoreClosed         ErrorCode = "store_closed"
 )

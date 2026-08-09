@@ -94,10 +94,15 @@ func (store *Store) ListEvents(ctx context.Context, query durable.EventQuery) (d
 	for _, event := range all[start:end] {
 		pageEvents = append(pageEvents, cloneEvent(event))
 	}
+	earliest := int64(0)
+	if session.LastSequence > 0 {
+		earliest = 1
+	}
 	return durable.EventPage{
-		Events:       pageEvents,
-		LastSequence: session.LastSequence,
-		HasMore:      end < len(all),
+		Events:           pageEvents,
+		EarliestSequence: earliest,
+		LastSequence:     session.LastSequence,
+		HasMore:          end < len(all),
 	}, nil
 }
 

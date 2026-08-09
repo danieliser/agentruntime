@@ -86,6 +86,43 @@ sandbox_profile, provider_id, docker_log_driver, docker_log_options_json, create
 	}, nil
 }
 
+func (store *Store) BindGenerationProvider(ctx context.Context, params durable.BindGenerationProviderParams) (durable.Generation, error) {
+	const op = "bind_generation_provider"
+	if params.SessionID == "" || params.Generation < 1 || params.ProviderID == "" {
+		return durable.Generation{}, durable.NewError(durable.CodeInvalidArgument, op, "session, generation, and provider ID are required", nil)
+	}
+	tx, err := store.begin(ctx, op)
+	if err != nil {
+		return durable.Generation{}, err
+	}
+	defer rollback(tx)
+	generation, err := scanGeneration(tx.QueryRowContext(ctx, "SELECT "+generationColumns+" FROM runtime_generations WHERE session_id = ? AND generation = ?", params.SessionID, params.Generation))
+	if err != nil {
+		return durable.Generation{}, err
+	}
+	if generation.ProviderID == params.ProviderID {
+		if err := tx.Commit(); err != nil {
+			return durable.Generation{}, storageError(op, "commit idempotent provider bind", err)
+		}
+		return generation, nil
+	}
+	if generation.ProviderID != "" {
+		return durable.Generation{}, durable.NewError(durable.CodeImmutableConflict, op, "provider identity is already bound", nil)
+	}
+	at := normalizedTime(params.At)
+	if at.Before(generation.UpdatedAt) {
+		at = generation.UpdatedAt
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE runtime_generations SET provider_id = ?, updated_at_ns = ? WHERE session_id = ? AND generation = ? AND provider_id = ''", params.ProviderID, at.UnixNano(), params.SessionID, params.Generation); err != nil {
+		return durable.Generation{}, storageError(op, "bind provider identity", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return durable.Generation{}, storageError(op, "commit provider identity", err)
+	}
+	generation.ProviderID, generation.UpdatedAt = params.ProviderID, at
+	return generation, nil
+}
+
 func (store *Store) GetGeneration(ctx context.Context, sessionID string, number int64) (durable.Generation, error) {
 	const op = "get_generation"
 	tx, err := store.begin(ctx, op)
