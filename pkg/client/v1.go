@@ -45,6 +45,7 @@ type Capabilities struct {
 	EventSchemaVersions  []string           `json:"event_schema_versions"`
 	NativeProviders      []string           `json:"native_providers"`
 	Runtimes             []string           `json:"runtimes"`
+	LifecycleControls    []string           `json:"lifecycle_controls"`
 	Replay               ReplayCapabilities `json:"replay"`
 	DockerReconstruction bool               `json:"docker_reconstruction"`
 	PluginAPIVersions    []string           `json:"plugin_api_versions"`
@@ -71,6 +72,21 @@ type EventPage struct {
 	EarliestSequence int64   `json:"earliest_sequence"`
 	LastSequence     int64   `json:"last_sequence"`
 	HasMore          bool    `json:"has_more"`
+}
+
+// TerminalReceipt is the immutable terminal proof for one logical session.
+type TerminalReceipt struct {
+	SessionID    string    `json:"session_id"`
+	Generation   int64     `json:"generation"`
+	State        string    `json:"state"`
+	Reason       string    `json:"reason"`
+	ExitCode     *int      `json:"exit_code,omitempty"`
+	Signal       string    `json:"signal,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	EndedAt      time.Time `json:"ended_at"`
+	OutputHash   string    `json:"output_hash"`
+	ArtifactHash string    `json:"artifact_hash"`
+	LastSequence int64     `json:"last_sequence"`
 }
 
 type eventWire struct {
@@ -170,6 +186,78 @@ func (c *Client) ListDurableSessions(ctx context.Context) ([]DurableSession, err
 		envelope.Data = []DurableSession{}
 	}
 	return envelope.Data, nil
+}
+
+// GetTerminalReceipt returns the immutable terminal proof for a session.
+func (c *Client) GetTerminalReceipt(ctx context.Context, sessionID string) (*TerminalReceipt, error) {
+	httpRequest, err := c.newRequest(ctx, http.MethodGet, v1SessionPath(sessionID)+"/receipt", nil)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Data TerminalReceipt `json:"data"`
+	}
+	if err := c.doJSON(httpRequest, &envelope); err != nil {
+		return nil, err
+	}
+	return &envelope.Data, nil
+}
+
+// SendInput submits a durable prompt or steer operation to an active native
+// provider generation.
+func (c *Client) SendInput(ctx context.Context, sessionID, idempotencyKey, kind, content string) error {
+	return c.postV1Control(ctx, v1SessionPath(sessionID)+"/input", map[string]any{
+		"idempotency_key": idempotencyKey,
+		"kind":            kind,
+		"text":            content,
+	})
+}
+
+// Interrupt requests provider-native interruption without terminating the
+// logical session.
+func (c *Client) Interrupt(ctx context.Context, sessionID, idempotencyKey string) error {
+	return c.postV1Control(ctx, v1SessionPath(sessionID)+"/interrupt", map[string]string{"idempotency_key": idempotencyKey})
+}
+
+// Cancel records caller cancellation and stops the active native generation.
+func (c *Client) Cancel(ctx context.Context, sessionID, idempotencyKey string) error {
+	return c.postV1Control(ctx, v1SessionPath(sessionID)+"/cancel", map[string]string{"idempotency_key": idempotencyKey})
+}
+
+// Terminate administratively stops the active generation and retains a
+// distinct terminated receipt reason.
+func (c *Client) Terminate(ctx context.Context, sessionID, idempotencyKey string) error {
+	return c.postV1Control(ctx, v1SessionPath(sessionID)+"/terminate", map[string]string{"idempotency_key": idempotencyKey})
+}
+
+// Resume starts generation N+1 for a recoverable lost native generation.
+func (c *Client) Resume(ctx context.Context, sessionID, prompt string, env map[string]string) (*DurableSession, error) {
+	httpRequest, err := c.newJSONRequest(ctx, http.MethodPost, v1SessionPath(sessionID)+"/resume", map[string]any{
+		"prompt": prompt,
+		"env":    env,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Data DurableSession `json:"data"`
+	}
+	if err := c.doJSON(httpRequest, &envelope); err != nil {
+		return nil, err
+	}
+	return &envelope.Data, nil
+}
+
+func (c *Client) postV1Control(ctx context.Context, path string, body any) error {
+	httpRequest, err := c.newJSONRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return err
+	}
+	return c.doJSON(httpRequest, nil)
+}
+
+func v1SessionPath(sessionID string) string {
+	return "/api/v1/sessions/" + url.PathEscape(sessionID)
 }
 
 // GetEvents reads events strictly after afterSequence.

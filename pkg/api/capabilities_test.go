@@ -39,6 +39,7 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 			EventSchemaVersions []string `json:"event_schema_versions"`
 			NativeProviders     []string `json:"native_providers"`
 			Runtimes            []string `json:"runtimes"`
+			LifecycleControls   []string `json:"lifecycle_controls"`
 			Replay              struct {
 				SequenceCursor     bool `json:"sequence_cursor"`
 				StoredThenLive     bool `json:"stored_then_live"`
@@ -57,6 +58,7 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 	if len(envelope.Data.EventSchemaVersions) != 1 || envelope.Data.EventSchemaVersions[0] != "1.0" ||
 		!containsString(envelope.Data.NativeProviders, "claude") || !containsString(envelope.Data.NativeProviders, "codex") ||
 		!containsString(envelope.Data.Runtimes, "local") || !envelope.Data.Replay.SequenceCursor ||
+		!containsString(envelope.Data.LifecycleControls, "terminate") || !containsString(envelope.Data.LifecycleControls, "resume") ||
 		!envelope.Data.Replay.StoredThenLive || !envelope.Data.Replay.RestartPersistence ||
 		!envelope.Data.DockerReconstruction || len(envelope.Data.PluginAPIVersions) != 0 {
 		t.Fatalf("capability data = %+v", envelope.Data)

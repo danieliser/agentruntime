@@ -21,6 +21,7 @@ type v1Capabilities struct {
 	EventSchemaVersions  []string           `json:"event_schema_versions"`
 	NativeProviders      []string           `json:"native_providers"`
 	Runtimes             []string           `json:"runtimes"`
+	LifecycleControls    []string           `json:"lifecycle_controls"`
 	Replay               replayCapabilities `json:"replay"`
 	DockerReconstruction bool               `json:"docker_reconstruction"`
 	PluginAPIVersions    []string           `json:"plugin_api_versions"`
@@ -46,7 +47,8 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, APIVersions: []string{"v1"},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, NativeProviders: providers,
-		Runtimes: runtimes, Replay: replayCapabilities{
+		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "interrupt", "cancel", "terminate", "resume", "receipt"},
+		Runtimes:          runtimes, Replay: replayCapabilities{
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
 		},
 		DockerReconstruction: dockerReconstruction && durableReplay,

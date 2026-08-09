@@ -109,6 +109,62 @@ func TestClientListsDurableSessions(t *testing.T) {
 	}
 }
 
+func TestClientUsesV1LifecycleControlsAndReceipt(t *testing.T) {
+	type observedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]any
+	}
+	var observed []observedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body := map[string]any{}
+		if request.Body != nil {
+			_ = json.NewDecoder(request.Body).Decode(&body)
+		}
+		observed = append(observed, observedRequest{Method: request.Method, Path: request.URL.Path, Body: body})
+		switch request.URL.Path {
+		case "/api/v1/sessions/native/input", "/api/v1/sessions/native/interrupt", "/api/v1/sessions/native/cancel", "/api/v1/sessions/native/terminate":
+			writer.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{"accepted": true}})
+		case "/api/v1/sessions/native/resume":
+			writer.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{"session_id": "native", "state": "running", "generation": 2}})
+		case "/api/v1/sessions/native/receipt":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{"session_id": "native", "generation": 2, "state": "cancelled", "reason": "terminated", "last_sequence": 8}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL)
+	ctx := context.Background()
+	if err := client.SendInput(ctx, "native", "prompt-key", "prompt", "continue"); err != nil {
+		t.Fatalf("send input: %v", err)
+	}
+	if err := client.Interrupt(ctx, "native", "interrupt-key"); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+	if err := client.Cancel(ctx, "native", "cancel-key"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if err := client.Terminate(ctx, "native", "terminate-key"); err != nil {
+		t.Fatalf("terminate: %v", err)
+	}
+	resumed, err := client.Resume(ctx, "native", "recover", map[string]string{"TOKEN": "secret"})
+	if err != nil || resumed.Generation != 2 {
+		t.Fatalf("resume = %+v err=%v", resumed, err)
+	}
+	receipt, err := client.GetTerminalReceipt(ctx, "native")
+	if err != nil || receipt.Reason != "terminated" || receipt.LastSequence != 8 {
+		t.Fatalf("receipt = %+v err=%v", receipt, err)
+	}
+	if len(observed) != 6 || observed[0].Path != "/api/v1/sessions/native/input" || observed[0].Body["kind"] != "prompt" ||
+		observed[0].Body["idempotency_key"] != "prompt-key" || observed[3].Path != "/api/v1/sessions/native/terminate" ||
+		observed[4].Body["prompt"] != "recover" || observed[5].Method != http.MethodGet {
+		t.Fatalf("observed requests = %+v", observed)
+	}
+}
+
 func durableTestRequest() api.SessionRequest {
 	return api.SessionRequest{Agent: "claude", Runtime: "docker", Prompt: "hello"}
 }
