@@ -200,13 +200,13 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| DUR-101 | IN PROGRESS | Define typed repository interfaces and structured domain errors for sessions, generations, events, and receipts. | Typed `durable.Store` repository contracts and in-memory reference suite pass; SQLite implementation awaits G1. | M |
-| DUR-102 | IN PROGRESS | Design SQLite schema, constraints, request hashing, transaction boundaries, backup/restore, and append-only protections. | `SCHEMA-v1.md` proposed with no migration created; review pending. | M |
-| DUR-103 | IN PROGRESS | Implement idempotent logical-session creation and lookup transaction. | Reference store passes 32-way concurrent duplicate-create and hash-conflict tests; SQLite transaction pending. | M |
-| DUR-104 | IN PROGRESS | Implement atomic sequence allocation + event append. | Reference store passes 100-way contiguous allocation and stable event-ID tests; SQLite transaction pending. | L |
-| DUR-105 | IN PROGRESS | Implement immutable state transitions and terminal receipt persistence. | Reference store atomically finalizes generation/session/receipt and rejects post-terminal mutation; SQLite transaction/restart test pending. | M |
+| DUR-101 | DONE | Define typed repository interfaces and structured domain errors for sessions, generations, events, and receipts. | In-memory and SQLite implementations pass one shared store contract. | M |
+| DUR-102 | DONE | Design SQLite schema, constraints, request hashing, transaction boundaries, backup/restore, and append-only protections. | Approved migration, private filesystem modes, integrity checks, snapshots, and hashed JSON backup manifests pass. | M |
+| DUR-103 | DONE | Implement idempotent logical-session creation and lookup transaction. | SQLite passes 32-way concurrent duplicate-create, request-hash conflict, and restart lookup tests. | M |
+| DUR-104 | DONE | Implement atomic sequence allocation + event append. | SQLite passes 100-way contiguous allocation, stable event-ID, replay, deletion-gap, and raw-hash corruption tests. | L |
+| DUR-105 | DONE | Implement immutable state transitions and terminal receipt persistence. | Atomic generation/session/receipt finalization remains immutable and identical after database restart. | M |
 
-**Gate G1 — Durable schema/API review:** approve schema and contracts before adding migration files or public v1 routes.
+**Gate G1 — APPROVED 2026-08-09:** four-table SQLite schema, typed store contracts, append-only enforcement, and backup/restore design.
 
 ### Phase 2 — Native Claude/Codex ingestion
 
@@ -323,3 +323,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Planning sheet created. No implementation authorized or performed.
 - 2026-08-09 — User authorized execution. G0 fixtures, real-Docker attach/recovery qualification, and ADR-001 completed. Direct native Docker transport is proposed; production transport awaits Gate G0 approval.
 - 2026-08-09 — User approved G0 and direct removal of sidecar semantics. Durable typed contracts, structured errors, race-tested in-memory reference store, and the no-migration G1 schema proposal were added.
+- 2026-08-09 — User approved G1. Pinned pure-Go SQLite, added the approved migration/store, verified concurrent idempotency and contiguous append, restart-stable active/terminal state, deliberate gap/raw corruption detection, and consistent hashed backup/restore.
+- 2026-08-09 — User selected `~/.agentd` as the default persistence root. Database, backups, chat JSON/history, logs, credentials, and reconstructable runtime files share that root; `--data-dir` and `AGENTRUNTIME_DATA_DIR` still relocate it as one unit.

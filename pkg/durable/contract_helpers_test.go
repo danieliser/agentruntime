@@ -29,13 +29,15 @@ func createContractSession(t *testing.T, ctx context.Context, store durable.Stor
 func createContractGeneration(t *testing.T, ctx context.Context, store durable.Store, sessionID string) durable.Generation {
 	t.Helper()
 	generation, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{
-		SessionID:      sessionID,
-		Runtime:        "docker",
-		ContainerID:    "container-" + sessionID,
-		ImageReference: "agent:fixture",
-		ImageDigest:    "sha256:image",
-		SandboxProfile: "sandbox-v1",
-		CreatedAt:      time.Unix(51, 0).UTC(),
+		SessionID:        sessionID,
+		Runtime:          "docker",
+		ContainerID:      "container-" + sessionID,
+		ImageReference:   "agent:fixture",
+		ImageDigest:      "sha256:image",
+		SandboxProfile:   "sandbox-v1",
+		DockerLogDriver:  "local",
+		DockerLogOptions: json.RawMessage(`{"max-size":"10m"}`),
+		CreatedAt:        time.Unix(51, 0).UTC(),
 	})
 	if err != nil {
 		t.Fatalf("create generation: %v", err)

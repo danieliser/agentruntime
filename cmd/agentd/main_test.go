@@ -94,3 +94,37 @@ func TestDaemonRecovery_ReplayBufferPopulated(t *testing.T) {
 	data, _ := sess.Replay.ReadFrom(0)
 	t.Fatalf("expected live output to append after recovery attach, got %q", string(data))
 }
+
+func TestDefaultDataDirUsesAgentDHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTRUNTIME_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-must-not-win"))
+
+	if got, want := defaultDataDir(), filepath.Join(home, ".agentd"); got != want {
+		t.Fatalf("defaultDataDir() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultDataDirHonorsExplicitOverride(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "agentd-state")
+	t.Setenv("AGENTRUNTIME_DATA_DIR", want)
+
+	if got := defaultDataDir(); got != want {
+		t.Fatalf("defaultDataDir() = %q, want explicit override %q", got, want)
+	}
+}
+
+func TestOpenDurableStoreUsesDataRoot(t *testing.T) {
+	root := t.TempDir()
+	store, err := openDurableStore(root)
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close durable store: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agentd.sqlite")); err != nil {
+		t.Fatalf("durable database is not under data root: %v", err)
+	}
+}

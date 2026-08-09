@@ -1,14 +1,14 @@
 # AgentD durable store v1 — Gate G1 review sheet
 
-Status: **PROPOSED / NO MIGRATION CREATED**
+Status: **APPROVED AND IMPLEMENTED**
 
 Date: 2026-08-09
 
 Task IDs: DUR-101, DUR-102, DUR-103, DUR-104, DUR-105
 
-## Review decision requested
+## Review decision
 
-Approve one AgentD-owned SQLite database with four domain tables:
+Approved one AgentD-owned SQLite database with four domain tables:
 
 1. `sessions` — logical identity, idempotency, reconstructable request manifest,
    lifecycle state, active generation, and durable event tail;
@@ -17,21 +17,33 @@ Approve one AgentD-owned SQLite database with four domain tables:
 4. `terminal_receipts` — immutable terminal proof committed atomically with the
    final session and generation transitions.
 
-Approval permits the first migration and a SQLite implementation of the typed
-contracts in `pkg/durable`. It does not approve public v1 routes or removal of
-the current sidecar transport.
+Approval was granted on 2026-08-09. Migration `001_durable_store_v1.sql`, the
+SQLite implementation, integrity checks, snapshot metadata, and daemon-owned
+store initialization are implemented. Public v1 routes and removal of the
+current sidecar transport remain gated separately.
 
 ## Driver and file
 
-- Proposed driver: `modernc.org/sqlite`, pinned at implementation time.
+- Driver: `modernc.org/sqlite` pinned at `v1.46.1`, the newest release compatible
+  with this repository's Go 1.24 baseline at implementation time.
 - Reason: pure Go keeps AgentD cross-compilation and static packaging free of a
   new CGO/toolchain requirement.
-- Proposed path: `${AGENTRUNTIME_DATA_DIR}/agentd.sqlite`.
+- Path: `${AGENTRUNTIME_DATA_DIR}/agentd.sqlite`; the data root defaults to
+  `~/.agentd` when no explicit flag or environment override is supplied.
 - Directory mode: `0700`; database and backup mode: `0600`.
 - One store is opened during daemon startup and injected through
   `durable.Store`; no scattered database opens or SQL.
 
-No dependency or database file is added before Gate G1 approval.
+The complete default persistence layout is kept under one relocatable root:
+
+```text
+~/.agentd/
+├── agentd.sqlite
+├── backups/          # SQLite snapshots plus .metadata.json manifests
+├── chats/            # named chat JSON records
+├── logs/             # legacy/current session history during migration
+└── credentials and reconstructed runtime homes/configuration
+```
 
 ## Representation rules
 
@@ -65,9 +77,10 @@ The compatibility adapter must split the existing generic `env` map into
 ordinary environment and explicit secret grants before it calls the v1 store.
 Until that classification exists, public v1 idempotent creation is not enabled.
 
-## Proposed tables
+## Approved tables
 
-This is review SQL, not a migration file.
+The canonical executable form is
+`pkg/durable/sqlite/migrations/001_durable_store_v1.sql`.
 
 ```sql
 CREATE TABLE sessions (
@@ -100,7 +113,7 @@ CREATE TABLE runtime_generations (
     image_digest           TEXT NOT NULL,
     sandbox_profile        TEXT NOT NULL,
     provider_id            TEXT NOT NULL DEFAULT '',
-    docker_log_driver      TEXT NOT NULL,
+    docker_log_driver      TEXT NOT NULL DEFAULT '',
     docker_log_options_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(docker_log_options_json)),
     created_at_ns          INTEGER NOT NULL,
     updated_at_ns          INTEGER NOT NULL CHECK (updated_at_ns >= created_at_ns),
@@ -260,15 +273,16 @@ Any failure degrades AgentD health and marks affected recovery results
   running integrity checks, replaying terminal receipts, and reconstructing
   active Docker-generation metadata without starting containers.
 
-## Migration sequence after approval
+## Completed migration sequence
 
-1. Pin the SQLite driver and add the central store configuration.
-2. Add migration `001_durable_store_v1.sql` containing tables, indexes, and
+1. Pinned the SQLite driver and added the central store configuration.
+2. Added migration `001_durable_store_v1.sql` containing tables, indexes, and
    immutability triggers exactly once.
-3. Implement the SQLite store behind `durable.Store`.
-4. Run the same contract suite currently passing against the in-memory store.
-5. Add restart, corruption, backup, and restore tests using temporary files.
-6. Integrate it into daemon startup only after the SQLite suite is green.
+3. Implemented the SQLite store behind `durable.Store`.
+4. Ran the same contract suite against the in-memory and SQLite stores.
+5. Added restart, terminal receipt, corruption, backup, and restore tests.
+6. Integrated the green store into daemon startup and injected it into the API
+   server dependency graph; compatibility handlers still await migration.
 
 ## Compatibility boundaries
 
@@ -284,11 +298,11 @@ Any failure degrades AgentD health and marks affected recovery results
 
 ## Gate G1 acceptance checklist
 
-- [ ] Four-table boundary accepted.
-- [ ] Pure-Go SQLite driver direction accepted.
-- [ ] Exact raw bytes plus derived JSON accepted.
-- [ ] Secret-grant/request-hash rule accepted.
-- [ ] Atomic finalization contract accepted.
-- [ ] Append-only triggers accepted.
-- [ ] Backup/restore approach accepted.
-- [ ] Migration creation authorized.
+- [x] Four-table boundary accepted.
+- [x] Pure-Go SQLite driver direction accepted.
+- [x] Exact raw bytes plus derived JSON accepted.
+- [x] Secret-grant/request-hash rule accepted.
+- [x] Atomic finalization contract accepted.
+- [x] Append-only triggers accepted.
+- [x] Backup/restore approach accepted.
+- [x] Migration creation authorized.

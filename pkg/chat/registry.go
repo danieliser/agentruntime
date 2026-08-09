@@ -42,8 +42,11 @@ type Registry struct {
 // It creates the directory if it does not exist.
 func NewRegistry(dataDir string) (*Registry, error) {
 	dir := filepath.Join(dataDir, "chats")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create chats dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("secure chats dir: %w", err)
 	}
 	return &Registry{dir: dir}, nil
 }
@@ -58,8 +61,12 @@ func (r *Registry) Save(rec *ChatRecord) error {
 		return fmt.Errorf("marshal chat record: %w", err)
 	}
 	tmp := r.path(rec.Name) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("secure temp file: %w", err)
 	}
 	if err := os.Rename(tmp, r.path(rec.Name)); err != nil {
 		os.Remove(tmp) // best-effort cleanup

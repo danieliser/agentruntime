@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
 )
@@ -13,6 +14,13 @@ func (store *Store) CreateGeneration(ctx context.Context, params durable.CreateG
 	}
 	if params.SessionID == "" || params.Runtime == "" || params.ContainerID == "" {
 		return durable.Generation{}, durable.NewError(durable.CodeInvalidArgument, op, "session ID, runtime, and container ID are required", nil)
+	}
+	if len(params.DockerLogOptions) > 0 && !json.Valid(params.DockerLogOptions) {
+		return durable.Generation{}, durable.NewError(durable.CodeInvalidArgument, op, "Docker log options must be valid JSON", nil)
+	}
+	logOptions := params.DockerLogOptions
+	if len(logOptions) == 0 {
+		logOptions = json.RawMessage(`{}`)
 	}
 
 	store.mu.Lock()
@@ -37,24 +45,26 @@ func (store *Store) CreateGeneration(ctx context.Context, params durable.CreateG
 
 	createdAt := normalizedTime(params.CreatedAt)
 	generation := durable.Generation{
-		SessionID:      params.SessionID,
-		Number:         int64(len(existing) + 1),
-		Runtime:        params.Runtime,
-		State:          durable.GenerationStarting,
-		ContainerID:    params.ContainerID,
-		ImageReference: params.ImageReference,
-		ImageDigest:    params.ImageDigest,
-		SandboxProfile: params.SandboxProfile,
-		ProviderID:     params.ProviderID,
-		CreatedAt:      createdAt,
-		UpdatedAt:      createdAt,
+		SessionID:        params.SessionID,
+		Number:           int64(len(existing) + 1),
+		Runtime:          params.Runtime,
+		State:            durable.GenerationStarting,
+		ContainerID:      params.ContainerID,
+		ImageReference:   params.ImageReference,
+		ImageDigest:      params.ImageDigest,
+		SandboxProfile:   params.SandboxProfile,
+		ProviderID:       params.ProviderID,
+		DockerLogDriver:  params.DockerLogDriver,
+		DockerLogOptions: append([]byte(nil), logOptions...),
+		CreatedAt:        createdAt,
+		UpdatedAt:        createdAt,
 	}
 	store.generations[params.SessionID] = append(existing, generation)
 	store.containerIDs[params.ContainerID] = generationKey{sessionID: params.SessionID, number: generation.Number}
 	session.ActiveGeneration = generation.Number
 	session.UpdatedAt = createdAt
 	store.sessions[session.ID] = session
-	return generation, nil
+	return cloneGeneration(generation), nil
 }
 
 func (store *Store) GetGeneration(ctx context.Context, sessionID string, number int64) (durable.Generation, error) {
@@ -68,7 +78,8 @@ func (store *Store) GetGeneration(ctx context.Context, sessionID string, number 
 	if err := store.checkOpen(op); err != nil {
 		return durable.Generation{}, err
 	}
-	return store.generation(op, sessionID, number)
+	generation, err := store.generation(op, sessionID, number)
+	return cloneGeneration(generation), err
 }
 
 func (store *Store) ListGenerations(ctx context.Context, sessionID string) ([]durable.Generation, error) {
@@ -85,7 +96,11 @@ func (store *Store) ListGenerations(ctx context.Context, sessionID string) ([]du
 	if _, exists := store.sessions[sessionID]; !exists {
 		return nil, notFound(op, "session")
 	}
-	return append([]durable.Generation(nil), store.generations[sessionID]...), nil
+	items := make([]durable.Generation, 0, len(store.generations[sessionID]))
+	for _, generation := range store.generations[sessionID] {
+		items = append(items, cloneGeneration(generation))
+	}
+	return items, nil
 }
 
 func (store *Store) TransitionGeneration(ctx context.Context, params durable.TransitionGenerationParams) (durable.Generation, error) {
@@ -110,7 +125,12 @@ func (store *Store) TransitionGeneration(ctx context.Context, params durable.Tra
 	generation.State = params.To
 	generation.UpdatedAt = normalizedTime(params.At)
 	store.generations[params.SessionID][params.Generation-1] = generation
-	return generation, nil
+	return cloneGeneration(generation), nil
+}
+
+func cloneGeneration(generation durable.Generation) durable.Generation {
+	generation.DockerLogOptions = append([]byte(nil), generation.DockerLogOptions...)
+	return generation
 }
 
 func (store *Store) generation(op, sessionID string, number int64) (durable.Generation, error) {

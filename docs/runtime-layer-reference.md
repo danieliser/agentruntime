@@ -625,7 +625,7 @@ type NetworkManager struct {
 2. **Parse flags:**
    - `--port` (default `8090`)
    - `--runtime` (default `"local"`)
-   - `--data-dir` (default `$AGENTRUNTIME_DATA_DIR` → `$XDG_DATA_HOME/agentruntime` → `~/.local/share/agentruntime`)
+   - `--data-dir` (default `$AGENTRUNTIME_DATA_DIR` → `~/.agentd`; relocates database, backups, chat history, logs, credentials, and runtime state together)
    - `--credential-sync` (default `false`)
    - `--max-sessions` (default `0` = unlimited)
 

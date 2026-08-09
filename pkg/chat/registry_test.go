@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,32 @@ func TestRegistry_SaveLoad_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRegistryUsesPrivateFilesystemModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
+	root := t.TempDir()
+	reg, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := reg.Save(makeRecord("private", time.Now())); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(root, "chats"):                 0o700,
+		filepath.Join(root, "chats", "private.json"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("mode %s = %#o, want %#o", path, got, want)
+		}
+	}
+}
+
 func TestRegistry_Load_NotFound(t *testing.T) {
 	reg := newTestRegistry(t)
 	_, err := reg.Load("nonexistent")
@@ -184,14 +211,14 @@ func TestValidateName_Valid(t *testing.T) {
 
 func TestValidateName_Invalid(t *testing.T) {
 	invalid := []string{
-		"",                                   // empty
-		"Web-UI",                             // uppercase
-		"a b",                                // space
-		"-bad",                               // leading hyphen
-		"_bad",                               // leading underscore
-		strings.Repeat("a", maxNameLen+1),    // too long
-		"hello world",                        // spaces
-		"café",                               // non-ASCII
+		"",                                // empty
+		"Web-UI",                          // uppercase
+		"a b",                             // space
+		"-bad",                            // leading hyphen
+		"_bad",                            // leading underscore
+		strings.Repeat("a", maxNameLen+1), // too long
+		"hello world",                     // spaces
+		"café",                            // non-ASCII
 	}
 	for _, name := range invalid {
 		if err := ValidateName(name); err == nil {

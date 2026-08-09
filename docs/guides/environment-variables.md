@@ -9,10 +9,12 @@ Variables that control the `agentd` daemon process at startup.
 ### `AGENTRUNTIME_DATA_DIR`
 
 **Type:** Path
-**Default:** `$XDG_DATA_HOME/agentruntime` or `~/.local/share/agentruntime`
+**Default:** `~/.agentd`
 **Context:** daemon startup
 
-Root directory for session logs, credentials, and materialized configs. Takes precedence over `XDG_DATA_HOME`.
+Root directory for the durable SQLite database, backup manifests, chat JSON and
+history, session logs, credentials, and materialized runtime configuration.
+The `--data-dir` flag and this variable relocate the complete layout together.
 
 ```bash
 export AGENTRUNTIME_DATA_DIR=/var/lib/agentruntime
@@ -23,13 +25,13 @@ export AGENTRUNTIME_DATA_DIR=/var/lib/agentruntime
 
 **Type:** Path
 **Default:** `~/.local/share`
-**Context:** daemon startup (fallback)
+**Context:** inherited environment only
 
-XDG Base Directory standard for data storage. Used as fallback if `AGENTRUNTIME_DATA_DIR` is not set. agentruntime appends `/agentruntime` to this path.
+AgentD no longer uses this as its data-root fallback. Set
+`AGENTRUNTIME_DATA_DIR` explicitly when an XDG-style path is required.
 
 ```bash
-export XDG_DATA_HOME=/data
-# Results in: /data/agentruntime
+export AGENTRUNTIME_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agentd"
 ```
 
 ### `DOCKER_HOST`
@@ -303,8 +305,8 @@ export AGENTRUNTIME_PORT=9090
 
 | Variable | Layer | Type | Default | Required? |
 |----------|-------|------|---------|-----------|
-| `AGENTRUNTIME_DATA_DIR` | daemon | path | `~/.local/share/agentruntime` | No |
-| `XDG_DATA_HOME` | daemon | path | `~/.local/share` | No (fallback) |
+| `AGENTRUNTIME_DATA_DIR` | daemon | path | `~/.agentd` | No |
+| `XDG_DATA_HOME` | inherited only | path | platform-dependent | No |
 | `DOCKER_HOST` | daemon | URL | empty | No |
 | `AGENT_CMD` | sidecar | JSON array | empty | Yes |
 | `AGENT_CONFIG` | sidecar | JSON object | empty | No |

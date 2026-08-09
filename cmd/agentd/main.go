@@ -18,6 +18,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/api"
 	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/credentials"
+	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -39,7 +40,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	port := flag.Int("port", 8090, "HTTP server port")
 	rtName := flag.String("runtime", "local", "Execution runtime (local, docker)")
-	dataDir := flag.String("data-dir", defaultDataDir(), "Data directory for sessions, logs, credentials")
+	dataDir := flag.String("data-dir", defaultDataDir(), "Data root for database, chat history, logs, credentials, and backups")
 	credSync := flag.Bool("credential-sync", false, "Enable background credential sync from Keychain")
 	maxSessions := flag.Int("max-sessions", 0, "Maximum concurrent sessions (0 = unlimited)")
 	dockerHost := flag.String("docker-host", "", "Remote Docker daemon (e.g., ssh://deploy@host, tcp://host:2376)")
@@ -53,6 +54,18 @@ func main() {
 	log.Printf("agentd %s starting", Version)
 	log.Printf("data dir: %s", *dataDir)
 	logDir := filepath.Join(*dataDir, "logs")
+	durableStore, err := openDurableStore(*dataDir)
+	if err != nil {
+		log.Fatalf("failed to initialize durable store: %v", err)
+	}
+	defer func() {
+		if err := durableStore.Close(); err != nil {
+			log.Printf("durable store close error: %v", err)
+		}
+	}()
+	if err := durableStore.CheckIntegrity(context.Background()); err != nil {
+		log.Fatalf("durable store integrity check failed: %v", err)
+	}
 
 	// Initialize runtimes. The --runtime flag sets the default; both local
 	// and docker are always available so callers can select per-session.
@@ -152,6 +165,7 @@ func main() {
 		ExtraRuntimes: extraRuntimes,
 		ChatRegistry:  chatRegistry,
 		ChatManager:   chatManager,
+		DurableStore:  durableStore,
 	})
 	// Wire the spawner after server creation to break the circular dependency
 	// between api.Server (needs chatManager) and chatManager (needs spawner).
@@ -211,17 +225,18 @@ func restoreRecoveredSessions(logDir string, sessions []*session.Session) {
 	}
 }
 
-// defaultDataDir returns the XDG-compliant data directory.
-// Respects AGENTRUNTIME_DATA_DIR env, then XDG_DATA_HOME, then ~/.local/share/agentruntime.
+// defaultDataDir returns AgentD's private user-state root. An explicit
+// AGENTRUNTIME_DATA_DIR relocates the complete database/history/log layout.
 func defaultDataDir() string {
 	if dir := os.Getenv("AGENTRUNTIME_DATA_DIR"); dir != "" {
 		return dir
 	}
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "agentruntime")
-	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "agentruntime")
+	return filepath.Join(home, ".agentd")
+}
+
+func openDurableStore(dataDir string) (*durablesqlite.Store, error) {
+	return durablesqlite.Open(filepath.Join(dataDir, "agentd.sqlite"))
 }
 
 // recoverRunningChats transitions any chat with state=="running" whose session

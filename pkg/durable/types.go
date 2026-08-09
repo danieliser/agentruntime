@@ -108,29 +108,33 @@ type TransitionSessionParams struct {
 
 // Generation identifies one concrete runtime process/container incarnation.
 type Generation struct {
-	SessionID      string
-	Number         int64
-	Runtime        string
-	State          GenerationState
-	ContainerID    string
-	ImageReference string
-	ImageDigest    string
-	SandboxProfile string
-	ProviderID     string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	SessionID        string
+	Number           int64
+	Runtime          string
+	State            GenerationState
+	ContainerID      string
+	ImageReference   string
+	ImageDigest      string
+	SandboxProfile   string
+	ProviderID       string
+	DockerLogDriver  string
+	DockerLogOptions json.RawMessage
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // CreateGenerationParams describes a newly admitted runtime generation.
 type CreateGenerationParams struct {
-	SessionID      string
-	Runtime        string
-	ContainerID    string
-	ImageReference string
-	ImageDigest    string
-	SandboxProfile string
-	ProviderID     string
-	CreatedAt      time.Time
+	SessionID        string
+	Runtime          string
+	ContainerID      string
+	ImageReference   string
+	ImageDigest      string
+	SandboxProfile   string
+	ProviderID       string
+	DockerLogDriver  string
+	DockerLogOptions json.RawMessage
+	CreatedAt        time.Time
 }
 
 // TransitionGenerationParams is a compare-and-set generation transition.

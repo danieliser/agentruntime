@@ -12,21 +12,23 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/chat"
+	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
 // Server holds the HTTP server and its dependencies.
 type Server struct {
-	router   *gin.Engine
-	sessions *session.Manager
-	runtimes map[string]runtime.Runtime // keyed by name ("local", "docker")
-	runtime  runtime.Runtime            // default runtime (first registered or "local")
-	agents   *agent.Registry
-	version  string
-	dataDir  string
-	logDir   string // directory for persistent session NDJSON logs
-	srv      *http.Server
+	router       *gin.Engine
+	sessions     *session.Manager
+	runtimes     map[string]runtime.Runtime // keyed by name ("local", "docker")
+	runtime      runtime.Runtime            // default runtime (first registered or "local")
+	agents       *agent.Registry
+	version      string
+	dataDir      string
+	logDir       string // directory for persistent session NDJSON logs
+	durableStore durable.Store
+	srv          *http.Server
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -66,6 +68,11 @@ type ServerConfig struct {
 
 	// ChatManager orchestrates named chat lifecycle. Optional.
 	ChatManager *chat.Manager
+
+	// DurableStore owns reconstructable sessions, generations, event history,
+	// and terminal receipts. Current compatibility handlers are migrated to it
+	// incrementally rather than treating legacy logs as proven durable events.
+	DurableStore durable.Store
 }
 
 // NewServer creates a configured HTTP server ready to start.
@@ -110,6 +117,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 	if len(cfgs) > 0 {
 		s.chatRegistry = cfgs[0].ChatRegistry
 		s.chatManager = cfgs[0].ChatManager
+		s.durableStore = cfgs[0].DurableStore
 	}
 
 	RegisterRoutes(router, s)

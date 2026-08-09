@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -11,10 +12,11 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/durable/memory"
+	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 )
 
 // DUR-101 through DUR-105: every durable Store implementation must pass this
-// suite. The SQLite implementation will be added as a second factory after G1.
+// suite so the reference and persistent stores retain identical semantics.
 func TestMemoryStoreContract(t *testing.T) {
 	t.Parallel()
 	runStoreContract(t, func(t *testing.T) durable.Store {
@@ -23,6 +25,22 @@ func TestMemoryStoreContract(t *testing.T) {
 		t.Cleanup(func() {
 			if err := store.Close(); err != nil {
 				t.Errorf("close store: %v", err)
+			}
+		})
+		return store
+	})
+}
+
+func TestSQLiteStoreContract(t *testing.T) {
+	runStoreContract(t, func(t *testing.T) durable.Store {
+		t.Helper()
+		store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+		if err != nil {
+			t.Fatalf("open SQLite store: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := store.Close(); err != nil {
+				t.Errorf("close SQLite store: %v", err)
 			}
 		})
 		return store
@@ -184,6 +202,21 @@ func runStoreContract(t *testing.T, factory storeFactory) {
 		}
 		if first.Number != 1 || second.Number != 2 {
 			t.Fatalf("generation numbers = %d, %d; want 1, 2", first.Number, second.Number)
+		}
+	})
+
+	t.Run("generation persists reconstructable Docker log configuration", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+		createContractSession(t, ctx, store, "session-generation-profile")
+		generation := createContractGeneration(t, ctx, store, "session-generation-profile")
+		generation.DockerLogOptions[0] = '['
+		stored, err := store.GetGeneration(ctx, "session-generation-profile", 1)
+		if err != nil {
+			t.Fatalf("get generation: %v", err)
+		}
+		if stored.DockerLogDriver != "local" || string(stored.DockerLogOptions) != `{"max-size":"10m"}` {
+			t.Fatalf("stored Docker log configuration = driver %q options %s", stored.DockerLogDriver, stored.DockerLogOptions)
 		}
 	})
 
