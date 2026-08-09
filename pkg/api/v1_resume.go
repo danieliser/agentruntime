@@ -98,7 +98,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	if _, codex := ag.(*agent.CodexAgent); codex {
 		command = []string{"codex", "app-server", "--listen", "stdio://"}
 	}
-	command = runtimeSpawnCommand(command, rt.Name(), true, stored.Agent)
+	command = runtimeSpawnCommand(command, rt.Name(), stored.Agent)
 	if existing := s.sessions.Get(stored.ID); existing != nil {
 		if existing.Snapshot().State == session.StateRunning {
 			s.writeV1Session(c, http.StatusOK, stored)

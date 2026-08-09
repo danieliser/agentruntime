@@ -136,13 +136,13 @@ func TestV1CreateSessionIsConcurrentAndRestartIdempotent(t *testing.T) {
 
 func TestV1DockerNativeSpawnKeepsProviderArguments(t *testing.T) {
 	command := []string{"claude", "-p", "hello", "--output-format", "stream-json"}
-	got := runtimeSpawnCommand(command, "docker", true, "claude")
+	got := runtimeSpawnCommand(command, "docker", "claude")
 	if len(got) != len(command) {
 		t.Fatalf("durable native Docker command = %v, want %v", got, command)
 	}
-	legacy := runtimeSpawnCommand(command, "docker", false, "claude")
-	if len(legacy) != 1 || legacy[0] != "claude" {
-		t.Fatalf("legacy sidecar Docker command = %v", legacy)
+	legacy := runtimeSpawnCommand(command, "docker", "claude")
+	if len(legacy) != len(command) {
+		t.Fatalf("direct legacy Docker command = %v, want %v", legacy, command)
 	}
 }
 

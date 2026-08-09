@@ -1,11 +1,7 @@
 package runtime
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +9,6 @@ import (
 	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
-	"github.com/gorilla/websocket"
 )
 
 func TestDockerAdversarial_MountHostWithSpacesStaysSingleVArg(t *testing.T) {
@@ -96,9 +91,8 @@ func TestDockerAdversarial_ImageMetacharactersPassedLiterally(t *testing.T) {
 		t.Fatalf("buildRunArgs failed: %v", err)
 	}
 
-	got := args[len(args)-1]
-	if got != image {
-		t.Fatalf("expected image %q, got %q in args %v", image, got, args)
+	if !containsArg(args, image) {
+		t.Fatalf("expected image %q as one literal argument in %v", image, args)
 	}
 }
 
@@ -279,12 +273,10 @@ func TestDockerAdversarial_FiftyMountsAllAppearInArgs(t *testing.T) {
 }
 
 func TestDockerAdversarial_ContainerNameCollisionFailsOrUsesUniqueName(t *testing.T) {
-	sidecarPort := startFakeDockerSidecar(t)
 	stateDir := t.TempDir()
 	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
 set -eu
 state_dir=%q
-sidecar_port=%q
 case "$1" in
   network)
     case "$2" in
@@ -342,8 +334,14 @@ case "$1" in
     : >"$marker"
     printf '%%s\n' "$name"
     ;;
-  port)
-    printf '0.0.0.0:%%s\n' "$sidecar_port"
+  attach)
+    while IFS= read -r input; do :; done
+    ;;
+  logs)
+    exit 0
+    ;;
+  wait)
+    printf '0\n'
     ;;
   stop|rm)
     rm -f "$state_dir/$2"
@@ -353,7 +351,7 @@ case "$1" in
     exit 2
     ;;
 esac
-`, stateDir, sidecarPort))
+`, stateDir))
 
 	rt := NewDockerRuntime(DockerConfig{Image: "alpine:latest"})
 	firstCfg := SpawnConfig{
@@ -438,9 +436,8 @@ func TestDockerAdversarial_RequestImageWinsOverRuntimeConfig(t *testing.T) {
 		t.Fatalf("buildRunArgs failed: %v", err)
 	}
 
-	got := args[len(args)-1]
-	if got != "busybox:1.36" {
-		t.Fatalf("expected request image to win, got %q in args %v", got, args)
+	if !containsArg(args, "busybox:1.36") || containsArg(args, "ubuntu:22.04") {
+		t.Fatalf("expected request image to win in args %v", args)
 	}
 }
 
@@ -482,8 +479,8 @@ func TestDockerAdversarial_NilRequestFallsBackToSpawnConfig(t *testing.T) {
 		t.Fatalf("read env file: %v", err)
 	}
 	contents := string(data)
-	if !strings.Contains(contents, "AGENT_CMD=[\"env\"]\n") {
-		t.Fatalf("expected AGENT_CMD in env file, got %q", contents)
+	if strings.Contains(contents, "AGENT_CMD=") {
+		t.Fatalf("direct command leaked obsolete AGENT_CMD into env file: %q", contents)
 	}
 	if !strings.Contains(contents, "VISIBLE_VAR=from-spawn-config\n") {
 		t.Fatalf("expected spawn config env in env file, got %q", contents)
@@ -563,45 +560,4 @@ func waitForFile(path string, timeout time.Duration) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out waiting for %s", path)
-}
-
-func startFakeDockerSidecar(t *testing.T) string {
-	t.Helper()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case dockerSidecarHealthPath:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status":     "ok",
-				"agent_type": "claude",
-			})
-		case "/ws":
-			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-			conn, err := upgrader.Upgrade(w, r, nil)
-			if err != nil {
-				t.Fatalf("upgrade websocket: %v", err)
-			}
-			defer conn.Close()
-
-			if err := conn.WriteJSON(wsServerFrame{Type: "connected"}); err != nil {
-				t.Fatalf("write connected: %v", err)
-			}
-			for {
-				var frame wsClientFrame
-				if err := conn.ReadJSON(&frame); err != nil {
-					return
-				}
-			}
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	u, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	return u.Port()
 }

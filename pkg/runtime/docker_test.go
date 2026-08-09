@@ -2,12 +2,8 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +11,6 @@ import (
 	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
-	"github.com/gorilla/websocket"
 )
 
 func TestDockerRuntime_Name(t *testing.T) {
@@ -136,7 +131,7 @@ func TestDockerDurableNativeRunHasNoSidecarTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build native Docker args: %v", err)
 	}
-	for _, forbidden := range []string{"--rm", "-p", dockerSidecarContainerPort} {
+	for _, forbidden := range []string{"--rm", "9090"} {
 		if containsArg(args, forbidden) {
 			t.Errorf("native Docker args contain sidecar flag %q: %v", forbidden, args)
 		}
@@ -155,6 +150,63 @@ func TestDockerDurableNativeRunHasNoSidecarTransport(t *testing.T) {
 	imageIndex := indexArg(args, "agent:test")
 	if imageIndex < 0 || imageIndex+2 >= len(args) || args[imageIndex+1] != "--output-format" || args[imageIndex+2] != "stream-json" {
 		t.Fatalf("native command arguments after image = %v", args)
+	}
+}
+
+func TestDockerClaudeUsesDirectNativeRunWithoutDurableGeneration(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "agent:test"})
+	spec, err := rt.prepareRun(SpawnConfig{
+		SessionID: "legacy-session", AgentName: "claude",
+		Cmd: []string{"claude", "--output-format", "stream-json", "-p", "hello"},
+	})
+	if err != nil {
+		t.Fatalf("build direct Docker args: %v", err)
+	}
+	defer spec.cleanup()
+	args := spec.args
+	for _, forbidden := range []string{"--rm", "9090"} {
+		if containsArg(args, forbidden) {
+			t.Errorf("direct Docker args contain sidecar flag %q: %v", forbidden, args)
+		}
+	}
+	if hasFlagValue(args, "-p", "0:9090") {
+		t.Errorf("direct Docker args publish the sidecar port: %v", args)
+	}
+	if !hasFlagValue(args, "--entrypoint", "claude") {
+		t.Fatalf("direct Docker args do not launch Claude: %v", args)
+	}
+	imageIndex := indexArg(args, "agent:test")
+	if imageIndex < 0 || imageIndex+4 >= len(args) || args[imageIndex+4] != "hello" {
+		t.Fatalf("direct Claude arguments after image = %v", args)
+	}
+	envFile := flagValue(args, "--env-file")
+	contents, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	if strings.Contains(string(contents), "AGENT_CMD=") || strings.Contains(string(contents), "AGENT_PROMPT=") {
+		t.Fatalf("direct native run retained sidecar environment: %q", contents)
+	}
+}
+
+func TestDockerGenericCommandAlsoBypassesExecutionSidecar(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "agent:test"})
+	spec, err := rt.prepareRun(SpawnConfig{
+		SessionID: "generic-session", Cmd: []string{"echo", "hello"},
+	})
+	if err != nil {
+		t.Fatalf("prepare direct generic run: %v", err)
+	}
+	defer spec.cleanup()
+	if containsArg(spec.args, "--rm") || hasFlagValue(spec.args, "-p", "0:9090") {
+		t.Fatalf("generic Docker run retained execution sidecar flags: %v", spec.args)
+	}
+	if !hasFlagValue(spec.args, "--entrypoint", "echo") {
+		t.Fatalf("generic Docker run missing direct entrypoint: %v", spec.args)
+	}
+	imageIndex := indexArg(spec.args, "agent:test")
+	if imageIndex < 0 || imageIndex+1 >= len(spec.args) || spec.args[imageIndex+1] != "hello" {
+		t.Fatalf("generic command arguments after image = %v", spec.args)
 	}
 }
 
@@ -314,6 +366,14 @@ if [ "$1" = "logs" ]; then
   printf 'recovered stdout line\n'
   exit 0
 fi
+if [ "$1" = "attach" ]; then
+  while IFS= read -r input; do :; done
+  exit 0
+fi
+if [ "$1" = "wait" ]; then
+  printf '0\n'
+  exit 0
+fi
 echo "unexpected docker command: $1" >&2
 exit 2
 `)
@@ -344,56 +404,6 @@ exit 2
 	}
 }
 
-func TestDockerRecover_PrefersSidecarWhenAvailable(t *testing.T) {
-	sidecarPort := startFakeDockerSidecar(t)
-	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
-set -eu
-case "$1" in
-  ps)
-    printf '%%s\n' 'container-123'
-    ;;
-  inspect)
-    printf '%%s\n' '{"agentruntime.session_id":"sess-sidecar","agentruntime.task_id":"task-sidecar"}'
-    ;;
-  port)
-    printf '0.0.0.0:%s\n'
-    ;;
-  stop|rm)
-    exit 0
-    ;;
-  *)
-    echo "unexpected docker command: $1" >&2
-    exit 2
-    ;;
-esac
-`, sidecarPort))
-
-	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
-	handles, err := rt.Recover(context.Background())
-	if err != nil {
-		t.Fatalf("recover failed: %v", err)
-	}
-	if len(handles) != 1 {
-		t.Fatalf("expected 1 recovered handle, got %d", len(handles))
-	}
-
-	wsRecovered, ok := handles[0].(*wsHandle)
-	if !ok {
-		t.Fatalf("expected wsHandle, got %T", handles[0])
-	}
-	t.Cleanup(func() {
-		_ = wsRecovered.Kill()
-	})
-
-	info := wsRecovered.RecoveryInfo()
-	if info == nil {
-		t.Fatal("expected recovery info")
-	}
-	if info.SessionID != "sess-sidecar" || info.TaskID != "task-sidecar" {
-		t.Fatalf("unexpected recovery info: %+v", info)
-	}
-}
-
 func TestDockerSpawn_SecurityFlagsPresent(t *testing.T) {
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 
@@ -420,49 +430,11 @@ func TestDockerSpawn_SecurityFlagsPresent(t *testing.T) {
 	}
 }
 
-func TestDockerSpawn_WSBased_DetachedMode(t *testing.T) {
+func TestDockerSpawn_DirectProviderEnv(t *testing.T) {
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 
 	spec, err := rt.prepareRun(SpawnConfig{
-		Cmd:       []string{"echo", "ok"},
-		SessionID: "detached-mode-1234",
-	})
-	if err != nil {
-		t.Fatalf("prepareRun failed: %v", err)
-	}
-	defer spec.cleanup()
-
-	if !containsArg(spec.args, "-d") {
-		t.Fatalf("expected -d in args, got %v", spec.args)
-	}
-	if containsArg(spec.args, "-i") {
-		t.Fatalf("did not expect -i in args, got %v", spec.args)
-	}
-}
-
-func TestDockerSpawn_WSBased_PortMapping(t *testing.T) {
-	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
-
-	spec, err := rt.prepareRun(SpawnConfig{
-		Cmd:       []string{"echo", "ok"},
-		SessionID: "port-mapping-1234",
-	})
-	if err != nil {
-		t.Fatalf("prepareRun failed: %v", err)
-	}
-	defer spec.cleanup()
-
-	if !hasFlagValue(spec.args, "-p", "0:9090") {
-		t.Fatalf("expected -p 0:9090 in args, got %v", spec.args)
-	}
-}
-
-func TestDockerSpawn_WSBased_AgentCmdEnv(t *testing.T) {
-	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
-	cmd := []string{"echo", "hello world"}
-
-	spec, err := rt.prepareRun(SpawnConfig{
-		Cmd:       cmd,
+		Cmd:       []string{"echo", "hello world"},
 		SessionID: "agent-cmd-env-1234",
 		Request: &apischema.SessionRequest{
 			Env: map[string]string{
@@ -485,12 +457,8 @@ func TestDockerSpawn_WSBased_AgentCmdEnv(t *testing.T) {
 		t.Fatalf("read env file: %v", err)
 	}
 
-	encodedCmd, err := json.Marshal([]string{cmd[0]})
-	if err != nil {
-		t.Fatalf("marshal command: %v", err)
-	}
-	if !strings.Contains(string(data), "AGENT_CMD="+string(encodedCmd)+"\n") {
-		t.Fatalf("expected AGENT_CMD in env file, got %q", string(data))
+	if strings.Contains(string(data), "AGENT_CMD=") || strings.Contains(string(data), "AGENT_PROMPT=") {
+		t.Fatalf("direct provider env contains sidecar configuration: %q", data)
 	}
 	if !strings.Contains(string(data), "HTTP_PROXY=http://agentruntime-proxy:3128\n") {
 		t.Fatalf("expected HTTP_PROXY in env file, got %q", string(data))
@@ -500,125 +468,6 @@ func TestDockerSpawn_WSBased_AgentCmdEnv(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "NO_PROXY=localhost,127.0.0.1,host.docker.internal,host-gateway\n") {
 		t.Fatalf("expected NO_PROXY in env file, got %q", string(data))
-	}
-}
-
-func TestDockerSpawn_V2_AgentCmdIsBinaryOnly(t *testing.T) {
-	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
-
-	spec, err := rt.prepareRun(SpawnConfig{
-		Cmd:       []string{"claude", "--dangerously-skip-permissions", "-p", "fix the bug", "--output-format", "stream-json"},
-		Prompt:    "fix the bug",
-		SessionID: "v2-agent-cmd-binary-only",
-	})
-	if err != nil {
-		t.Fatalf("prepareRun failed: %v", err)
-	}
-	defer spec.cleanup()
-
-	envFile := flagValue(spec.args, "--env-file")
-	if envFile == "" {
-		t.Fatalf("expected --env-file in args, got %v", spec.args)
-	}
-
-	data, err := os.ReadFile(envFile)
-	if err != nil {
-		t.Fatalf("read env file: %v", err)
-	}
-	if !strings.Contains(string(data), "AGENT_CMD=[\"claude\"]\n") {
-		t.Fatalf("expected binary-only AGENT_CMD, got %q", string(data))
-	}
-	// Prompt should be in AGENT_PROMPT as base64 for sidecar fire-and-forget mode,
-	// NOT embedded in AGENT_CMD args. Base64("fix the bug") = "Zml4IHRoZSBidWc="
-	if !strings.Contains(string(data), "AGENT_PROMPT=Zml4IHRoZSBidWc=\n") {
-		t.Fatalf("expected base64-encoded AGENT_PROMPT in env file, got %q", string(data))
-	}
-}
-
-func TestDockerSpawn_V2_PromptSentViaWS(t *testing.T) {
-	received := make(chan wsClientFrame, 1)
-	sidecarPort := startFakeDockerV2Sidecar(t, received)
-
-	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
-set -eu
-case "$1" in
-  network)
-    case "$2" in
-      inspect)
-        echo "Error: No such network: agentruntime-agents" >&2
-        exit 1
-        ;;
-      create)
-        exit 0
-        ;;
-    esac
-    ;;
-  inspect)
-    if [ "$2" = "--format" ]; then
-      echo "Error: No such object: agentruntime-proxy" >&2
-      exit 1
-    fi
-    ;;
-  run)
-    shift
-    name=""
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --name)
-          name=$2
-          shift 2
-          ;;
-        *)
-          shift
-          ;;
-      esac
-    done
-    if [ "$name" = "agentruntime-proxy" ]; then
-      printf '%%s\n' 'proxy-container'
-      exit 0
-    fi
-    printf '%%s\n' 'container-v2-prompt'
-    ;;
-  port)
-    printf '0.0.0.0:%s\n'
-    ;;
-  stop|rm)
-    exit 0
-    ;;
-  *)
-    echo "unexpected docker command: $1" >&2
-    exit 2
-    ;;
-esac
-`, sidecarPort))
-
-	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
-	handle, err := rt.Spawn(testContext(t), SpawnConfig{
-		Cmd:       []string{"claude"},
-		Prompt:    "fix the auth bug",
-		SessionID: "v2-prompt-over-ws",
-	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = handle.Kill()
-	})
-
-	select {
-	case frame := <-received:
-		if frame.Type != "prompt" {
-			t.Fatalf("expected prompt frame type, got %q", frame.Type)
-		}
-		data, ok := frame.Data.(map[string]any)
-		if !ok {
-			t.Fatalf("expected prompt data object, got %T", frame.Data)
-		}
-		if got := data["content"]; got != "fix the auth bug" {
-			t.Fatalf("expected prompt content %q, got %v", "fix the auth bug", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for prompt frame")
 	}
 }
 
@@ -638,22 +487,6 @@ func TestDockerSpawn_V2_LocalUnchanged(t *testing.T) {
 	}
 	if string(got) != "prompt from cmd\n" {
 		t.Fatalf("expected local runtime to execute full Cmd unchanged, got %q", string(got))
-	}
-}
-
-func TestDockerSpawn_WSBased_NoCommandAfterImage(t *testing.T) {
-	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
-
-	args, err := rt.buildRunArgs(SpawnConfig{
-		Cmd:       []string{"echo", "ok"},
-		SessionID: "no-command-after-image-1234",
-	})
-	if err != nil {
-		t.Fatalf("buildRunArgs failed: %v", err)
-	}
-
-	if got := args[len(args)-1]; got != "ubuntu:22.04" {
-		t.Fatalf("expected image to be final arg, got %q in args %v", got, args)
 	}
 }
 
@@ -724,8 +557,8 @@ func TestDockerSpawn_EnvFileCreatedAndDeleted(t *testing.T) {
 		t.Fatalf("read env file: %v", err)
 	}
 	contents := string(data)
-	if !strings.Contains(contents, "AGENT_CMD=[\"env\"]\n") {
-		t.Fatalf("expected AGENT_CMD in env file, got %q", contents)
+	if strings.Contains(contents, "AGENT_CMD=") {
+		t.Fatalf("direct command leaked obsolete AGENT_CMD into env file: %q", contents)
 	}
 	if !strings.Contains(contents, "VISIBLE_VAR=docker-value\n") {
 		t.Fatalf("expected VISIBLE_VAR in env file, got %q", contents)
@@ -796,7 +629,7 @@ func TestDockerSpawn_ResourceLimits(t *testing.T) {
 	if !hasFlagValue(spec.args, "--network", "bridge") {
 		t.Fatalf("expected configured network in args, got %v", spec.args)
 	}
-	if spec.args[len(spec.args)-1] != "custom:latest" {
+	if !containsArg(spec.args, "custom:latest") || containsArg(spec.args, "ubuntu:22.04") {
 		t.Fatalf("expected resource image override in args, got %v", spec.args)
 	}
 }
@@ -808,52 +641,6 @@ func flagValue(args []string, flag string) string {
 		}
 	}
 	return ""
-}
-
-func startFakeDockerV2Sidecar(t *testing.T, received chan<- wsClientFrame) string {
-	t.Helper()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case dockerSidecarHealthPath:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status":     "ok",
-				"agent_type": "claude",
-			})
-		case "/ws":
-			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-			conn, err := upgrader.Upgrade(w, r, nil)
-			if err != nil {
-				t.Fatalf("upgrade websocket: %v", err)
-			}
-			defer conn.Close()
-
-			if err := conn.WriteJSON(wsServerFrame{Type: "connected"}); err != nil {
-				t.Fatalf("write connected: %v", err)
-			}
-
-			var frame wsClientFrame
-			if err := conn.ReadJSON(&frame); err != nil {
-				t.Fatalf("read prompt frame: %v", err)
-			}
-			received <- frame
-
-			code := 0
-			if err := conn.WriteJSON(wsServerFrame{Type: "exit", ExitCode: &code}); err != nil {
-				t.Fatalf("write exit: %v", err)
-			}
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	u, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	return u.Port()
 }
 
 func TestDockerVolumeName(t *testing.T) {

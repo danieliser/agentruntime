@@ -122,20 +122,18 @@ type ProcessHandle interface {
 	RecoveryInfo() *RecoveryInfo
 }
 
-// SteerableHandle extends ProcessHandle with sidecar command methods.
-// Handles that support the full sidecar command set (wsHandle) implement this.
-// Handles that don't (localHandle, dockerHandle) will not satisfy this interface
-// and callers should check with a type assertion before calling these methods.
+// SteerableHandle is retained only for the unversioned compatibility bridge.
+// Native v1 controls use nativeprotocol.Transport instead.
 type SteerableHandle interface {
 	ProcessHandle
 
-	// SendPrompt sends a prompt command to the sidecar.
+	// SendPrompt sends a prompt through a compatibility handle.
 	SendPrompt(content string) error
 
-	// SendInterrupt sends an interrupt command to the sidecar.
+	// SendInterrupt sends an interrupt through a compatibility handle.
 	SendInterrupt() error
 
-	// SendSteer sends a steer command to the sidecar.
+	// SendSteer sends steering input through a compatibility handle.
 	SendSteer(content string) error
 
 	// SendContext sends a context command with text and/or file path.
@@ -147,19 +145,17 @@ type SteerableHandle interface {
 
 // Compile-time interface assertions.
 var (
-	_ Runtime         = (*LocalRuntime)(nil)
-	_ Runtime         = (*LocalSidecarRuntime)(nil)
-	_ Runtime         = (*DockerRuntime)(nil)
-	_ ProcessHandle   = (*localHandle)(nil)
-	_ ProcessHandle   = (*dockerHandle)(nil)
-	_ ProcessHandle   = (*nativeDockerHandle)(nil)
-	_ ProcessHandle   = (*recoveredDockerHandle)(nil)
-	_ SteerableHandle = (*wsHandle)(nil)
+	_ Runtime       = (*LocalRuntime)(nil)
+	_ Runtime       = (*DockerRuntime)(nil)
+	_ ProcessHandle = (*localHandle)(nil)
+	_ ProcessHandle = (*dockerHandle)(nil)
+	_ ProcessHandle = (*nativeDockerHandle)(nil)
+	_ ProcessHandle = (*recoveredDockerHandle)(nil)
 )
 
-// ErrNotSteerable is returned when a command method is called on a handle
-// that does not support the sidecar command protocol.
-var ErrNotSteerable = fmt.Errorf("handle does not support sidecar commands")
+// ErrNotSteerable is returned by the unversioned bridge when its compatibility
+// handle cannot translate a structured control.
+var ErrNotSteerable = fmt.Errorf("handle does not support structured compatibility controls")
 
 // ExitResult holds the outcome of a process termination.
 type ExitResult struct {
@@ -169,7 +165,7 @@ type ExitResult struct {
 	// Err is any error encountered waiting for the process, distinct from a non-zero exit code.
 	Err error
 
-	// ErrorDetail contains the error_detail field from the sidecar exit frame, if present.
+	// ErrorDetail contains runtime-specific terminal detail, if present.
 	ErrorDetail string
 }
 

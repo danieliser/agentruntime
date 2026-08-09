@@ -192,7 +192,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		cmd = []string{"codex", "app-server", "--listen", "stdio://"}
 	}
 
-	spawnCmd := runtimeSpawnCommand(cmd, rt.Name(), durableV1, req.Agent)
+	spawnCmd := runtimeSpawnCommand(cmd, rt.Name(), req.Agent)
 
 	// Create the session. Use caller-provided session ID if valid UUID.
 	requestedID := req.SessionID
@@ -403,11 +403,11 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	})
 }
 
-func runtimeSpawnCommand(command []string, runtimeName string, durableV1 bool, agentName string) []string {
+func runtimeSpawnCommand(command []string, runtimeName, agentName string) []string {
 	if runtimeName != "docker" || len(command) == 0 {
 		return command
 	}
-	if durableV1 && nativeV1Agent(agentName) {
+	if nativeV1Agent(agentName) {
 		return command
 	}
 	return []string{command[0]}

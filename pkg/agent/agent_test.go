@@ -14,6 +14,11 @@ func TestRegistry_DefaultAgents(t *testing.T) {
 			t.Errorf("expected agent %q to be registered in default registry", name)
 		}
 	}
+	for _, name := range []string{"grok", "cursor"} {
+		if r.Get(name) != nil {
+			t.Errorf("non-native agent %q remains registered", name)
+		}
+	}
 }
 
 func TestRegistry_UnknownAgent(t *testing.T) {

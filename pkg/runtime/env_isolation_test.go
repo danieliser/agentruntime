@@ -57,7 +57,6 @@ func TestLocalRuntime_InheritsParentEnv(t *testing.T) {
 	}
 }
 
-
 func TestLocalRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	rt := NewLocalRuntime()
 	_, err := rt.Spawn(testContext(t), localHelperConfig("print-env", map[string]string{
@@ -70,7 +69,6 @@ func TestLocalRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 		t.Fatalf("expected reserved env error, got %v", err)
 	}
 }
-
 
 func TestLocalRuntime_InvalidEnvKeysError(t *testing.T) {
 	rt := NewLocalRuntime()
@@ -98,7 +96,6 @@ func TestLocalRuntime_InvalidEnvKeysError(t *testing.T) {
 		})
 	}
 }
-
 
 // TestLocalRuntime_ExtraEnvMergedOntoParent verifies that extra env vars
 // are added on top of the inherited parent environment, not replacing it.
@@ -141,11 +138,10 @@ func TestDockerRuntime_DoesNotInheritDaemonSecrets(t *testing.T) {
 	if strings.Contains(contents, "SECRET_KEY=") {
 		t.Fatalf("expected SECRET_KEY to be absent from env file, got %q", contents)
 	}
-	if !strings.Contains(contents, "AGENT_CMD=[\"sh\"]\n") {
-		t.Fatalf("expected binary-only AGENT_CMD in env file, got %q", contents)
+	if strings.Contains(contents, "AGENT_CMD=") {
+		t.Fatalf("direct command leaked obsolete AGENT_CMD into env file: %q", contents)
 	}
 }
-
 
 func TestDockerRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
@@ -160,7 +156,6 @@ func TestDockerRuntime_RejectsReservedEnvOverrides(t *testing.T) {
 		t.Fatalf("expected reserved env error, got %v", err)
 	}
 }
-
 
 func TestDockerRuntime_InvalidEnvKeysError(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()
@@ -189,7 +184,6 @@ func TestDockerRuntime_InvalidEnvKeysError(t *testing.T) {
 		})
 	}
 }
-
 
 func TestDockerRuntime_BuildRunArgsKeepEnvFlagsAtomic(t *testing.T) {
 	rt := dockerRuntimeForEnvTests()

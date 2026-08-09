@@ -2,7 +2,7 @@
 set -e
 
 # agentruntime install.sh
-# Installs agentd and agentruntime-sidecar binaries and creates launchd/systemd service
+# Installs the agentd binary and creates a launchd/systemd service
 
 usage() {
     cat << 'EOF'
@@ -119,16 +119,8 @@ if ! go build -o "$BIN_DIR/agentd" ./cmd/agentd; then
 fi
 echo "✓ built agentd -> $BIN_DIR/agentd"
 
-# Build agentruntime-sidecar
-echo "building agentruntime-sidecar..."
-if ! go build -o "$BIN_DIR/agentruntime-sidecar" ./cmd/sidecar; then
-    echo "error: failed to build agentruntime-sidecar"
-    exit 1
-fi
-echo "✓ built agentruntime-sidecar -> $BIN_DIR/agentruntime-sidecar"
-
 # Create data directory
-DATA_DIR="$HOME/.local/share/agentruntime"
+DATA_DIR="$HOME/.agentd"
 mkdir -p "$DATA_DIR"
 echo "✓ created data directory: $DATA_DIR"
 

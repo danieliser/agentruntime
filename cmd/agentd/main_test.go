@@ -131,3 +131,16 @@ func TestOpenDurableStoreUsesDataRoot(t *testing.T) {
 		t.Fatalf("durable database is not under data root: %v", err)
 	}
 }
+
+func TestLocalRuntimeIsNativeAndLegacyAliasIsRetired(t *testing.T) {
+	rt, err := newRuntime("local", t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("new local runtime: %v", err)
+	}
+	if _, ok := rt.(*runtime.LocalRuntime); !ok {
+		t.Fatalf("local runtime = %T, want native local runtime", rt)
+	}
+	if _, err := newRuntime("local-pipe", t.TempDir(), ""); err == nil {
+		t.Fatal("retired local-pipe alias remains accepted")
+	}
+}

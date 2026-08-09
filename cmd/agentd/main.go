@@ -77,7 +77,7 @@ func main() {
 	}
 	var extraRuntimes []runtime.Runtime
 	if *rtName != "local" {
-		extraRuntimes = append(extraRuntimes, runtime.NewLocalSidecarRuntime())
+		extraRuntimes = append(extraRuntimes, runtime.NewLocalRuntime())
 	}
 	if *rtName != "docker" {
 		// Docker runtime init is lazy: if Docker isn't available, log a warning
@@ -270,9 +270,6 @@ func (a *dockerVolumeAdapter) RemoveVolume(ctx context.Context, name string) err
 func newRuntime(name, dataDir, dockerHost string) (runtime.Runtime, error) {
 	switch name {
 	case "local":
-		return runtime.NewLocalSidecarRuntime(), nil
-	case "local-pipe":
-		// Legacy pipe-based local runtime (no sidecar, no structured events)
 		return runtime.NewLocalRuntime(), nil
 	case "docker":
 		return runtime.NewDockerRuntime(runtime.DockerConfig{
