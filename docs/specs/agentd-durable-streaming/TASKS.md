@@ -1,6 +1,6 @@
 # AgentD Durable Native Streaming — Task Sheet
 
-Status: **G0 + G1 APPROVED / G2 IN PROGRESS**
+Status: **G0 + G1 + G2 APPROVED / G3 IN PROGRESS**
 
 Last updated: 2026-08-09
 
@@ -220,6 +220,11 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 
 **Gate G2 — Native-stream parity:** Claude/Codex streaming, control, resume, usage, and terminal parity must pass before old sidecar semantics are removed.
 
+**Gate G2 — APPROVED 2026-08-09:** Claude/Codex native streaming,
+follow-up/steer, interrupt, cancel, resume, terminal proof, usage derivation, and
+cursor replay pass without the execution-sidecar protocol. The user approved
+retirement of non-native methods after this parity checkpoint.
+
 ### Phase 3 — Buffered storage and cursor replay
 
 | ID | Status | Task | Acceptance evidence | Size |
@@ -237,7 +242,7 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 | RES-401 | DONE | Replace duplicate-create `409` with idempotent lookup semantics. | Versioned create passes 16-way concurrent admission with one process/generation, changed-request conflict, terminal lookup, and SQLite close/reopen lookup without respawn. | M |
 | RES-402 | DONE | Persist provider session/thread identity and resume inputs. | Provider identity binds from native output, survives SQLite restart, restores Codex correlation without repeating app-server initialization, and is supplied exactly to Claude/Codex generation resume. | M |
 | RES-403 | DONE | Implement explicit runtime resume as generation `N+1` for eligible nonterminal sessions. | `POST /api/v1/sessions/{id}/resume` accepts only a lost nonterminal generation, retains logical ID/event sequence, creates N+1 once, resumes the exact provider ID, and returns lookup/no-op on repeats or terminal sessions. | L |
-| RES-404 | IN PROGRESS | Make interrupt/cancel/resume requests idempotent with durable outcomes. | Resume is serialized/idempotent; prompt/steer/interrupt require durable keys and commit `requested` then `dispatched`, with stable retry success or explicit ambiguous-dispatch `indeterminate`; cancellation classification remains. | M |
+| RES-404 | DONE | Make interrupt/cancel/resume requests idempotent with durable outcomes. | Resume is serialized/idempotent; prompt/steer/interrupt/cancel require durable keys and commit `requested` then `dispatched`; cancellation waits for dispatch proof before committing `session.cancelled` and an immutable `cancelled` receipt; stable retries are no-ops and ambiguous dispatch is explicit `indeterminate`. | M |
 | RES-405 | DONE | Expose typed follow-up and steer input on an active native generation. | `POST /api/v1/sessions/{id}/input` routes prompt/steer through the registered Claude/Codex native transport; interactive Codex integration proves a second turn and interrupt without a sidecar. | M |
 
 ### Phase 5 — Docker reconstruction
@@ -337,3 +342,4 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Startup reconciliation now reattaches the exact running generation without replaying provider initialization, deduplicates the retained source prefix to its original event identities/timestamps, marks confirmed missing generations `lost`, and commits `indeterminate` terminal proof for duplicate container claims.
 - 2026-08-09 — Added explicit generation N+1 resume for lost nonterminal sessions, immutable terminal-receipt retrieval, bidirectional Claude stream-json launch, active native prompt/steer input, and native interrupt. Resume secret values are launch-only and must be regranted; nested secret paths conservatively require a new create request.
 - 2026-08-09 — Added durable two-phase control idempotency without a schema migration. Prompt, steer, and interrupt keys commit `control.*.requested` before provider I/O and `control.*.dispatched` after the write; repeated completed calls are no-ops, changed key reuse conflicts, and a requested-only retry is explicitly `indeterminate`.
+- 2026-08-09 — Completed native cancel semantics: cancel intent is committed before process termination, the watcher waits for durable dispatch proof before emitting `session.cancelled`, the immutable receipt records `cancelled`, and identical retries remain successful after termination. Repeated and race-enabled lifecycle tests pass; Gate G2 is approved and sidecar retirement may begin.

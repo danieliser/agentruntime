@@ -166,18 +166,27 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	}
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
-	var attached nativeprotocol.Transport
+	var active *activeNativeSession
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
 		"", !manifest.Interactive,
 		true, s.eventBroker,
+		func() string {
+			if active == nil {
+				return ""
+			}
+			return active.terminalReason()
+		},
 		func(transport nativeprotocol.Transport) {
-			attached = transport
-			s.setNativeTransport(sess.ID, transport)
+			active = s.setNativeTransport(sess.ID, transport)
 		},
 		func(result runtime.ExitResult, streamErr error) {
-			s.clearNativeTransport(sess.ID, attached)
-			s.finalizeV1Session(sess.ID, result, streamErr)
+			s.clearNativeTransport(sess.ID, active)
+			var override durable.SessionState
+			if active != nil {
+				override = active.terminalState()
+			}
+			s.finalizeV1SessionAs(sess.ID, result, override, streamErr)
 		},
 	); err != nil {
 		return err

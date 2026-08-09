@@ -346,18 +346,27 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	// in the session response so callers can retrieve it later.
 	if durableV1 {
 		if usesNativeTransport {
-			var attached nativeprotocol.Transport
+			var active *activeNativeSession
 			if err := AttachNativeSessionIO(
 				sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
 				"", req.Prompt, !req.Interactive,
 				false, s.eventBroker,
+				func() string {
+					if active == nil {
+						return ""
+					}
+					return active.terminalReason()
+				},
 				func(transport nativeprotocol.Transport) {
-					attached = transport
-					s.setNativeTransport(sess.ID, transport)
+					active = s.setNativeTransport(sess.ID, transport)
 				},
 				func(result runtime.ExitResult, streamErr error) {
-					s.clearNativeTransport(sess.ID, attached)
-					s.finalizeV1Session(sess.ID, result, streamErr)
+					s.clearNativeTransport(sess.ID, active)
+					var override durable.SessionState
+					if active != nil {
+						override = active.terminalState()
+					}
+					s.finalizeV1SessionAs(sess.ID, result, override, streamErr)
 				},
 			); err != nil {
 				log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)

@@ -303,6 +303,10 @@ func outputHash(path string) string {
 }
 
 func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult, streamErrors ...error) {
+	s.finalizeV1SessionAs(sessionID, result, "", streamErrors...)
+}
+
+func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult, override durable.SessionState, streamErrors ...error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stored, err := s.durableStore.GetSession(ctx, sessionID)
@@ -328,6 +332,13 @@ func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult, 
 		state = durable.StateCrashed
 	} else if result.Code != 0 {
 		state = durable.StateFailed
+	}
+	if override != "" {
+		state = override
+		generationTo = durable.GenerationExited
+		if override == durable.StateIndeterminate {
+			generationTo = durable.GenerationIndeterminate
+		}
 	}
 	exitCode := result.Code
 	_, err = s.durableStore.FinalizeSession(ctx, durable.FinalizeSessionParams{

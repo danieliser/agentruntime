@@ -28,6 +28,7 @@ func AttachNativeSessionIO(
 	stopOnTurnCompletion bool,
 	reconnect bool,
 	broker *eventstream.Broker,
+	terminalReason func() string,
 	onAttach func(nativeprotocol.Transport),
 	onExit func(runtime.ExitResult, error),
 ) error {
@@ -129,9 +130,15 @@ func AttachNativeSessionIO(
 		}
 		endedAt := time.Now().UTC()
 		if streamErr == nil {
-			reason := "completed"
-			if nativeExit.Code != 0 {
-				reason = "failed"
+			reason := ""
+			if terminalReason != nil {
+				reason = terminalReason()
+			}
+			if reason == "" {
+				reason = "completed"
+				if nativeExit.Code != 0 {
+					reason = "failed"
+				}
 			}
 			_, err := broker.IngestTerminal(context.Background(), eventstream.TerminalParams{
 				SessionID: sess.ID, Generation: generation, Timestamp: endedAt,

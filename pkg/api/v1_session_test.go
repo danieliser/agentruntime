@@ -343,6 +343,85 @@ func TestV1NativeInputAndInterruptUseActiveProviderTransport(t *testing.T) {
 	waitForDurableTerminal(t, store, created.Data.SessionID)
 }
 
+func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&cancelCodexFixtureAgent{})
+	manager := session.NewManager()
+	server := NewServer(manager, runtime.NewLocalRuntime(), registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	createdResponse := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-native-cancel", "agent": "codex", "runtime": "local",
+		"prompt": "start", "interactive": true,
+	})
+	defer createdResponse.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, createdResponse.Body, &created)
+	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 1)
+	cancelBody := map[string]any{"idempotency_key": "cancel-once"}
+	cancelResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "cancel", cancelBody)
+	defer cancelResponse.Body.Close()
+	if cancelResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel status=%d", cancelResponse.StatusCode)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateCancelled {
+		t.Fatalf("cancel receipt = %+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 100})
+	if err != nil || len(page.Events) == 0 || page.Events[len(page.Events)-1].Type != "session.cancelled" {
+		t.Fatalf("cancel terminal ledger = %+v err=%v", page, err)
+	}
+	repeat := postV1Control(t, httpServer.URL, created.Data.SessionID, "cancel", cancelBody)
+	defer repeat.Body.Close()
+	if repeat.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent cancel status=%d", repeat.StatusCode)
+	}
+}
+
+func TestActiveNativeSessionDoesNotReclassifyClaimedTerminalAsCancelled(t *testing.T) {
+	active := newActiveNativeSession(nil)
+	if reason := active.terminalReason(); reason != "" {
+		t.Fatalf("natural terminal reason = %q, want empty", reason)
+	}
+	if active.beginCancel() {
+		t.Fatal("cancel claimed a process whose natural terminal path already won")
+	}
+}
+
+func TestActiveNativeSessionWaitsForDurableCancelOutcome(t *testing.T) {
+	active := newActiveNativeSession(nil)
+	if !active.beginCancel() {
+		t.Fatal("cancel did not claim active process")
+	}
+	reason := make(chan string, 1)
+	go func() { reason <- active.terminalReason() }()
+	select {
+	case got := <-reason:
+		t.Fatalf("terminal reason returned before cancel settled: %q", got)
+	case <-time.After(10 * time.Millisecond):
+	}
+	active.settleCancel(durable.StateCancelled)
+	select {
+	case got := <-reason:
+		if got != "cancelled" {
+			t.Fatalf("settled terminal reason = %q, want cancelled", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal reason did not unblock after cancel settled")
+	}
+}
+
 func postV1Control(t *testing.T, baseURL, sessionID, operation string, body any) *http.Response {
 	t.Helper()
 	encoded, err := json.Marshal(body)
@@ -452,6 +531,25 @@ printf '%s\n' '{"id":4,"result":{}}'
 `}, nil
 }
 func (*interactiveCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) {
+	return nil, false
+}
+
+type cancelCodexFixtureAgent struct{}
+
+func (*cancelCodexFixtureAgent) Name() string { return "codex" }
+func (*cancelCodexFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
+	return []string{"/bin/sh", "-c", `
+IFS= read -r initialize
+printf '%s\n' '{"id":0,"result":{"userAgent":"codex-cancel"}}'
+IFS= read -r initialized
+IFS= read -r thread_start
+printf '%s\n' '{"id":1,"result":{"threadId":"codex-cancel-thread"}}' '{"method":"thread/started","params":{"threadId":"codex-cancel-thread"}}'
+IFS= read -r first_turn
+printf '%s\n' '{"id":2,"result":{}}' '{"method":"turn/started","params":{"threadId":"codex-cancel-thread","turnId":"turn-cancel"}}' '{"method":"turn/completed","params":{"threadId":"codex-cancel-thread","turnId":"turn-cancel","status":"completed"}}'
+IFS= read -r wait_for_cancel
+`}, nil
+}
+func (*cancelCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) {
 	return nil, false
 }
 

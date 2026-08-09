@@ -15,7 +15,6 @@ import (
 	"github.com/danieliser/agentruntime/pkg/chat"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
-	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -35,7 +34,7 @@ type Server struct {
 	srv          *http.Server
 	resumeMu     sync.Mutex
 	nativeMu     sync.RWMutex
-	native       map[string]nativeprotocol.Transport
+	native       map[string]*activeNativeSession
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -124,7 +123,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		version:  version,
 		dataDir:  dataDir,
 		logDir:   logDir,
-		native:   make(map[string]nativeprotocol.Transport),
+		native:   make(map[string]*activeNativeSession),
 	}
 	if len(cfgs) > 0 {
 		s.chatRegistry = cfgs[0].ChatRegistry

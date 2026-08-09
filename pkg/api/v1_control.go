@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,21 +25,78 @@ type v1InterruptRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-func (s *Server) setNativeTransport(sessionID string, transport nativeprotocol.Transport) {
-	s.nativeMu.Lock()
-	s.native[sessionID] = transport
-	s.nativeMu.Unlock()
+type activeNativeSession struct {
+	transport nativeprotocol.Transport
+
+	mu              sync.Mutex
+	cancelRequested bool
+	cancelOutcome   durable.SessionState
+	terminalClaimed bool
+	cancelSettled   chan struct{}
+	cancelOnce      sync.Once
 }
 
-func (s *Server) clearNativeTransport(sessionID string, transport nativeprotocol.Transport) {
+func newActiveNativeSession(transport nativeprotocol.Transport) *activeNativeSession {
+	return &activeNativeSession{transport: transport, cancelSettled: make(chan struct{})}
+}
+
+func (active *activeNativeSession) beginCancel() bool {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	if active.terminalClaimed {
+		return false
+	}
+	active.cancelRequested = true
+	return true
+}
+
+func (active *activeNativeSession) settleCancel(state durable.SessionState) {
+	active.cancelOnce.Do(func() {
+		active.mu.Lock()
+		active.cancelOutcome = state
+		active.mu.Unlock()
+		close(active.cancelSettled)
+	})
+}
+
+func (active *activeNativeSession) terminalReason() string {
+	active.mu.Lock()
+	if !active.cancelRequested {
+		active.terminalClaimed = true
+		active.mu.Unlock()
+		return ""
+	}
+	active.mu.Unlock()
+	<-active.cancelSettled
+	if active.terminalState() == durable.StateCancelled {
+		return "cancelled"
+	}
+	return "indeterminate"
+}
+
+func (active *activeNativeSession) terminalState() durable.SessionState {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	return active.cancelOutcome
+}
+
+func (s *Server) setNativeTransport(sessionID string, transport nativeprotocol.Transport) *activeNativeSession {
+	active := newActiveNativeSession(transport)
 	s.nativeMu.Lock()
-	if current := s.native[sessionID]; current == transport {
+	s.native[sessionID] = active
+	s.nativeMu.Unlock()
+	return active
+}
+
+func (s *Server) clearNativeTransport(sessionID string, active *activeNativeSession) {
+	s.nativeMu.Lock()
+	if current := s.native[sessionID]; current == active {
 		delete(s.native, sessionID)
 	}
 	s.nativeMu.Unlock()
 }
 
-func (s *Server) nativeTransport(sessionID string) nativeprotocol.Transport {
+func (s *Server) nativeSession(sessionID string) *activeNativeSession {
 	s.nativeMu.RLock()
 	defer s.nativeMu.RUnlock()
 	return s.native[sessionID]
@@ -63,11 +121,6 @@ func (s *Server) handleV1NativeInput(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
 		return
 	}
-	transport := s.nativeTransport(c.Param("id"))
-	if transport == nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "session has no active native transport", nil))
-		return
-	}
 	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, string(request.Kind), map[string]any{"text": request.Text})
 	if err != nil {
 		writeDurableError(c, err)
@@ -77,9 +130,14 @@ func (s *Server) handleV1NativeInput(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
 		return
 	}
+	active := s.nativeSession(c.Param("id"))
+	if active == nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "control intent is durable but the native transport is unavailable", nil))
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	if err := transport.Send(ctx, nativeprotocol.Input{Kind: request.Kind, Text: request.Text}); err != nil {
+	if err := active.transport.Send(ctx, nativeprotocol.Input{Kind: request.Kind, Text: request.Text}); err != nil {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "send provider input", err))
 		return
 	}
@@ -101,11 +159,6 @@ func (s *Server) handleV1NativeInterrupt(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
 		return
 	}
-	transport := s.nativeTransport(c.Param("id"))
-	if transport == nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "session has no active native transport", nil))
-		return
-	}
 	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, "interrupt", map[string]any{})
 	if err != nil {
 		writeDurableError(c, err)
@@ -115,9 +168,14 @@ func (s *Server) handleV1NativeInterrupt(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
 		return
 	}
+	active := s.nativeSession(c.Param("id"))
+	if active == nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "control intent is durable but the native transport is unavailable", nil))
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	if err := transport.Interrupt(ctx); err != nil {
+	if err := active.transport.Interrupt(ctx); err != nil {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "send provider interrupt", err))
 		return
 	}
@@ -125,6 +183,51 @@ func (s *Server) handleV1NativeInterrupt(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "provider interrupt may have been sent without durable dispatch proof", err))
 		return
 	}
+	c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true}})
+}
+
+func (s *Server) handleV1NativeCancel(c *gin.Context) {
+	const op = "cancel_v1_native_session"
+	var request v1InterruptRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode cancel request", err))
+		return
+	}
+	if request.IdempotencyKey == "" {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
+		return
+	}
+	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, "cancel", map[string]any{})
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	if alreadyDispatched {
+		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
+		return
+	}
+	active := s.nativeSession(c.Param("id"))
+	if active == nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "cancel intent is durable but the native transport is unavailable", nil))
+		return
+	}
+	if !active.beginCancel() {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "cancel intent is durable but process exit already crossed the terminal boundary", nil))
+		return
+	}
+	if err := active.transport.Close(); err != nil {
+		active.settleCancel(durable.StateIndeterminate)
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "native process termination could not be confirmed", err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.eventBroker.CompleteControl(ctx, control); err != nil {
+		active.settleCancel(durable.StateIndeterminate)
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "native process stopped without durable cancel dispatch proof", err))
+		return
+	}
+	active.settleCancel(durable.StateCancelled)
 	c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true}})
 }
 
@@ -137,8 +240,8 @@ func (s *Server) beginNativeControl(c *gin.Context, idempotencyKey, kind string,
 	if err != nil {
 		return eventstream.ControlParams{}, false, err
 	}
-	if stored.State.Terminal() || stored.ActiveGeneration < 1 {
-		return eventstream.ControlParams{}, false, durable.NewError(durable.CodeInvalidState, op, "session is not active", nil)
+	if stored.ActiveGeneration < 1 {
+		return eventstream.ControlParams{}, false, durable.NewError(durable.CodeInvalidState, op, "session has no runtime generation", nil)
 	}
 	payload, err := json.Marshal(command)
 	if err != nil {

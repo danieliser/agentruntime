@@ -89,14 +89,16 @@ the omitted portion.
 
 ## Outgoing control proof
 
-Prompt, steer, and interrupt requests require a caller idempotency key. AgentD
+Prompt, steer, interrupt, and cancel requests require a caller idempotency key. AgentD
 commits a `control.{kind}.requested` event before writing to provider stdin and
-a `control.{kind}.dispatched` event only after that write succeeds.
+a `control.{kind}.dispatched` event only after that side effect succeeds.
 
 - A retry with both phases returns the prior success without another write.
 - Reusing the key for different command content is an immutable conflict.
 - A retry with intent but no dispatch proof returns `indeterminate`; AgentD
   never guesses whether a paid turn crossed the process boundary.
+- Cancel termination does not become `session.cancelled` or an immutable
+  `cancelled` receipt until `control.cancel.dispatched` is durable.
 
 These events use `stream: control`, share the session sequence domain, and are
 replayed like provider, stderr, lifecycle, and terminal events.

@@ -161,17 +161,26 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		return
 	}
 	provider := nativeprotocol.Provider(stored.Agent)
-	var attached nativeprotocol.Transport
+	var active *activeNativeSession
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, previous.ProviderID, request.Prompt,
 		!request.Interactive, false, s.eventBroker,
+		func() string {
+			if active == nil {
+				return ""
+			}
+			return active.terminalReason()
+		},
 		func(transport nativeprotocol.Transport) {
-			attached = transport
-			s.setNativeTransport(stored.ID, transport)
+			active = s.setNativeTransport(stored.ID, transport)
 		},
 		func(result runtime.ExitResult, streamErr error) {
-			s.clearNativeTransport(stored.ID, attached)
-			s.finalizeV1Session(stored.ID, result, streamErr)
+			s.clearNativeTransport(stored.ID, active)
+			var override durable.SessionState
+			if active != nil {
+				override = active.terminalState()
+			}
+			s.finalizeV1SessionAs(stored.ID, result, override, streamErr)
 		},
 	); err != nil {
 		_ = handle.Kill()

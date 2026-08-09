@@ -1,6 +1,6 @@
 # AgentD durable session protocol v1
 
-Status: idempotent admission, inspect, and direct native Docker launch implemented; restart reconciliation in progress
+Status: native lifecycle and direct Docker launch implemented; restart qualification in progress
 
 Task IDs: RES-401, RES-402, DKR-501
 
@@ -79,7 +79,15 @@ interrupt the current turn:
 ```text
 POST /api/v1/sessions/{session_id}/input
 POST /api/v1/sessions/{session_id}/interrupt
+POST /api/v1/sessions/{session_id}/cancel
 ```
+
+Each mutating control requires an `idempotency_key`. AgentD records intent
+before provider/process I/O and dispatch proof afterward. A completed retry is
+a no-op success. A requested operation without dispatch proof is reported as
+`indeterminate` rather than repeated. Cancel closes the active native process
+and commits a distinct `session.cancelled` event and immutable `cancelled`
+receipt; interrupt only affects the current turn.
 
 A confirmed-missing generation is marked `lost`. It can be resumed under the
 same logical session with a new prompt:
@@ -109,5 +117,5 @@ the container result comes from `docker wait`. Containers and materialized
 session files remain available after exit for reconciliation and receipt proof.
 
 Resolved image digest capture, crash-before-generation reconciliation,
-signal/OOM/cancel classification, durable control idempotency, and real-Docker
-restart qualification remain required before Gate G3.
+signal/OOM classification, controlled shutdown, and real-Docker restart
+qualification remain required before Gate G3.
