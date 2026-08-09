@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
@@ -57,6 +58,12 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 			s.restoreLegacySession(sess)
 			continue
 		}
+		if err := s.adoptRecoveredStartingGeneration(sess, *info); err != nil {
+			log.Printf("[session %s] durable generation adoption failed: %v", sess.ID, err)
+			_ = sess.Handle.Kill()
+			s.settleRecoveredStartingIndeterminate(sess, *info, err)
+			continue
+		}
 		if err := s.restoreDurableNativeSession(sess, *info); err != nil {
 			log.Printf("[session %s] durable recovery failed: %v", sess.ID, err)
 			_ = sess.Handle.Kill()
@@ -66,6 +73,150 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 		discovered[recoveryGenerationKey(info.SessionID, info.Generation)] = struct{}{}
 	}
 	s.reconcileMissingGenerations(discovered, confirmedRuntimes)
+}
+
+func (s *Server) settleRecoveredStartingIndeterminate(sess *session.Session, info runtime.RecoveryInfo, cause error) {
+	const op = "settle_recovered_starting_indeterminate"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stored, err := s.durableStore.GetSession(ctx, sess.ID)
+	if err != nil || stored.State.Terminal() {
+		if err != nil {
+			log.Printf("[session %s] indeterminate settlement lookup failed: %v", sess.ID, err)
+		}
+		return
+	}
+	generationNumber := stored.ActiveGeneration
+	createGeneration := generationNumber == 0
+	if generationNumber > 0 && info.Generation == generationNumber+1 {
+		current, generationErr := s.durableStore.GetGeneration(ctx, stored.ID, generationNumber)
+		if generationErr == nil && current.State.Terminal() {
+			createGeneration = true
+		}
+	}
+	if createGeneration {
+		runtimeID := runtimeGenerationIdentity(sess.Handle, sess.RuntimeName, sess.ID, info.Generation)
+		if runtimeID == "" {
+			log.Printf("[session %s] cannot settle unverified runtime without stable identity", sess.ID)
+			return
+		}
+		generation, createErr := s.durableStore.CreateGeneration(ctx, durable.CreateGenerationParams{
+			SessionID: stored.ID, Runtime: stored.Runtime, ContainerID: runtimeID,
+			ImageReference: info.ImageReference, ImageDigest: info.ImageDigest,
+			SandboxProfile: info.SandboxProfile, DockerLogDriver: generationDockerLogDriver(stored.Runtime, true),
+			CreatedAt: time.Now().UTC(),
+		})
+		if createErr != nil {
+			log.Printf("[session %s] %s failed to record unverified generation: %v", sess.ID, op, createErr)
+			return
+		}
+		generationNumber = generation.Number
+	}
+	s.recordRecoveredIndeterminate(sess.ID, generationNumber, cause.Error())
+}
+
+// adoptRecoveredStartingGeneration closes the crash window between Docker
+// accepting a labeled container and AgentD committing that generation. Only
+// an exact match to the already-durable admission identity is reconstructable.
+// Each transition is repeat-safe so another daemon crash can resume adoption.
+func (s *Server) adoptRecoveredStartingGeneration(sess *session.Session, info runtime.RecoveryInfo) error {
+	const op = "adopt_recovered_starting_generation"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stored, err := s.durableStore.GetSession(ctx, sess.ID)
+	if err != nil {
+		return err
+	}
+	if stored.State.Terminal() {
+		return nil
+	}
+	transitionSession := false
+	var generation durable.Generation
+	createGeneration := false
+	switch stored.State {
+	case durable.StateStarting:
+		transitionSession = true
+		switch stored.ActiveGeneration {
+		case 0:
+			createGeneration = info.Generation == 1
+		case info.Generation:
+			generation, err = s.durableStore.GetGeneration(ctx, stored.ID, info.Generation)
+		default:
+			return durable.NewError(durable.CodeIndeterminate, op, "starting session points at an unexpected generation", nil)
+		}
+	case durable.StateRunning:
+		switch {
+		case stored.ActiveGeneration == info.Generation:
+			generation, err = s.durableStore.GetGeneration(ctx, stored.ID, info.Generation)
+			if err == nil && generation.State == durable.GenerationRunning {
+				return nil
+			}
+		case stored.ActiveGeneration+1 == info.Generation:
+			previous, previousErr := s.durableStore.GetGeneration(ctx, stored.ID, stored.ActiveGeneration)
+			if previousErr != nil {
+				return previousErr
+			}
+			if previous.State != durable.GenerationLost {
+				return durable.NewError(durable.CodeIndeterminate, op, "replacement container has no lost predecessor", nil)
+			}
+			createGeneration = true
+		default:
+			return nil
+		}
+	default:
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !createGeneration && generation.Number == 0 {
+		return durable.NewError(durable.CodeIndeterminate, op, "recovered generation was not durably identifiable", nil)
+	}
+	if stored.Runtime != "docker" || sess.RuntimeName != "docker" ||
+		info.IdempotencyKey != stored.IdempotencyKey || info.RequestHash != stored.RequestHash ||
+		info.AgentName != stored.Agent || info.ImageReference == "" || info.ImageReference == "unknown" ||
+		!strings.HasPrefix(info.ImageDigest, "sha256:") || info.SandboxProfile != runtimeSandboxProfile("docker", true) {
+		return durable.NewError(durable.CodeIndeterminate, op, "container labels do not prove the admitted starting generation", nil)
+	}
+	runtimeID := runtimeGenerationIdentity(sess.Handle, sess.RuntimeName, sess.ID, info.Generation)
+	if runtimeID == "" {
+		return durable.NewError(durable.CodeIndeterminate, op, "recovered container has no stable runtime identity", nil)
+	}
+
+	if createGeneration {
+		generation, err = s.durableStore.CreateGeneration(ctx, durable.CreateGenerationParams{
+			SessionID: stored.ID, Runtime: stored.Runtime, ContainerID: runtimeID,
+			ImageReference: info.ImageReference, ImageDigest: info.ImageDigest,
+			SandboxProfile: info.SandboxProfile, DockerLogDriver: generationDockerLogDriver("docker", true),
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if generation.Number != info.Generation || generation.Runtime != stored.Runtime || generation.ContainerID != runtimeID ||
+		generation.ImageReference != info.ImageReference || generation.ImageDigest != info.ImageDigest ||
+		generation.SandboxProfile != info.SandboxProfile {
+		return durable.NewError(durable.CodeIndeterminate, op, "recovered container does not match the partially committed generation", nil)
+	}
+	if generation.State == durable.GenerationStarting {
+		generation, err = s.durableStore.TransitionGeneration(ctx, durable.TransitionGenerationParams{
+			SessionID: stored.ID, Generation: generation.Number, From: durable.GenerationStarting,
+			To: durable.GenerationRunning, At: time.Now().UTC(),
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if generation.State != durable.GenerationRunning {
+		return durable.NewError(durable.CodeIndeterminate, op, "partially committed generation is not recoverable", nil)
+	}
+	if transitionSession {
+		_, err = s.durableStore.TransitionSession(ctx, durable.TransitionSessionParams{
+			SessionID: stored.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Now().UTC(),
+		})
+	}
+	return err
 }
 
 func (s *Server) recordRecoveredIndeterminate(sessionID string, generation int64, reason string) {
@@ -152,9 +303,6 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	provider := nativeprotocol.Provider(stored.Agent)
 	if provider != nativeprotocol.ProviderClaude && provider != nativeprotocol.ProviderCodex {
 		return durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("agent %q has no native recovery transport", stored.Agent), nil)
-	}
-	if provider == nativeprotocol.ProviderCodex && generation.ProviderID == "" {
-		return durable.NewError(durable.CodeIndeterminate, op, "Codex thread identity was not durably observed before restart", nil)
 	}
 	var manifest struct {
 		Interactive bool `json:"interactive"`

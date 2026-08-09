@@ -85,6 +85,137 @@ func TestRestoreRecoveredNativeSessionDeduplicatesRetainedPrefix(t *testing.T) {
 	}
 }
 
+func TestRestoreRecoveredNativeSessionAdoptsCrashBeforeGenerationCommit(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	createdAt := time.Unix(1_500, 0).UTC()
+	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: "orphaned-start", IdempotencyKey: "orphaned-job", RequestHash: "sha256:orphaned",
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+		SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: createdAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	handle := newRecoveredNativeTestHandle(strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"adopted-provider"}`,
+		`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"recovered"}}}`,
+	}, "\n") + "\n")
+	handle.runtimeID = "container-orphaned"
+	handle.recovery = runtime.RecoveryInfo{
+		SessionID: created.Session.ID, AgentName: "claude", Generation: 1,
+		IdempotencyKey: "orphaned-job", RequestHash: "sha256:orphaned",
+		ImageReference: "agentd:test", ImageDigest: "sha256:verified", SandboxProfile: "docker-native-v1",
+	}
+	manager := session.NewManager()
+	orphaned := manager.Recover([]runtime.ProcessHandle{handle}, "docker")
+	server := NewServer(manager, &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.RestoreRecoveredSessions(orphaned, "docker")
+	waitForDurableTerminal(t, store, created.Session.ID)
+
+	generation, err := store.GetGeneration(ctx, created.Session.ID, 1)
+	if err != nil {
+		t.Fatalf("get adopted generation: %v", err)
+	}
+	if generation.ContainerID != "container-orphaned" || generation.ImageReference != "agentd:test" ||
+		generation.ImageDigest != "sha256:verified" || generation.SandboxProfile != "docker-native-v1" {
+		t.Fatalf("adopted generation = %+v", generation)
+	}
+	stored, err := store.GetSession(ctx, created.Session.ID)
+	if err != nil || stored.State != durable.StateCompleted {
+		t.Fatalf("adopted session = %+v err=%v", stored, err)
+	}
+	if generation.State != durable.GenerationExited {
+		t.Fatalf("adopted generation state = %s", generation.State)
+	}
+}
+
+func TestRestoreRecoveredNativeSessionSettlesUnverifiableStartingContainer(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	createdAt := time.Unix(1_600, 0).UTC()
+	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: "unverifiable-start", IdempotencyKey: "expected-job", RequestHash: "sha256:expected",
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+		SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: createdAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	handle := newRecoveredNativeTestHandle("")
+	handle.runtimeID = "container-unverifiable"
+	handle.recovery = runtime.RecoveryInfo{
+		SessionID: created.Session.ID, AgentName: "claude", Generation: 1,
+		IdempotencyKey: "wrong-job", RequestHash: "sha256:wrong",
+		ImageReference: "agentd:test", ImageDigest: "sha256:unverified", SandboxProfile: "docker-native-v1",
+	}
+	manager := session.NewManager()
+	server := NewServer(manager, &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.RestoreRecoveredSessions(manager.Recover([]runtime.ProcessHandle{handle}, "docker"), "docker")
+
+	stored, err := store.GetSession(ctx, created.Session.ID)
+	if err != nil || stored.State != durable.StateIndeterminate {
+		t.Fatalf("unverifiable session = %+v err=%v", stored, err)
+	}
+	receipt, err := store.GetTerminalReceipt(ctx, created.Session.ID)
+	if err != nil || receipt.State != durable.StateIndeterminate || receipt.Generation != 1 || receipt.LastSequence != 1 {
+		t.Fatalf("unverifiable receipt = %+v err=%v", receipt, err)
+	}
+}
+
+func TestRestoreRecoveredNativeSessionAdoptsResumedGenerationBeforeCommit(t *testing.T) {
+	store, sessionID := runningRecoveryStore(t)
+	if _, err := store.TransitionGeneration(context.Background(), durable.TransitionGenerationParams{
+		SessionID: sessionID, Generation: 1, From: durable.GenerationRunning,
+		To: durable.GenerationLost, At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("mark previous generation lost: %v", err)
+	}
+	handle := newRecoveredNativeTestHandle(strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"resumed-provider"}`,
+		`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"resumed"}}}`,
+	}, "\n") + "\n")
+	handle.runtimeID = "container-resumed-orphan"
+	handle.recovery = runtime.RecoveryInfo{
+		SessionID: sessionID, AgentName: "claude", Generation: 2,
+		IdempotencyKey: "missing-job", RequestHash: "sha256:missing",
+		ImageReference: "agentd:test", ImageDigest: "sha256:resumed", SandboxProfile: "docker-native-v1",
+	}
+	manager := session.NewManager()
+	server := NewServer(manager, &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.RestoreRecoveredSessions(manager.Recover([]runtime.ProcessHandle{handle}, "docker"), "docker")
+	waitForDurableTerminal(t, store, sessionID)
+
+	generations, err := store.ListGenerations(context.Background(), sessionID)
+	if err != nil || len(generations) != 2 || generations[1].ContainerID != "container-resumed-orphan" ||
+		generations[1].ImageDigest != "sha256:resumed" || generations[1].State != durable.GenerationExited {
+		t.Fatalf("reconstructed resume generations = %+v err=%v", generations, err)
+	}
+}
+
 func TestRestoreRecoveredSessionsMarksMissingGenerationLost(t *testing.T) {
 	store, sessionID := runningRecoveryStore(t)
 	manager := session.NewManager()

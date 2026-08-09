@@ -268,6 +268,69 @@ func TestCodexTransportReconnectsWithoutRepeatingAppServerInitialization(t *test
 	<-transport.Wait()
 }
 
+func TestCodexTransportReconnectLearnsUnknownThreadFromRetainedOutput(t *testing.T) {
+	adapter, err := NewAdapter(ProviderCodex)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	process := newFakeProcess()
+	transport := NewStreamTransport(adapter, process.IO(), RecoveryMetadata{SessionID: "reconnect-before-bind", Generation: 1})
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatalf("start transport: %v", err)
+	}
+	if err := transport.Bootstrap(context.Background(), BootstrapRequest{Reconnect: true}); err != nil {
+		t.Fatalf("reconnect transport before provider bind: %v", err)
+	}
+	select {
+	case input := <-process.inputs:
+		t.Fatalf("reconnect wrote duplicate app-server bootstrap: %s", input)
+	default:
+	}
+
+	process.writeStdout(t, []byte(`{"method":"thread/started","params":{"threadId":"retained-thread"}}`))
+	record := receiveRecord(t, transport.Records())
+	if string(record.Raw) != `{"method":"thread/started","params":{"threadId":"retained-thread"}}` {
+		t.Fatalf("retained record = %s", record.Raw)
+	}
+	if err := transport.Send(context.Background(), Input{Kind: InputPrompt, Text: "continue"}); err != nil {
+		t.Fatalf("send after retained thread identity: %v", err)
+	}
+	turn := decodeInputObject(t, process.readInput(t))
+	params, _ := turn["params"].(map[string]any)
+	if turn["method"] != "turn/start" || params["threadId"] != "retained-thread" {
+		t.Fatalf("turn after retained identity = %+v", turn)
+	}
+	process.finish(Exit{Code: 0})
+	<-transport.Wait()
+}
+
+func TestCodexReconnectDoesNotEraseThreadLearnedBeforeBootstrap(t *testing.T) {
+	adapter, err := NewAdapter(ProviderCodex)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	process := newFakeProcess()
+	transport := NewStreamTransport(adapter, process.IO(), RecoveryMetadata{SessionID: "early-retained", Generation: 1})
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatalf("start transport: %v", err)
+	}
+	process.writeStdout(t, []byte(`{"method":"thread/started","params":{"threadId":"early-thread"}}`))
+	_ = receiveRecord(t, transport.Records())
+	if err := transport.Bootstrap(context.Background(), BootstrapRequest{Reconnect: true}); err != nil {
+		t.Fatalf("bootstrap after retained identity: %v", err)
+	}
+	if err := transport.Send(context.Background(), Input{Kind: InputPrompt, Text: "continue"}); err != nil {
+		t.Fatalf("send after bootstrap: %v", err)
+	}
+	turn := decodeInputObject(t, process.readInput(t))
+	params, _ := turn["params"].(map[string]any)
+	if params["threadId"] != "early-thread" {
+		t.Fatalf("bootstrap erased retained thread identity: %+v", turn)
+	}
+	process.finish(Exit{Code: 0})
+	<-transport.Wait()
+}
+
 func decodeInputObject(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
 	var value map[string]any

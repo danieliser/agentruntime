@@ -186,4 +186,7 @@ type RecoveryInfo struct {
 	Generation     int64
 	IdempotencyKey string
 	RequestHash    string
+	ImageReference string
+	ImageDigest    string
+	SandboxProfile string
 }

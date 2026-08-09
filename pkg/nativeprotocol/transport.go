@@ -123,11 +123,9 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 		return newError(CodeInvalidState, op, "transport is not running", nil)
 	}
 	if request.Reconnect {
-		if transport.adapter.Provider() == ProviderCodex && request.ProviderID == "" {
-			transport.mu.Unlock()
-			return newError(CodeInvalidArgument, op, "Codex reconnect requires the existing thread ID", nil)
+		if request.ProviderID != "" {
+			transport.providerID = request.ProviderID
 		}
-		transport.providerID = request.ProviderID
 		transport.mu.Unlock()
 		return nil
 	}

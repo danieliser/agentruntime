@@ -753,6 +753,9 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		recovery := RecoveryInfo{
 			SessionID: sessionID, TaskID: taskID, AgentName: agentName, Generation: generation,
 			IdempotencyKey: idempotencyKey, RequestHash: requestHash,
+			ImageReference: strings.TrimSpace(labels[dockerImageReferenceLabelKey]),
+			ImageDigest:    strings.TrimSpace(labels[dockerImageDigestLabelKey]),
+			SandboxProfile: strings.TrimSpace(labels[dockerSandboxProfileLabelKey]),
 		}
 
 		handle, err := newNativeDockerHandle(r.cfg.Host, id, recovery)

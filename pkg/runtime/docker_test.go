@@ -38,7 +38,7 @@ if [ "$1" = "inspect" ]; then
     echo "unexpected container id: $4" >&2
     exit 3
   fi
-  printf '%%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request","agentruntime.agent":"claude"}'
+  printf '%%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request","agentruntime.agent":"claude","agentruntime.image_reference":"agentd:test","agentruntime.image_digest":"sha256:image","agentruntime.sandbox_profile":"docker-native-v1"}'
   exit 0
 fi
 if [ "$1" = "logs" ]; then
@@ -93,6 +93,9 @@ exit 2
 	}
 	if info.Generation != 2 || info.IdempotencyKey != "job-recovered" || info.RequestHash != "sha256:request" || info.AgentName != "claude" {
 		t.Fatalf("expected durable recovery labels, got %+v", info)
+	}
+	if info.ImageReference != "agentd:test" || info.ImageDigest != "sha256:image" || info.SandboxProfile != "docker-native-v1" {
+		t.Fatalf("expected runtime identity labels, got %+v", info)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "port-called")); !os.IsNotExist(err) {
 		t.Fatal("durable recovery queried the compatibility sidecar port")
