@@ -30,6 +30,10 @@ if [ "$1" = "ps" ]; then
     echo "expected stopped-container discovery, got: $*" >&2
     exit 5
   fi
+	if [ "$3" != "--no-trunc" ]; then
+		echo "expected canonical container IDs, got: $*" >&2
+		exit 6
+	fi
   printf '%%s\n' 'container-123'
   exit 0
 fi

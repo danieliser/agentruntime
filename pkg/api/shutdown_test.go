@@ -73,6 +73,46 @@ func TestGracefulShutdownStopsLocalSessionsAndClosesAdmission(t *testing.T) {
 	}
 }
 
+func TestGracefulShutdownQueuesBehindActiveAdmissionAndRejectsNewWork(t *testing.T) {
+	server := NewServer(session.NewManager(), &shutdownRuntime{name: "local"}, agent.DefaultRegistry())
+	if !server.beginAdmission() {
+		t.Fatal("initial admission was unexpectedly closed")
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- server.Shutdown(context.Background())
+	}()
+	// Give Shutdown an opportunity to queue for the admission write lock.
+	time.Sleep(20 * time.Millisecond)
+	queuedAdmission := make(chan bool, 1)
+	go func() {
+		accepted := server.beginAdmission()
+		if accepted {
+			server.endAdmission()
+		}
+		queuedAdmission <- accepted
+	}()
+	select {
+	case accepted := <-queuedAdmission:
+		t.Fatalf("queued admission crossed the shutdown gate early: accepted=%v", accepted)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	server.endAdmission()
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	select {
+	case accepted := <-queuedAdmission:
+		if accepted {
+			t.Fatal("queued work started after controlled shutdown began")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued admission did not settle after shutdown")
+	}
+}
+
 func TestGracefulShutdownPreservesActiveDockerGeneration(t *testing.T) {
 	manager := session.NewManager()
 	handle := &shutdownHandle{}

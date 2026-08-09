@@ -473,6 +473,7 @@ func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
 	}
 	decodeJSON(t, createdResponse.Body, &created)
 	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 1)
+	waitForEventType(t, store, created.Data.SessionID, "tool.call", 1)
 	cancelBody := map[string]any{"idempotency_key": "cancel-once"}
 	cancelResponse := postV1Control(t, httpServer.URL, created.Data.SessionID, "cancel", cancelBody)
 	defer cancelResponse.Body.Close()
@@ -487,6 +488,11 @@ func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
 	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 100})
 	if err != nil || len(page.Events) == 0 || page.Events[len(page.Events)-1].Type != "session.cancelled" {
 		t.Fatalf("cancel terminal ledger = %+v err=%v", page, err)
+	}
+	for _, event := range page.Events {
+		if event.Type == "tool.result" {
+			t.Fatalf("cancelled in-flight tool unexpectedly completed: %+v", page.Events)
+		}
 	}
 	repeat := postV1Control(t, httpServer.URL, created.Data.SessionID, "cancel", cancelBody)
 	defer repeat.Body.Close()
@@ -818,6 +824,7 @@ IFS= read -r thread_start
 printf '%s\n' '{"id":1,"result":{"threadId":"codex-cancel-thread"}}' '{"method":"thread/started","params":{"threadId":"codex-cancel-thread"}}'
 IFS= read -r first_turn
 printf '%s\n' '{"id":2,"result":{}}' '{"method":"turn/started","params":{"threadId":"codex-cancel-thread","turnId":"turn-cancel"}}' '{"method":"turn/completed","params":{"threadId":"codex-cancel-thread","turnId":"turn-cancel","status":"completed"}}'
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"codex-cancel-thread","turnId":"turn-tool"}}' '{"method":"item/started","params":{"threadId":"codex-cancel-thread","turnId":"turn-tool","item":{"id":"tool-cancel","type":"command_execution","command":"sleep 60"}}}'
 IFS= read -r wait_for_cancel
 `}, nil
 }

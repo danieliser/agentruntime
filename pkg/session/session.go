@@ -318,16 +318,12 @@ func (m *Manager) Recover(handles []runtime.ProcessHandle, runtimeName string) [
 			taskID = info.TaskID
 			agentName = info.AgentName
 		}
-		s := &Session{
-			ID:          sessionID,
-			TaskID:      taskID,
-			AgentName:   agentName,
-			RuntimeName: runtimeName,
-			State:       StateOrphaned,
-			CreatedAt:   time.Now(),
-			Replay:      newLazyReplayBuffer(0),
-			Handle:      h,
-		}
+		// Recovered sessions must retain every constructor invariant (notably
+		// result notification and lazy replay initialization) before retained
+		// provider events are consumed.
+		s := NewSessionWithID(sessionID, taskID, agentName, runtimeName)
+		s.State = StateOrphaned
+		s.Handle = h
 		m.mu.Lock()
 		m.sessions[s.ID] = s
 		m.mu.Unlock()

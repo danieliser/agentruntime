@@ -172,6 +172,66 @@ func TestV1EventWebSocketHandsOffReplayToLiveExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestV1EventWebSocketReconnectsAcrossInFlightToolFromSavedSequence(t *testing.T) {
+	ts, _, broker := newEventStreamTestServer(t, "tool-reconnect")
+	content := ingestAPIEvent(t, broker, "tool-reconnect", 1)
+	toolCallRaw := []byte(`{"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"tool","type":"command_execution","command":"work"}}}`)
+	toolCall, err := broker.Ingest(context.Background(), eventstream.IngestParams{
+		SessionID: "tool-reconnect", Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderCodex, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 2, Timestamp: time.Unix(202, 0).UTC(), Raw: toolCallRaw},
+	})
+	if err != nil || toolCall.Type != "tool.call" {
+		t.Fatalf("ingest tool call = %+v err=%v", toolCall, err)
+	}
+
+	wsBase := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/ws/sessions/tool-reconnect/events"
+	first, _, err := websocket.DefaultDialer.Dial(wsBase+"?after_sequence=0", nil)
+	if err != nil {
+		t.Fatalf("dial initial event stream: %v", err)
+	}
+	var ready streamReadyFrame
+	if err := first.ReadJSON(&ready); err != nil {
+		t.Fatalf("read initial readiness: %v", err)
+	}
+	seen := make([]eventEnvelope, 2)
+	for index := range seen {
+		if err := first.ReadJSON(&seen[index]); err != nil {
+			t.Fatalf("read initial event %d: %v", index, err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("disconnect initial stream: %v", err)
+	}
+	if seen[0].Sequence != content.Sequence || seen[1].Sequence != toolCall.Sequence || seen[1].Type != "tool.call" {
+		t.Fatalf("initial contiguous events = %+v", seen)
+	}
+
+	toolResultRaw := []byte(`{"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"tool","type":"command_execution","status":"completed"}}}`)
+	toolResult, err := broker.Ingest(context.Background(), eventstream.IngestParams{
+		SessionID: "tool-reconnect", Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderCodex, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 3, Timestamp: time.Unix(203, 0).UTC(), Raw: toolResultRaw},
+	})
+	if err != nil || toolResult.Type != "tool.result" {
+		t.Fatalf("ingest tool result = %+v err=%v", toolResult, err)
+	}
+
+	second, _, err := websocket.DefaultDialer.Dial(wsBase+"?after_sequence=2", nil)
+	if err != nil {
+		t.Fatalf("reconnect event stream: %v", err)
+	}
+	defer second.Close()
+	if err := second.ReadJSON(&ready); err != nil {
+		t.Fatalf("read reconnect readiness: %v", err)
+	}
+	var replay eventEnvelope
+	if err := second.ReadJSON(&replay); err != nil {
+		t.Fatalf("read reconnect replay: %v", err)
+	}
+	if replay.Sequence != 3 || replay.EventID != toolResult.EventID || replay.Type != "tool.result" || replay.EventID == toolCall.EventID {
+		t.Fatalf("reconnected event = %+v, tool call = %+v", replay, toolCall)
+	}
+}
+
 func newEventStreamTestServer(t *testing.T, sessionID string) (*httptest.Server, durable.Store, *eventstream.Broker) {
 	t.Helper()
 	store := memory.New()

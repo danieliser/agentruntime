@@ -270,24 +270,24 @@ retirement of non-native methods after this parity checkpoint.
 
 These are release blockers, not optional follow-ups.
 
-- [ ] `Q-01` Concurrent duplicate create with the same key/hash returns one logical session and starts one provider process.
-- [ ] `Q-02` Same key with a different request hash returns structured `idempotency_conflict`.
-- [ ] `Q-03` Restart AgentD during an active Claude Docker session; reconnect from pointer with no new session.
-- [ ] `Q-04` Restart AgentD during an active Codex Docker session; reconnect from pointer with no new session.
-- [ ] `Q-05` Disconnect a chat client during content/tool streaming; replay from last contiguous sequence and continue live.
-- [ ] `Q-06` Intentionally remove/corrupt a stored event; replay reports a gap and never silently advances.
-- [ ] `Q-07` Restart after terminal completion; inspect returns the identical immutable receipt and last sequence.
-- [ ] `Q-08` Resume an eligible nonterminal session; runtime generation increments while session ID and event sequence continue.
-- [ ] `Q-09` Repeat reconnect/resume/control requests; no duplicate provider process, event identity, or side effect.
-- [ ] `Q-10` Cancel during tool execution; terminal reason is `cancelled`, distinct from interrupt, timeout, crash, and failure.
-- [ ] `Q-11` Stop admission and drain with queued requests and active Docker sessions; no new runtime starts after the gate closes.
-- [ ] `Q-12` Kill AgentD after event persistence but before publish; the same event is replayed with its original ID/sequence.
-- [ ] `Q-13` Kill AgentD after provider output but before durable persistence; reconstruct exactly or mark `indeterminate`.
-- [ ] `Q-14` Verify provider raw JSON is byte-equivalent after store/replay and derived views never mutate it.
-- [ ] `Q-15` Verify stdout/stderr/control/lifecycle/terminal channels remain distinguishable after restart.
-- [ ] `Q-16` Run a long stream larger than all in-memory buffers; durable replay remains complete from sequence 0.
+- [x] `Q-01` Concurrent duplicate create with the same key/hash returns one logical session and starts one provider process.
+- [x] `Q-02` Same key with a different request hash returns structured `idempotency_conflict`.
+- [x] `Q-03` Restart AgentD during an active Claude Docker session; reconnect from pointer with no new session.
+- [x] `Q-04` Restart AgentD during an active Codex Docker session; reconnect from pointer with no new session.
+- [x] `Q-05` Disconnect a chat client during content/tool streaming; replay from last contiguous sequence and continue live.
+- [x] `Q-06` Intentionally remove/corrupt a stored event; replay reports a gap and never silently advances.
+- [x] `Q-07` Restart after terminal completion; inspect returns the identical immutable receipt and last sequence.
+- [x] `Q-08` Resume an eligible nonterminal session; runtime generation increments while session ID and event sequence continue.
+- [x] `Q-09` Repeat reconnect/resume/control requests; no duplicate provider process, event identity, or side effect.
+- [x] `Q-10` Cancel during tool execution; terminal reason is `cancelled`, distinct from interrupt, timeout, crash, and failure.
+- [x] `Q-11` Stop admission and drain with queued requests and active Docker sessions; no new runtime starts after the gate closes.
+- [x] `Q-12` Kill AgentD after event persistence but before publish; the same event is replayed with its original ID/sequence.
+- [x] `Q-13` Kill AgentD after provider output but before durable persistence; reconstruct exactly or mark `indeterminate`.
+- [x] `Q-14` Verify provider raw JSON is byte-equivalent after store/replay and derived views never mutate it.
+- [x] `Q-15` Verify stdout/stderr/control/lifecycle/terminal channels remain distinguishable after restart.
+- [x] `Q-16` Run a long stream larger than all in-memory buffers; durable replay remains complete from sequence 0.
 - [x] `Q-17` Prove no old sidecar byte offset can be confused with a v1 sequence cursor.
-- [ ] `Q-18` Expire a native session before and after AgentD restart; both retain requested/dispatched timeout proof and finish `timed_out` without resetting the generation deadline.
+- [x] `Q-18` Expire a native session before and after AgentD restart; both retain requested/dispatched timeout proof and finish `timed_out` without resetting the generation deadline.
 
 ## 8. Definition of done
 
@@ -366,3 +366,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Completed the typed Go-client lifecycle surface before compatibility deletion: prompt/steer, interrupt, cancel, administrative terminate, lost-generation resume, and immutable terminal receipt. The capability handshake now enumerates every supported lifecycle control so callers can reject missing behavior before dispatch.
 - 2026-08-09 — Removed the unused unversioned Go-client dispatch, session-info, kill, byte-log polling, and byte-stream methods plus their compatibility-only test matrix. The client package now has one canonical v1 session surface alongside the unversioned health probe.
 - 2026-08-09 — Completed CMP-601/CMP-603. Removed all unversioned session, byte-log, and bidirectional daemon WebSocket routes; deleted `pkg/bridge`, compatibility schema responses, raw/steerable chat input, and unsafe reconstruction from unversioned NDJSON. Recovered processes without durable generation proof are stopped. A route-registration test prevents cursor-domain regression, and only v1 sequence replay remains externally addressable.
+- 2026-08-09 — Reconciled qualification evidence for Q-01/02 and Q-05–18. Added an explicit WebSocket disconnect/reconnect test across an in-flight Codex tool call, strengthened cancellation qualification so a pending tool call is followed by `session.cancelled` without a fabricated tool result, and repeated the queued-admission shutdown race test under `-race`. Q-03/04 remain reserved for whole-daemon real-Docker restart qualification.
+- 2026-08-09 — Completed Q-03/Q-04 against Docker 29.4.0 with real `alpine:3.20` containers running direct Claude stream-json and Codex app-server protocol fixtures. The harness kills the AgentD process group, restarts over the same private data root, proves the exact event-ID/sequence/raw-hash prefix is replayed, sends a second prompt over reattached stdin, and verifies generation 1 still owns exactly one container. Qualification exposed and fixed Docker `ps` ID truncation during recovery and missing constructor invariants on recovered sessions. All Q-series release blockers are complete.

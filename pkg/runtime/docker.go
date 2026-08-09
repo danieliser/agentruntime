@@ -719,7 +719,10 @@ func sessionIDPrefix(sessionID string) string {
 // Stopped durable generations still expose retained logs and docker wait proof
 // so AgentD can finish their terminal ledger after a daemon restart.
 func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
-	psCmd := r.dockerCmd(ctx, "ps", "-aq",
+	// docker run returns the canonical 64-character ID persisted with the
+	// generation. Recovery must not compare that proof to ps's 12-character
+	// display form.
+	psCmd := r.dockerCmd(ctx, "ps", "-aq", "--no-trunc",
 		"--filter", fmt.Sprintf("label=%s", dockerSessionLabelKey),
 	)
 	out, err := psCmd.Output()
