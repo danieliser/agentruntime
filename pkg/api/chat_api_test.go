@@ -527,6 +527,10 @@ func TestGetChatMessages_200(t *testing.T) {
 	}
 }
 
+func (*stubSpawner) SendSessionInput(context.Context, string, string, string, string) error {
+	return nil
+}
+
 func TestGetChatMessagesMarksLegacyHistoryUnverified(t *testing.T) {
 	ts, srv, _, _ := newChatTestServer(t)
 	mustCreateChat(t, ts, "legacy-msg-test", "echo-test")

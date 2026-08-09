@@ -4,7 +4,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"time"
 
@@ -39,7 +38,6 @@ type SpawnConfig struct {
 	SessionID string
 
 	// Generation and idempotency fields label reconstructable durable work.
-	// They are empty for legacy, non-durable callers.
 	Generation     int64
 	IdempotencyKey string
 	RequestHash    string
@@ -58,7 +56,6 @@ type SpawnConfig struct {
 	Prompt string
 
 	// Model overrides the agent's default model (e.g. "claude-opus-4-5").
-	// Threaded into AGENT_CONFIG for the sidecar.
 	Model string
 
 	// Env is additional environment variables for the process.
@@ -99,14 +96,13 @@ type RuntimeImageIdentifiedHandle interface {
 }
 
 // NativeStdioHandle marks a process handle whose stdio is the provider's exact
-// native protocol rather than a compatibility bridge.
+// native protocol.
 type NativeStdioHandle interface {
 	NativeStdio() bool
 }
 
 // ProcessHandle provides access to a running agent process's stdio streams
-// and lifecycle. It is the runtime-agnostic interface that the bridge and
-// session manager interact with.
+// and lifecycle.
 type ProcessHandle interface {
 	// Stdin returns a writer connected to the process's standard input.
 	Stdin() io.WriteCloser
@@ -132,27 +128,6 @@ type ProcessHandle interface {
 	RecoveryInfo() *RecoveryInfo
 }
 
-// SteerableHandle is retained only for the unversioned compatibility bridge.
-// Native v1 controls use nativeprotocol.Transport instead.
-type SteerableHandle interface {
-	ProcessHandle
-
-	// SendPrompt sends a prompt through a compatibility handle.
-	SendPrompt(content string) error
-
-	// SendInterrupt sends an interrupt through a compatibility handle.
-	SendInterrupt() error
-
-	// SendSteer sends steering input through a compatibility handle.
-	SendSteer(content string) error
-
-	// SendContext sends a context command with text and/or file path.
-	SendContext(text, filePath string) error
-
-	// SendMention sends a mention command referencing a file location.
-	SendMention(filePath string, lineStart, lineEnd int) error
-}
-
 // Compile-time interface assertions.
 var (
 	_ Runtime       = (*LocalRuntime)(nil)
@@ -162,10 +137,6 @@ var (
 	_ ProcessHandle = (*nativeDockerHandle)(nil)
 	_ ProcessHandle = (*recoveredDockerHandle)(nil)
 )
-
-// ErrNotSteerable is returned by the unversioned bridge when its compatibility
-// handle cannot translate a structured control.
-var ErrNotSteerable = fmt.Errorf("handle does not support structured compatibility controls")
 
 // ExitResult holds the outcome of a process termination.
 type ExitResult struct {

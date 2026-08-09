@@ -17,8 +17,8 @@ import (
 )
 
 // RestoreRecoveredSessions reconnects runtime handles discovered before the
-// HTTP server starts. Durable generations re-enter the native ledger through
-// retained source positions; generation-zero sessions retain legacy recovery.
+// HTTP server starts. Only generations with durable identity proof can be
+// reconstructed; unversioned runtime processes are stopped.
 func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirmedRuntimes ...string) {
 	discovered := make(map[string]struct{}, len(recovered))
 	groups := make(map[string][]*session.Session)
@@ -55,7 +55,8 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 			}
 		}
 		if info == nil || info.Generation < 1 || s.durableStore == nil || s.eventBroker == nil {
-			s.restoreLegacySession(sess)
+			_ = sess.Handle.Kill()
+			log.Printf("[session %s] stopped recovered process without durable generation proof", sess.ID)
 			continue
 		}
 		if err := s.adoptRecoveredStartingGeneration(sess, *info); err != nil {
@@ -345,20 +346,4 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	}
 	log.Printf("[session %s] recovered native generation %d at durable sequence %d", sess.ID, generation.Number, stored.LastSequence)
 	return nil
-}
-
-func (s *Server) restoreLegacySession(sess *session.Session) {
-	var restoredBytes int64
-	logPath, exists, err := session.ExistingLogFilePath(s.logDir, sess.ID)
-	if err != nil {
-		log.Printf("[session %s] warning: check replay log failed: %v", sess.ID, err)
-	} else if exists {
-		if err := sess.Replay.LoadFromFile(logPath); err != nil {
-			log.Printf("[session %s] warning: restore replay from %s failed: %v", sess.ID, logPath, err)
-		} else {
-			restoredBytes = sess.Replay.TotalBytes()
-		}
-	}
-	AttachSessionIO(sess, s.logDir)
-	log.Printf("recovered legacy session %s: replay loaded (%d bytes), stdio reattached", sess.ID, restoredBytes)
 }

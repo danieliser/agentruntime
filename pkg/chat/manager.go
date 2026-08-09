@@ -34,9 +34,7 @@ type SessionSpawner interface {
 	SpawnSession(ctx context.Context, req apischema.SessionRequest) (*session.Session, error)
 }
 
-// SessionInputSender is implemented by the durable AgentD spawner. The
-// separate interface lets transitional tests use simple process handles while
-// production chat follow-ups use the native v1 control ledger.
+// SessionInputSender is implemented by the durable AgentD spawner.
 type SessionInputSender interface {
 	SendSessionInput(ctx context.Context, sessionID, idempotencyKey, kind, text string) error
 }
@@ -521,28 +519,12 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 }
 
 // injectSessionInput sends a follow-up through AgentD's durable native control
-// ledger. Raw/steerable handle fallbacks remain only for transitional tests
-// and disappear with the unversioned compatibility session path.
+// ledger. Provider stdin is owned exclusively by the native transport.
 func (m *Manager) injectSessionInput(rec *ChatRecord, sess *session.Session, message string) error {
 	if sender, ok := m.spawner.(SessionInputSender); ok {
 		return sender.SendSessionInput(context.Background(), sess.ID, chatInputIdempotencyKey(rec, message), "prompt", message)
 	}
-	if sess.Handle == nil {
-		return fmt.Errorf("session has no process handle")
-	}
-
-	// Prefer the sidecar prompt command for steerable handles.
-	if sh, ok := sess.Handle.(runtime.SteerableHandle); ok {
-		return sh.SendPrompt(message)
-	}
-
-	// Fallback: raw stdin write.
-	stdin := sess.Handle.Stdin()
-	if stdin == nil {
-		return fmt.Errorf("session stdin is closed")
-	}
-	_, err := fmt.Fprintf(stdin, "%s\n", message)
-	return err
+	return fmt.Errorf("session spawner does not support durable native input")
 }
 
 func chatInputIdempotencyKey(rec *ChatRecord, message string) string {

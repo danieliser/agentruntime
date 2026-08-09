@@ -1,39 +1,26 @@
 package api
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
-	"github.com/danieliser/agentruntime/pkg/bridge"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
 )
-
-var wsUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin:     func(r *http.Request) bool { return true },
-}
 
 func (s *Server) handleHealth(c *gin.Context) {
 	available := make([]string, 0, len(s.runtimes))
@@ -49,22 +36,9 @@ func (s *Server) handleHealth(c *gin.Context) {
 	})
 }
 
-func (s *Server) handleCreateSession(c *gin.Context) {
-	var req SessionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	s.createSession(c, req, false)
-}
-
-func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 bool) {
+func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	if !s.beginAdmission() {
-		if durableV1 {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidState, Message: errAdmissionClosed.Error()}})
-		} else {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errAdmissionClosed.Error()})
-		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidState, Message: errAdmissionClosed.Error()}})
 		return
 	}
 	defer s.endAdmission()
@@ -185,7 +159,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		WorkDir:         workDir,
 		Env:             req.Env,
 		Interactive:     req.Interactive,
-		NativeStream:    durableV1 && nativeV1Agent(req.Agent),
+		NativeStream:    nativeV1Agent(req.Agent),
 		ResumeSessionID: resumeSessionID,
 	}
 	prompt := req.Prompt
@@ -197,7 +171,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if _, nativeCodex := ag.(*agent.CodexAgent); durableV1 && nativeCodex {
+	if _, nativeCodex := ag.(*agent.CodexAgent); nativeCodex {
 		cmd = []string{"codex", "app-server", "--listen", "stdio://"}
 	}
 
@@ -210,25 +184,18 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a valid UUID"})
 			return
 		}
-		if !durableV1 && s.sessions.Get(requestedID) != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": "session_id already exists"})
-			return
-		}
 	}
-	var admitted durable.Session
-	if durableV1 {
-		result, err := s.admitV1Session(c.Request.Context(), req, rt.Name())
-		if err != nil {
-			writeDurableError(c, err)
-			return
-		}
-		if !result.Created {
-			s.writeV1Session(c, http.StatusOK, result.Session)
-			return
-		}
-		admitted = result.Session
-		requestedID = admitted.ID
+	result, err := s.admitV1Session(c.Request.Context(), req, rt.Name())
+	if err != nil {
+		writeDurableError(c, err)
+		return
 	}
+	if !result.Created {
+		s.writeV1Session(c, http.StatusOK, result.Session)
+		return
+	}
+	admitted := result.Session
+	requestedID = admitted.ID
 	sess := session.NewSessionWithID(requestedID, req.TaskID, req.Agent, rt.Name(), req.Tags)
 	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
@@ -258,21 +225,16 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	}
 
 	// Spawn the process.
-	var generationNumber int64
-	lifecycleCtx := context.Background()
-	var lifecycleCancel context.CancelFunc
-	if durableV1 {
-		generationNumber = admitted.ActiveGeneration + 1
-		lifecycleCtx, lifecycleCancel = context.WithTimeout(context.Background(), 10*time.Second)
-		defer lifecycleCancel()
-		admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
-			SessionID: admitted.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
-		})
-		if err != nil {
-			s.sessions.Remove(sess.ID)
-			writeDurableError(c, err)
-			return
-		}
+	generationNumber := admitted.ActiveGeneration + 1
+	lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer lifecycleCancel()
+	admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
+		SessionID: admitted.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
+	})
+	if err != nil {
+		s.sessions.Remove(sess.ID)
+		writeDurableError(c, err)
+		return
 	}
 	ctx := context.Background()
 	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
@@ -291,7 +253,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		SessionDir:     &sess.SessionDir,
 		VolumeName:     volumeNameForSpawn,
 		PTY:            req.PTY,
-		SandboxProfile: runtimeSandboxProfile(rt.Name(), durableV1 && nativeV1Agent(req.Agent)),
+		SandboxProfile: runtimeSandboxProfile(rt.Name(), nativeV1Agent(req.Agent)),
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
@@ -300,49 +262,47 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	}
 
 	sess.SetRunning(handle)
-	if durableV1 {
-		runtimeID := runtimeGenerationIdentity(handle, rt.Name(), sess.ID, generationNumber)
-		if runtimeID == "" {
-			_ = handle.Kill()
-			s.sessions.Remove(sess.ID)
-			writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "activate_v1_generation", "runtime did not expose a reconstructable identity", nil))
-			return
-		}
-		nativeGeneration := nativeV1Agent(req.Agent)
-		generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
-			SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
-			ImageReference:  resolvedImageReference(req, rt.Name()),
-			ImageDigest:     runtimeGenerationImageDigest(handle),
-			SandboxProfile:  runtimeSandboxProfile(rt.Name(), nativeGeneration),
-			DockerLogDriver: generationDockerLogDriver(rt.Name(), nativeGeneration), CreatedAt: time.Now().UTC(),
-		})
-		if err != nil {
-			_ = handle.Kill()
-			s.sessions.Remove(sess.ID)
-			writeDurableError(c, err)
-			return
-		}
-		if _, err := s.durableStore.TransitionGeneration(lifecycleCtx, durable.TransitionGenerationParams{
-			SessionID: sess.ID, Generation: generation.Number,
-			From: durable.GenerationStarting, To: durable.GenerationRunning, At: time.Now().UTC(),
-		}); err != nil {
-			_ = handle.Kill()
-			s.sessions.Remove(sess.ID)
-			writeDurableError(c, err)
-			return
-		}
-		admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
-			SessionID: sess.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Now().UTC(),
-		})
-		if err != nil {
-			_ = handle.Kill()
-			s.sessions.Remove(sess.ID)
-			writeDurableError(c, err)
-			return
-		}
+	runtimeID := runtimeGenerationIdentity(handle, rt.Name(), sess.ID, generationNumber)
+	if runtimeID == "" {
+		_ = handle.Kill()
+		s.sessions.Remove(sess.ID)
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "activate_v1_generation", "runtime did not expose a reconstructable identity", nil))
+		return
+	}
+	nativeGeneration := nativeV1Agent(req.Agent)
+	generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
+		SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
+		ImageReference:  resolvedImageReference(req, rt.Name()),
+		ImageDigest:     runtimeGenerationImageDigest(handle),
+		SandboxProfile:  runtimeSandboxProfile(rt.Name(), nativeGeneration),
+		DockerLogDriver: generationDockerLogDriver(rt.Name(), nativeGeneration), CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		_ = handle.Kill()
+		s.sessions.Remove(sess.ID)
+		writeDurableError(c, err)
+		return
+	}
+	if _, err := s.durableStore.TransitionGeneration(lifecycleCtx, durable.TransitionGenerationParams{
+		SessionID: sess.ID, Generation: generation.Number,
+		From: durable.GenerationStarting, To: durable.GenerationRunning, At: time.Now().UTC(),
+	}); err != nil {
+		_ = handle.Kill()
+		s.sessions.Remove(sess.ID)
+		writeDurableError(c, err)
+		return
+	}
+	admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
+		SessionID: sess.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Now().UTC(),
+	})
+	if err != nil {
+		_ = handle.Kill()
+		s.sessions.Remove(sess.ID)
+		writeDurableError(c, err)
+		return
 	}
 	_, nativeStdio := handle.(runtime.NativeStdioHandle)
-	usesNativeTransport := durableV1 && nativeStdio && (req.Agent == string(nativeprotocol.ProviderClaude) || req.Agent == string(nativeprotocol.ProviderCodex))
+	usesNativeTransport := nativeStdio && (req.Agent == string(nativeprotocol.ProviderClaude) || req.Agent == string(nativeprotocol.ProviderCodex))
 	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), agent.RedactPrompt(cmd, req.Prompt))
 
 	// Close stdin for prompt-mode agents (claude -p, codex exec).
@@ -355,69 +315,52 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	// Output is tee'd to both the replay buffer (for WS streaming) and the
 	// log file (for permanent NDJSON record). The log file path is returned
 	// in the session response so callers can retrieve it later.
-	if durableV1 {
-		if usesNativeTransport {
-			var active activeNativeSessionRef
-			if err := AttachNativeSessionIO(
-				sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
-				"", req.Prompt, !req.Interactive,
-				false, s.eventBroker,
-				func() string {
-					current := active.Load()
-					if current == nil {
-						return ""
-					}
-					return current.terminalReason()
-				},
-				func(transport nativeprotocol.Transport) {
-					current := s.setNativeTransport(sess.ID, transport)
-					active.Store(current)
-					s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, current, req.EffectiveTimeout(), admitted.UpdatedAt)
-				},
-				func(result runtime.ExitResult, streamErr error) {
-					current := active.Load()
-					s.clearNativeTransport(sess.ID, current)
-					var override durable.SessionState
-					var reason string
-					if current != nil {
-						override = current.terminalState()
-						reason = current.terminalReceiptReason()
-					}
-					s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
-				},
-			); err != nil {
-				log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)
-				_ = handle.Kill()
-				s.sessions.Remove(sess.ID)
-				s.finalizeV1Session(sess.ID, runtime.ExitResult{Code: -1, Err: err}, err)
-				writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "attach_native_session", "attach native event transport", err))
-				return
-			}
-		} else {
-			AttachSessionIO(sess, s.logDir, func(result runtime.ExitResult) {
-				s.finalizeV1Session(sess.ID, result)
-			})
+	if usesNativeTransport {
+		var active activeNativeSessionRef
+		if err := AttachNativeSessionIO(
+			sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
+			"", req.Prompt, !req.Interactive,
+			false, s.eventBroker,
+			func() string {
+				current := active.Load()
+				if current == nil {
+					return ""
+				}
+				return current.terminalReason()
+			},
+			func(transport nativeprotocol.Transport) {
+				current := s.setNativeTransport(sess.ID, transport)
+				active.Store(current)
+				s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, current, req.EffectiveTimeout(), admitted.UpdatedAt)
+			},
+			func(result runtime.ExitResult, streamErr error) {
+				current := active.Load()
+				s.clearNativeTransport(sess.ID, current)
+				var override durable.SessionState
+				var reason string
+				if current != nil {
+					override = current.terminalState()
+					reason = current.terminalReceiptReason()
+				}
+				s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
+			},
+		); err != nil {
+			log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)
+			_ = handle.Kill()
+			s.sessions.Remove(sess.ID)
+			s.finalizeV1Session(sess.ID, runtime.ExitResult{Code: -1, Err: err}, err)
+			writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "attach_native_session", "attach native event transport", err))
+			return
 		}
 	} else {
-		AttachSessionIO(sess, s.logDir)
+		AttachSessionIO(sess, s.logDir, func(result runtime.ExitResult) {
+			s.finalizeV1Session(sess.ID, result)
+		})
 	}
 
 	// Snapshot after SetRunning — the goroutine hasn't had a chance to call
 	// SetCompleted yet, but we use Snapshot for correctness with the race detector.
-	snap := sess.Snapshot()
-	if durableV1 {
-		s.writeV1Session(c, http.StatusCreated, admitted)
-		return
-	}
-	c.JSON(http.StatusCreated, SessionResponse{
-		SessionID: snap.ID,
-		TaskID:    snap.TaskID,
-		Agent:     snap.AgentName,
-		Runtime:   snap.RuntimeName,
-		Status:    string(snap.State),
-		WSURL:     sessionWSURL(c, snap.ID),
-		LogURL:    sessionLogURL(c, snap.ID),
-	})
+	s.writeV1Session(c, http.StatusCreated, admitted)
 }
 
 func runtimeSpawnCommand(command []string, runtimeName, agentName string) []string {
@@ -428,253 +371,6 @@ func runtimeSpawnCommand(command []string, runtimeName, agentName string) []stri
 		return command
 	}
 	return []string{command[0]}
-}
-
-func (s *Server) handleListSessions(c *gin.Context) {
-	sessions := s.sessions.List()
-	summaries := make([]SessionSummary, 0, len(sessions))
-	for _, sess := range sessions {
-		snap := sess.Snapshot()
-		summaries = append(summaries, SessionSummary{
-			SessionID: snap.ID,
-			TaskID:    snap.TaskID,
-			Agent:     snap.AgentName,
-			Runtime:   snap.RuntimeName,
-			Status:    string(snap.State),
-			CreatedAt: snap.CreatedAt,
-			Tags:      snap.Tags,
-			TeamName:  snap.Tags["team"],
-			TeamAgent: snap.Tags["team_agent"],
-		})
-	}
-	sort.Slice(summaries, func(i, j int) bool {
-		if summaries[i].CreatedAt.Equal(summaries[j].CreatedAt) {
-			return summaries[i].SessionID < summaries[j].SessionID
-		}
-		return summaries[i].CreatedAt.Before(summaries[j].CreatedAt)
-	})
-	c.JSON(http.StatusOK, summaries)
-}
-
-func (s *Server) handleGetSession(c *gin.Context) {
-	sess := s.sessions.Get(c.Param("id"))
-	if sess == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
-	c.JSON(http.StatusOK, sess.Snapshot())
-}
-
-func (s *Server) handleGetSessionInfo(c *gin.Context) {
-	sess := s.sessions.Get(c.Param("id"))
-	if sess == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
-
-	snap := sess.Snapshot()
-
-	// Calculate uptime duration.
-	uptime := ""
-	if snap.EndedAt != nil {
-		// Session is completed — use CreatedAt to EndedAt.
-		uptime = formatDuration(snap.EndedAt.Sub(snap.CreatedAt))
-	} else {
-		// Session is still running — use CreatedAt to now.
-		uptime = formatDuration(time.Since(snap.CreatedAt))
-	}
-
-	info := SessionInfo{
-		SessionID:     snap.ID,
-		TaskID:        snap.TaskID,
-		Agent:         snap.AgentName,
-		Runtime:       snap.RuntimeName,
-		Status:        string(snap.State),
-		CreatedAt:     snap.CreatedAt,
-		EndedAt:       snap.EndedAt,
-		ExitCode:      snap.ExitCode,
-		SessionDir:    snap.SessionDir,
-		VolumeName:    snap.VolumeName,
-		LogFile:       session.LogFilePath(s.logDir, snap.ID),
-		WSURL:         sessionWSURL(c, snap.ID),
-		LogURL:        sessionLogURL(c, snap.ID),
-		Uptime:        uptime,
-		LastActivity:  snap.LastActivity,
-		InputTokens:   snap.InputTokens,
-		OutputTokens:  snap.OutputTokens,
-		CostUSD:       snap.CostUSD,
-		ToolCallCount: snap.ToolCallCount,
-		Contamination: snap.Contamination,
-	}
-	// Reconstruct team config from session tags.
-	if teamName := snap.Tags["team"]; teamName != "" {
-		info.Team = &TeamConfig{
-			Name:      teamName,
-			AgentName: snap.Tags["team_agent"],
-			AgentID:   snap.Tags["team_agent"] + "@" + teamName,
-		}
-	}
-	c.JSON(http.StatusOK, info)
-}
-
-func (s *Server) handleDeleteSession(c *gin.Context) {
-	sess := s.sessions.Get(c.Param("id"))
-	if sess == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
-	_ = sess.Kill()
-	sess.Replay.Close()
-	sess.SetCompleted(-1)
-	s.sessions.Remove(sess.ID)
-
-	// Check if caller requested volume removal
-	removeVolume := c.Query("remove_volume") == "true"
-	if removeVolume && sess.VolumeName != "" && s.runtime.Name() == "docker" {
-		// Try to remove the volume, but don't fail the deletion if it doesn't exist
-		rt := s.RuntimeFor("docker")
-		if rt != nil {
-			dockerRT, ok := rt.(*runtime.DockerRuntime)
-			if ok {
-				_ = dockerRT.RemoveSessionVolume(context.Background(), sess.VolumeName)
-			}
-		}
-	}
-
-	snap := sess.Snapshot()
-	c.JSON(http.StatusOK, gin.H{"id": snap.ID, "state": snap.State})
-}
-
-func (s *Server) handleGetLogs(c *gin.Context) {
-	sess := s.sessions.Get(c.Param("id"))
-	if sess == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
-
-	cursor := int64(0)
-	if cursorStr := c.Query("cursor"); cursorStr != "" {
-		parsed, err := strconv.ParseInt(cursorStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cursor"})
-			return
-		}
-		cursor = parsed
-	}
-
-	data, nextOffset := sess.Replay.ReadFrom(cursor)
-	c.Header("Agentruntime-Log-Cursor", strconv.FormatInt(nextOffset, 10))
-	c.Data(http.StatusOK, "text/plain", data)
-}
-
-func (s *Server) handleSessionWS(c *gin.Context) {
-	sess := s.sessions.Get(c.Param("id"))
-	if sess == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
-	if sess.Handle == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "session has no active process"})
-		return
-	}
-
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	// Parse ?since= for replay offset. Default -1 (no replay).
-	sinceOffset := int64(-1)
-	if sinceStr := c.Query("since"); sinceStr != "" {
-		if parsed, parseErr := strconv.ParseInt(sinceStr, 10, 64); parseErr == nil {
-			sinceOffset = parsed
-		}
-	}
-
-	b := bridge.New(conn, sess.Handle, sess.Replay, s.logDir, sess.ID)
-	ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
-	defer cancel()
-	b.Run(ctx, sess.ID, sinceOffset)
-}
-
-func (s *Server) handleGetLogFile(c *gin.Context) {
-	id := c.Param("id")
-	logPath, exists, err := session.ExistingLogFilePath(s.logDir, id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "log file lookup failed"})
-		return
-	}
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
-		return
-	}
-	c.Header("Content-Type", "application/x-ndjson")
-	c.File(logPath)
-}
-
-func (s *Server) handleSessionHistory(c *gin.Context) {
-	// Parse limit query parameter (default 50)
-	limit := 50
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	// Scan the log directory for *.ndjson files
-	entries, err := os.ReadDir(s.logDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			c.JSON(http.StatusOK, []SessionHistoryEntry{})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read log directory"})
-		return
-	}
-
-	var historyEntries []SessionHistoryEntry
-
-	for _, entry := range entries {
-		// Only process NDJSON files
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".ndjson") {
-			continue
-		}
-
-		// Extract session ID from filename (remove .ndjson extension)
-		sessionID := strings.TrimSuffix(entry.Name(), ".ndjson")
-		logPath := filepath.Join(s.logDir, entry.Name())
-
-		// Get file info (size, mtime)
-		info, err := os.Stat(logPath)
-		if err != nil {
-			continue // Skip files we can't stat
-		}
-
-		// Parse the last few lines to extract result event data
-		histEntry := parseSessionLogTail(logPath, sessionID, info)
-		if histEntry != nil {
-			historyEntries = append(historyEntries, *histEntry)
-		}
-	}
-
-	// Sort by EndedAt descending (newest first)
-	sort.Slice(historyEntries, func(i, j int) bool {
-		if historyEntries[i].EndedAt == nil {
-			return false
-		}
-		if historyEntries[j].EndedAt == nil {
-			return true
-		}
-		return historyEntries[i].EndedAt.After(*historyEntries[j].EndedAt)
-	})
-
-	// Apply limit
-	if len(historyEntries) > limit {
-		historyEntries = historyEntries[:limit]
-	}
-
-	c.JSON(http.StatusOK, historyEntries)
 }
 
 // SpawnSession implements chat.SessionSpawner. It creates and starts a session
@@ -851,43 +547,6 @@ func effectiveWorkDir(workDir string, mounts []Mount) string {
 	return ""
 }
 
-func formatDuration(d time.Duration) string {
-	totalSecs := int(d.Seconds())
-	hours := totalSecs / 3600
-	mins := (totalSecs % 3600) / 60
-	secs := totalSecs % 60
-
-	if hours > 0 {
-		return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
-	}
-	if mins > 0 {
-		return fmt.Sprintf("%dm%ds", mins, secs)
-	}
-	return fmt.Sprintf("%ds", secs)
-}
-
-func httpScheme(c *gin.Context) string {
-	if c.Request.TLS != nil {
-		return "https"
-	}
-	return "http"
-}
-
-func websocketScheme(c *gin.Context) string {
-	if c.Request.TLS != nil {
-		return "wss"
-	}
-	return "ws"
-}
-
-func sessionWSURL(c *gin.Context, sessionID string) string {
-	return websocketScheme(c) + "://" + c.Request.Host + "/ws/sessions/" + url.PathEscape(sessionID)
-}
-
-func sessionLogURL(c *gin.Context, sessionID string) string {
-	return httpScheme(c) + "://" + c.Request.Host + "/sessions/" + url.PathEscape(sessionID) + "/logs"
-}
-
 func (s *Server) lookupResumeSessionID(agentName, sessionID string, original *session.Session) (string, error) {
 	if sessionID == "" {
 		return "", nil
@@ -983,112 +642,4 @@ func (s *Server) prepareSessionDir(sess *session.Session, req *SessionRequest, w
 	}
 
 	return nil
-}
-
-// SessionHistoryEntry represents a completed/failed session in the history.
-type SessionHistoryEntry struct {
-	SessionID    string     `json:"session_id"`
-	Agent        string     `json:"agent,omitempty"`
-	Status       string     `json:"status,omitempty"`
-	ExitCode     *int       `json:"exit_code,omitempty"`
-	CreatedAt    *time.Time `json:"created_at,omitempty"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
-	LogFile      string     `json:"log_file,omitempty"`
-	InputTokens  int        `json:"input_tokens,omitempty"`
-	OutputTokens int        `json:"output_tokens,omitempty"`
-	CostUSD      float64    `json:"cost_usd,omitempty"`
-	ToolCalls    int        `json:"tool_calls,omitempty"`
-	FileSize     int64      `json:"file_size,omitempty"`
-}
-
-// parseSessionLogTail parses the tail of an NDJSON log file to extract session metadata.
-func parseSessionLogTail(logPath, sessionID string, fileInfo os.FileInfo) *SessionHistoryEntry {
-	entry := &SessionHistoryEntry{
-		SessionID: sessionID,
-		LogFile:   logPath,
-		FileSize:  fileInfo.Size(),
-	}
-
-	// Open the file and read the last few lines
-	f, err := os.Open(logPath)
-	if err != nil {
-		return entry
-	}
-	defer f.Close()
-
-	// Read file in reverse to find the result event (should be near the end)
-	// For now, we'll scan forward and keep parsing lines until we find useful data
-	var lastResultEvent map[string]interface{}
-	var firstTimestamp *time.Time
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var evt map[string]interface{}
-		if err := json.Unmarshal(line, &evt); err != nil {
-			continue
-		}
-
-		// Extract timestamp from first event to set CreatedAt
-		if firstTimestamp == nil {
-			if timestampVal, ok := evt["timestamp"]; ok {
-				if timestampInt, ok := timestampVal.(float64); ok {
-					ts := time.UnixMilli(int64(timestampInt))
-					firstTimestamp = &ts
-					entry.CreatedAt = firstTimestamp
-				}
-			}
-		}
-
-		// Look for result events
-		if eventType, ok := evt["type"].(string); ok {
-			if eventType == "result" {
-				lastResultEvent = evt
-				// Update timestamp for EndedAt
-				if timestampVal, ok := evt["timestamp"]; ok {
-					if timestampInt, ok := timestampVal.(float64); ok {
-						ts := time.UnixMilli(int64(timestampInt))
-						entry.EndedAt = &ts
-					}
-				}
-			}
-		}
-	}
-
-	// Parse result event data if found
-	if lastResultEvent != nil {
-		if data, ok := lastResultEvent["data"].(map[string]interface{}); ok {
-			// Extract status
-			if status, ok := data["status"].(string); ok {
-				entry.Status = status
-			}
-			// Extract exit code
-			if exitCode, ok := data["exit_code"].(float64); ok {
-				code := int(exitCode)
-				entry.ExitCode = &code
-			}
-			// Extract usage metrics
-			if usage, ok := data["usage"].(map[string]interface{}); ok {
-				if input, ok := usage["input_tokens"].(float64); ok {
-					entry.InputTokens = int(input)
-				}
-				if output, ok := usage["output_tokens"].(float64); ok {
-					entry.OutputTokens = int(output)
-				}
-				if cost, ok := usage["cost_usd"].(float64); ok {
-					entry.CostUSD = cost
-				}
-			}
-			// Extract tool call count
-			if toolCalls, ok := data["tool_calls"].(float64); ok {
-				entry.ToolCalls = int(toolCalls)
-			}
-		}
-	}
-
-	return entry
 }

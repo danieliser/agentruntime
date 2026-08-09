@@ -16,8 +16,8 @@ import (
 )
 
 // AttachNativeSessionIO makes provider-native JSON the sole durable output
-// authority for a v1 session while retaining the compatibility log/replay sink
-// until legacy clients have moved to the sequence stream.
+// authority for a v1 session. The NDJSON file is a diagnostic mirror and is
+// never used as the durable replay cursor.
 func AttachNativeSessionIO(
 	sess *session.Session,
 	logDir string,
@@ -109,7 +109,7 @@ func AttachNativeSessionIO(
 				} else {
 					line := append(append([]byte(nil), record.Raw...), '\n')
 					if _, err := drainTarget.Write(line); err != nil {
-						log.Printf("[session %s] compatibility output write failed: %v", sess.ID, err)
+						log.Printf("[session %s] diagnostic output write failed: %v", sess.ID, err)
 					}
 					if record.Stream == nativeprotocol.StreamProviderStdout {
 						parseAndTrackEvent(sess, record.Raw)

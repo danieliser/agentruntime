@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"testing"
 
@@ -102,20 +101,6 @@ func TestSpawnSession_RejectsUnknownContext(t *testing.T) {
 	}
 	if got := len(srv.sessions.List()); got != 0 {
 		t.Fatalf("rejected spawn must not leave sessions behind, got %d", got)
-	}
-}
-
-func TestCreateSession_UnknownContextRejected(t *testing.T) {
-	ts, _ := newTestServer(t)
-
-	resp := post(t, ts, "/sessions", SessionRequest{
-		Agent:   "echo-test",
-		Prompt:  "hello",
-		Context: "sparkling",
-	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

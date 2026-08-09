@@ -182,7 +182,7 @@ AgentD defaults to `~/.agentd`:
   agentd.sqlite       durable sessions, generations, events, receipts
   backups/            verified SQLite backup manifests/artifacts
   chats/              named-chat JSON records
-  logs/               compatibility NDJSON logs and output hashes
+  logs/               diagnostic NDJSON mirrors and output hashes
   sessions/           reconstructable materialized session files
   credentials/        AgentD-managed credential copies when enabled
 ```
@@ -230,7 +230,7 @@ The canonical implementation tracker is [docs/specs/agentd-durable-streaming/TAS
 
 ## Compatibility status
 
-The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, typed Go client, and chat history use durable v1 sequences. The typed client covers dispatch, list/inspect, replay/raw streaming, prompt/steer, interrupt, cancel, terminate, lost-generation resume, and immutable receipts. Unversioned server session routes remain temporarily during migration; their byte offsets are a separate cursor domain and must not be treated as v1 event sequences. Pre-v1 chat NDJSON is read-only and explicitly reported as unverified legacy history.
+The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, typed Go client, and chat history use durable v1 sequences. The typed client covers dispatch, list/inspect, replay/raw streaming, prompt/steer, interrupt, cancel, terminate, lost-generation resume, and immutable receipts. Unversioned session, byte-log, and bidirectional bridge routes have been removed. Pre-v1 chat NDJSON remains read-only and is explicitly reported as unverified legacy history.
 
 AgentD currently has no API authentication layer. Bind it to a trusted interface or place it behind authenticated transport until the versioned security follow-up lands.
 

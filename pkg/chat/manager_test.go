@@ -18,9 +18,9 @@ import (
 
 // fakeVolumeManager records volume create/remove calls.
 type fakeVolumeManager struct {
-	mu       sync.Mutex
-	created  map[string]map[string]string // name → labels
-	removed  []string
+	mu        sync.Mutex
+	created   map[string]map[string]string // name → labels
+	removed   []string
 	createErr error
 	removeErr error
 }
@@ -57,9 +57,21 @@ func (f *fakeVolumeManager) RemoveVolume(_ context.Context, name string) error {
 type fakeSpawner struct {
 	mu       sync.Mutex
 	calls    []apischema.SessionRequest
+	inputs   []string
 	sessions []*session.Session // pre-built sessions to return in order
 	idx      int
 	err      error
+	inputErr error
+}
+
+func (f *fakeSpawner) SendSessionInput(_ context.Context, _, _, _, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.inputErr != nil {
+		return f.inputErr
+	}
+	f.inputs = append(f.inputs, text)
+	return nil
 }
 
 func newFakeSpawner(sessions ...*session.Session) *fakeSpawner {
@@ -102,35 +114,13 @@ func newFakeHandle() *fakeHandle {
 	return &fakeHandle{stdinBuf: &fakeWriteCloser{}}
 }
 
-func (h *fakeHandle) Stdin() io.WriteCloser              { return h.stdinBuf }
-func (h *fakeHandle) Stdout() io.ReadCloser              { return nil }
-func (h *fakeHandle) Stderr() io.ReadCloser              { return nil }
+func (h *fakeHandle) Stdin() io.WriteCloser               { return h.stdinBuf }
+func (h *fakeHandle) Stdout() io.ReadCloser               { return nil }
+func (h *fakeHandle) Stderr() io.ReadCloser               { return nil }
 func (h *fakeHandle) Wait() <-chan runtime.ExitResult     { return make(chan runtime.ExitResult) }
 func (h *fakeHandle) Kill() error                         { return nil }
 func (h *fakeHandle) PID() int                            { return 1234 }
 func (h *fakeHandle) RecoveryInfo() *runtime.RecoveryInfo { return nil }
-
-// fakeSteerableHandle implements runtime.SteerableHandle.
-type fakeSteerableHandle struct {
-	fakeHandle
-	mu       sync.Mutex
-	prompts  []string
-}
-
-func newFakeSteerableHandle() *fakeSteerableHandle {
-	return &fakeSteerableHandle{fakeHandle: *newFakeHandle()}
-}
-
-func (h *fakeSteerableHandle) SendPrompt(content string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.prompts = append(h.prompts, content)
-	return nil
-}
-func (h *fakeSteerableHandle) SendInterrupt() error                          { return nil }
-func (h *fakeSteerableHandle) SendSteer(string) error                        { return nil }
-func (h *fakeSteerableHandle) SendContext(string, string) error              { return nil }
-func (h *fakeSteerableHandle) SendMention(string, int, int) error            { return nil }
 
 // fakeWriteCloser captures written bytes.
 type fakeWriteCloser struct {
@@ -289,8 +279,8 @@ func TestSendMessage_CreatedChat_SpawnsSession(t *testing.T) {
 	}
 }
 
-func TestSendMessage_RunningChat_InjectsStdin(t *testing.T) {
-	handle := newFakeSteerableHandle()
+func TestSendMessage_RunningChatUsesDurableInput(t *testing.T) {
+	handle := newFakeHandle()
 	sess := makeSession("running-sess", nil)
 	sess.SetRunning(handle)
 
@@ -317,11 +307,10 @@ func TestSendMessage_RunningChat_InjectsStdin(t *testing.T) {
 		t.Errorf("SessionID = %q, want running-sess", result.SessionID)
 	}
 
-	// Verify prompt was sent via steerable handle.
-	handle.mu.Lock()
-	defer handle.mu.Unlock()
-	if len(handle.prompts) != 1 || handle.prompts[0] != "follow-up" {
-		t.Errorf("prompts = %v, want [follow-up]", handle.prompts)
+	spawner.mu.Lock()
+	defer spawner.mu.Unlock()
+	if len(spawner.inputs) != 1 || spawner.inputs[0] != "follow-up" {
+		t.Errorf("durable inputs = %v, want [follow-up]", spawner.inputs)
 	}
 }
 
@@ -514,7 +503,7 @@ func TestWatchSession_StaleWatcherIgnored(t *testing.T) {
 }
 
 func TestWatchSession_ResultEventTransitionsToIdle(t *testing.T) {
-	handle := newFakeSteerableHandle()
+	handle := newFakeHandle()
 	sess := makeSession("result-sess", map[string]string{"claude_session_id": "claude-res"})
 	sess.SetRunning(handle)
 
@@ -561,7 +550,7 @@ func TestWatchSession_ResultEventTransitionsToIdle(t *testing.T) {
 func TestWatchSession_ResultWithPending_RespawnsAndAcceptsNext(t *testing.T) {
 	// When a result event fires with a PendingMessage set, the watcher
 	// should consume it by spawning a fresh session (not re-injecting stdin).
-	handle := newFakeSteerableHandle()
+	handle := newFakeHandle()
 	sess1 := makeSession("allow-sess", nil)
 	sess1.SetRunning(handle)
 	sess2 := makeSession("respawn-sess", nil)
@@ -619,11 +608,11 @@ func TestMultiMessageCycle_IdleBetweenTurns(t *testing.T) {
 	// Full cycle: message 1 → result → idle → message 2 → result → idle → message 3.
 	// This is the primary Docker batch chat pattern.
 	sess1 := makeSession("sess-1", map[string]string{"claude_session_id": "claude-1"})
-	sess1.SetRunning(newFakeSteerableHandle())
+	sess1.SetRunning(newFakeHandle())
 	sess2 := makeSession("sess-2", map[string]string{"claude_session_id": "claude-2"})
-	sess2.SetRunning(newFakeSteerableHandle())
+	sess2.SetRunning(newFakeHandle())
 	sess3 := makeSession("sess-3", nil)
-	sess3.SetRunning(newFakeSteerableHandle())
+	sess3.SetRunning(newFakeHandle())
 
 	spawner := newFakeSpawner(sess1, sess2, sess3)
 	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
@@ -691,7 +680,6 @@ func TestMultiMessageCycle_IdleBetweenTurns(t *testing.T) {
 		t.Errorf("spawn count = %d, want 3", spawner.callCount())
 	}
 }
-
 
 func TestDeleteChat_KillsRunningSession(t *testing.T) {
 	handle := newFakeHandle()
@@ -959,26 +947,16 @@ func TestWatchSession_NilHandle_TreatedAsExit(t *testing.T) {
 	}
 }
 
-// failingSteerableHandle returns an error from SendPrompt.
-type failingSteerableHandle struct {
-	fakeHandle
-}
-
-func (h *failingSteerableHandle) SendPrompt(string) error   { return fmt.Errorf("ws disconnected") }
-func (h *failingSteerableHandle) SendInterrupt() error       { return nil }
-func (h *failingSteerableHandle) SendSteer(string) error     { return nil }
-func (h *failingSteerableHandle) SendContext(string, string) error  { return nil }
-func (h *failingSteerableHandle) SendMention(string, int, int) error { return nil }
-
 func TestSendMessage_BrokenHandle_Respawns(t *testing.T) {
-	// When injectStdin fails (broken WS, dead handle), SendMessage should
+	// When durable native input fails, SendMessage should
 	// respawn instead of returning a 500 error.
 	brokenSess := makeSession("broken-sess", nil)
-	brokenSess.SetRunning(&failingSteerableHandle{fakeHandle: *newFakeHandle()})
+	brokenSess.SetRunning(newFakeHandle())
 
 	freshSess := makeSession("fresh-sess", nil)
 
 	spawner := newFakeSpawner(freshSess)
+	spawner.inputErr = fmt.Errorf("native transport disconnected")
 	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
 	sessMgr.Add(brokenSess)
 	sessMgr.Add(freshSess)

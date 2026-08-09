@@ -136,14 +136,14 @@ Compatibility NDJSON chat pagination remains during migration. SQLite session ev
 ```text
 cmd/agentd/              daemon and CLI commands
 pkg/agent/               Claude/Codex command adapters
-pkg/api/                 HTTP/WS v1 API, lifecycle, recovery, compatibility routes
+pkg/api/                 HTTP/WS v1 API, lifecycle, and durable recovery
 pkg/chat/                named-chat JSON registry and orchestration
 pkg/durable/             typed store contracts and state model
 pkg/durable/sqlite/      SQLite authority, migrations, backup/integrity
 pkg/eventstream/         immutable ingestion and replay/live subscriptions
 pkg/nativeprotocol/      provider-native JSON adapters and transport
 pkg/runtime/             local and direct Docker process handles
-pkg/session/             live session manager and compatibility replay/log sink
+pkg/session/             live session manager and diagnostic log sink
 docs/specs/              task sheet, ADRs, and qualification evidence
 ```
 
@@ -161,4 +161,4 @@ The broader authenticated API and full sandbox-hardening epics are not complete.
 
 ## Compatibility boundary
 
-The old execution sidecar, chat WebSocket proxy, and redundant standalone dashboard are deleted. CLI attach/dispatch, the TUI, embedded dashboard, typed Go-client methods, and chat history use v1. Remaining unversioned session/WS/log routes and byte cursors are migration-only surfaces for legacy Go-client methods. They are a different cursor domain and will be removed after those consumers move to v1. Pre-v1 chat NDJSON is read-only and labeled unverified rather than treated as durable proof.
+The old execution sidecar, daemon compatibility bridge, unversioned session/WS/log routes, chat WebSocket proxy, and redundant standalone dashboard are deleted. CLI attach/dispatch, the TUI, embedded dashboard, typed Go client, and chat history use v1 sequences and durable controls. Recovered processes without durable generation proof are stopped rather than reconstructed from diagnostic bytes. Pre-v1 chat NDJSON is read-only and labeled unverified rather than treated as durable proof.

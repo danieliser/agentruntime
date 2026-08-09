@@ -4,8 +4,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/api"
@@ -19,6 +19,7 @@ type recoveryTestHandle struct {
 	stderrR *io.PipeReader
 	stderrW *io.PipeWriter
 	done    chan runtime.ExitResult
+	killed  atomic.Bool
 }
 
 func newRecoveryTestHandle() *recoveryTestHandle {
@@ -39,24 +40,23 @@ func (h *recoveryTestHandle) Stderr() io.ReadCloser { return h.stderrR }
 func (h *recoveryTestHandle) Wait() <-chan runtime.ExitResult {
 	return h.done
 }
-func (h *recoveryTestHandle) Kill() error { return nil }
+func (h *recoveryTestHandle) Kill() error { h.killed.Store(true); return nil }
 func (h *recoveryTestHandle) PID() int    { return 0 }
 func (h *recoveryTestHandle) RecoveryInfo() *runtime.RecoveryInfo {
 	return nil
 }
 
-func TestDaemonRecovery_ReplayBufferPopulated(t *testing.T) {
+func TestDaemonRecoveryRejectsUnversionedProcessAndLog(t *testing.T) {
 	logDir := t.TempDir()
 	handle := newRecoveryTestHandle()
 	defer handle.stdoutW.Close()
 	defer handle.stderrW.Close()
 
 	sess := &session.Session{
-		ID:        "sess-recovered",
-		State:     session.StateOrphaned,
-		Replay:    session.NewReplayBuffer(1024),
-		Handle:    handle,
-		CreatedAt: time.Now(),
+		ID:     "sess-recovered",
+		State:  session.StateOrphaned,
+		Replay: session.NewReplayBuffer(1024),
+		Handle: handle,
 	}
 
 	logPath := session.LogFilePath(logDir, sess.ID)
@@ -70,32 +70,13 @@ func TestDaemonRecovery_ReplayBufferPopulated(t *testing.T) {
 	server := api.NewServer(session.NewManager(), runtime.NewLocalRuntime(), agent.DefaultRegistry(), api.ServerConfig{LogDir: logDir})
 	server.RestoreRecoveredSessions([]*session.Session{sess})
 
+	if !handle.killed.Load() {
+		t.Fatal("unversioned recovered process was not stopped")
+	}
 	replayed, next := sess.Replay.ReadFrom(0)
-	if string(replayed) != "prior output\n" {
-		t.Fatalf("expected replay buffer restored from log file, got %q", string(replayed))
+	if len(replayed) != 0 || next != 0 {
+		t.Fatalf("unverified legacy bytes were admitted: data=%q next=%d", replayed, next)
 	}
-	if next != int64(len("prior output\n")) {
-		t.Fatalf("expected replay offset %d, got %d", len("prior output\n"), next)
-	}
-
-	go func() {
-		_, _ = handle.stdoutW.Write([]byte("live output\n"))
-		_ = handle.stdoutW.Close()
-		_ = handle.stderrW.Close()
-		handle.done <- runtime.ExitResult{Code: 0}
-	}()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		data, _ := sess.Replay.ReadFrom(0)
-		if string(data) == "prior output\nlive output\n" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	data, _ := sess.Replay.ReadFrom(0)
-	t.Fatalf("expected live output to append after recovery attach, got %q", string(data))
 }
 
 func TestDefaultDataDirUsesAgentDHome(t *testing.T) {

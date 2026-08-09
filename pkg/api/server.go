@@ -94,7 +94,7 @@ type ServerConfig struct {
 	ChatManager *chat.Manager
 
 	// DurableStore owns reconstructable sessions, generations, event history,
-	// and terminal receipts. Current compatibility handlers are migrated to it
+	// and terminal receipts. API handlers use it
 	// incrementally rather than treating legacy logs as proven durable events.
 	DurableStore durable.Store
 

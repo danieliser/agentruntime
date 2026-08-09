@@ -49,7 +49,7 @@ type SessionRequest struct {
 	//             (only the CLI's own auth + minimal config; keychain symlink
 	//             where required), runs against it, and tears it down.
 	//             Auto-discovery is forced off. Residual leakage that cannot
-	//             be stripped is reported in SessionInfo.Contamination.
+	//             be stripped is recorded on the live session snapshot.
 	Context string `json:"context,omitempty" yaml:"context,omitempty"`
 
 	// Filesystem — explicit multi-mount with access modes.
@@ -217,60 +217,6 @@ type ContainerConfig struct {
 	CPUs        float64  `json:"cpus,omitempty"         yaml:"cpus,omitempty"`    // e.g. 2.0
 	Network     string   `json:"network,omitempty"      yaml:"network,omitempty"` // default: "bridge"
 	SecurityOpt []string `json:"security_opt,omitempty" yaml:"security_opt,omitempty"`
-}
-
-// SessionResponse is returned by POST /sessions.
-type SessionResponse struct {
-	SessionID string `json:"session_id"`
-	TaskID    string `json:"task_id,omitempty"`
-	Agent     string `json:"agent"`
-	Runtime   string `json:"runtime"`
-	Status    string `json:"status"`
-	WSURL     string `json:"ws_url"`
-	LogURL    string `json:"log_url"`
-}
-
-// SessionSummary is returned by GET /sessions.
-type SessionSummary struct {
-	SessionID string            `json:"session_id"`
-	TaskID    string            `json:"task_id,omitempty"`
-	Agent     string            `json:"agent"`
-	Runtime   string            `json:"runtime"`
-	Status    string            `json:"status"`
-	CreatedAt time.Time         `json:"created_at"`
-	Tags      map[string]string `json:"tags,omitempty"`
-	TeamName  string            `json:"team_name,omitempty"`
-	TeamAgent string            `json:"team_agent,omitempty"`
-}
-
-// SessionInfo is returned by GET /sessions/:id/info.
-type SessionInfo struct {
-	SessionID     string      `json:"session_id"`
-	TaskID        string      `json:"task_id,omitempty"`
-	Agent         string      `json:"agent"`
-	Runtime       string      `json:"runtime"`
-	Status        string      `json:"status"`
-	CreatedAt     time.Time   `json:"created_at"`
-	EndedAt       *time.Time  `json:"ended_at,omitempty"`
-	ExitCode      *int        `json:"exit_code,omitempty"`
-	SessionDir    string      `json:"session_dir,omitempty"`
-	VolumeName    string      `json:"volume_name,omitempty"`
-	LogFile       string      `json:"log_file,omitempty"`
-	WSURL         string      `json:"ws_url"`
-	LogURL        string      `json:"log_url"`
-	Uptime        string      `json:"uptime,omitempty"`
-	LastActivity  *time.Time  `json:"last_activity,omitempty"`
-	InputTokens   int         `json:"input_tokens,omitempty"`
-	OutputTokens  int         `json:"output_tokens,omitempty"`
-	CostUSD       float64     `json:"cost_usd,omitempty"`
-	ToolCallCount int         `json:"tool_call_count,omitempty"`
-	Team          *TeamConfig `json:"team,omitempty"`
-
-	// Contamination lists context leakage the adapter could NOT strip for
-	// this session (e.g. "cursor-account-rules", "claude-sessionstart-hooks").
-	// Populated for clean-context sessions and for agents with known
-	// unstrippable leaks; empty means no known residual.
-	Contamination []string `json:"contamination,omitempty"`
 }
 
 // ParseVolumes converts the Volumes string slice into typed Mount structs.

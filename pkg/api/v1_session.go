@@ -58,7 +58,7 @@ func (s *Server) handleV1CreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidArgument, Message: err.Error()}})
 		return
 	}
-	s.createSession(c, request, true)
+	s.createSession(c, request)
 }
 
 func (s *Server) handleV1GetSession(c *gin.Context) {

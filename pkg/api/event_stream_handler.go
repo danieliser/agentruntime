@@ -14,6 +14,12 @@ import (
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 )
 
+var wsUpgrader = websocket.Upgrader{
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
+	CheckOrigin:     func(_ *http.Request) bool { return true },
+}
+
 func (s *Server) handleV1EventStream(c *gin.Context) {
 	if s.eventBroker == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeIndeterminate, Message: "durable event broker unavailable"}})
