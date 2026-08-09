@@ -1,6 +1,6 @@
 # ADR-001: Direct native JSON over durable Docker stdio
 
-Status: **PROPOSED FOR GATE G0 APPROVAL**
+Status: **ACCEPTED**
 
 Date: 2026-08-09
 

@@ -1,6 +1,6 @@
 # AgentD Durable Native Streaming — Task Sheet
 
-Status: **G0 EVIDENCE COMPLETE / TRANSPORT APPROVAL PENDING**
+Status: **G0 APPROVED / G1 SCHEMA REVIEW PENDING**
 
 Last updated: 2026-08-09
 
@@ -131,16 +131,12 @@ Minimum envelope:
 - **Resume runtime:** if a nonterminal logical session lost its runtime but provider state is recoverable, create generation `N+1` under the same logical session.
 - **Continue after terminal:** requires a new logical session/idempotency key unless a later explicitly approved contract says otherwise.
 
-### D6 — Retire semantics, not necessarily all in-container code
+### D6 — Direct Docker transport; retire sidecar semantics
 
-Target: remove the sidecar WebSocket normalization/replay/control protocol.
-
-Gate G0 must decide between:
-
-1. direct Docker create/start/attach with durable stdin reattachment; or
-2. a minimal in-container transport owner that only preserves native stdin/stdout across AgentD reconnects.
-
-If option 2 is required, it must not normalize events, assign public cursors, own replay policy, retry model work, or expose an unauthenticated host port. It is transport plumbing, not a second runtime protocol.
+Gate G0 selected direct Docker create/start/attach with durable stdin
+reattachment and full retained-log prefix reconciliation. Remove the sidecar
+WebSocket normalization/replay/control protocol after Gate G2 native parity.
+No replacement in-container transport owner is planned.
 
 ## 4. Lifecycle model
 
@@ -198,17 +194,17 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 | STR-003 | DONE | Test Docker log/attach ordering, stdout/stderr separation, and recovery boundaries under forced disconnect. | Integration test proves ordered retained stdout, separate stderr, and timestamped recovery records; prefix-loss boundary is explicit in ADR-001. | M |
 | STR-004 | DONE | Write ADR choosing direct attach or minimal transparent transport owner. | `ADR-001-native-docker-transport.md` chooses direct attach and contains the old-sidecar removal map. | S |
 
-**Gate G0 — Transport decision:** user approves STR-004 before production transport code begins.
+**Gate G0 — APPROVED 2026-08-09:** direct Docker native JSON transport; no replacement sidecar broker.
 
 ### Phase 1 — Durable contracts and store
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| DUR-101 | TODO | Define typed repository interfaces and structured domain errors for sessions, generations, events, and receipts. | Contract tests run against an in-memory fake and proposed SQLite implementation. | M |
-| DUR-102 | TODO | Design SQLite schema, constraints, request hashing, transaction boundaries, backup/restore, and append-only protections. | Reviewed schema document; no migration yet. | M |
-| DUR-103 | TODO | Implement idempotent logical-session creation and lookup transaction. | Concurrent duplicate starts create exactly one row/runtime admission. | M |
-| DUR-104 | TODO | Implement atomic sequence allocation + event append. | Concurrent writers produce one contiguous sequence with stable event IDs. | L |
-| DUR-105 | TODO | Implement immutable state transitions and terminal receipt persistence. | Restart returns the exact terminal receipt; terminal→running is rejected structurally. | M |
+| DUR-101 | IN PROGRESS | Define typed repository interfaces and structured domain errors for sessions, generations, events, and receipts. | Typed `durable.Store` repository contracts and in-memory reference suite pass; SQLite implementation awaits G1. | M |
+| DUR-102 | IN PROGRESS | Design SQLite schema, constraints, request hashing, transaction boundaries, backup/restore, and append-only protections. | `SCHEMA-v1.md` proposed with no migration created; review pending. | M |
+| DUR-103 | IN PROGRESS | Implement idempotent logical-session creation and lookup transaction. | Reference store passes 32-way concurrent duplicate-create and hash-conflict tests; SQLite transaction pending. | M |
+| DUR-104 | IN PROGRESS | Implement atomic sequence allocation + event append. | Reference store passes 100-way contiguous allocation and stable event-ID tests; SQLite transaction pending. | L |
+| DUR-105 | IN PROGRESS | Implement immutable state transitions and terminal receipt persistence. | Reference store atomically finalizes generation/session/receipt and rejects post-terminal mutation; SQLite transaction/restart test pending. | M |
 
 **Gate G1 — Durable schema/API review:** approve schema and contracts before adding migration files or public v1 routes.
 
@@ -261,7 +257,7 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 |---|---|---|---|---|
 | CMP-601 | TODO | Add a compatibility adapter for current clients during v1 rollout. | Existing chat/UI clients can migrate without consuming mixed old/new cursors. | M |
 | CMP-602 | TODO | Decide treatment of legacy NDJSON logs: import, read-only history, or explicit legacy status. | No legacy file is silently treated as a complete v1 event ledger. | M |
-| CMP-603 | TODO | Remove sidecar WS normalization/replay only after Gate G2; retain a minimal transport shim only if G0 requires it. | No second event identity/cursor authority remains. | M |
+| CMP-603 | TODO | Remove sidecar WS normalization/replay after Gate G2. | No sidecar health port, command frames, replay buffer, byte cursor, or second event authority remains. | M |
 | CMP-604 | TODO | Update docs, examples, SDK, and capability response for the v1 stream contract. | One canonical public entry point and versioned examples. | M |
 
 ## 7. Qualification tests
@@ -297,7 +293,7 @@ This effort is done only when:
 5. Running Docker sessions are reconstructable after AgentD restart without starting a second provider process.
 6. Terminal sessions and receipts survive restart and cannot return to running.
 7. All Q-series tests pass, including real-Docker restart tests with preserved artifacts.
-8. The old sidecar semantic protocol is removed or reduced to a G0-approved transparent transport owner.
+8. The old sidecar semantic protocol and network endpoint are removed.
 9. Full `go test ./...` is green and durable/restart test evidence is retained.
 
 ## 9. Execution order
@@ -326,3 +322,4 @@ Append dated entries; do not rewrite history.
 
 - 2026-08-09 — Planning sheet created. No implementation authorized or performed.
 - 2026-08-09 — User authorized execution. G0 fixtures, real-Docker attach/recovery qualification, and ADR-001 completed. Direct native Docker transport is proposed; production transport awaits Gate G0 approval.
+- 2026-08-09 — User approved G0 and direct removal of sidecar semantics. Durable typed contracts, structured errors, race-tested in-memory reference store, and the no-migration G1 schema proposal were added.
