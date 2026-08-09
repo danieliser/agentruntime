@@ -161,4 +161,4 @@ The broader authenticated API and full sandbox-hardening epics are not complete.
 
 ## Compatibility boundary
 
-The old execution sidecar is deleted. CLI attach/dispatch, the TUI, the embedded dashboard, and typed Go-client methods use v1. Remaining unversioned session/WS/log routes and byte cursors are migration-only surfaces for the standalone dashboard, legacy Go-client methods, and server chat history. They are a different cursor domain and will be removed after those consumers move to v1.
+The old execution sidecar and redundant standalone dashboard are deleted. CLI attach/dispatch, the TUI, the embedded dashboard, and typed Go-client methods use v1. Remaining unversioned session/WS/log routes and byte cursors are migration-only surfaces for legacy Go-client methods and server chat history. They are a different cursor domain and will be removed after those consumers move to v1.

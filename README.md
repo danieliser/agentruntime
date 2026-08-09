@@ -219,7 +219,7 @@ The canonical implementation tracker is [docs/specs/agentd-durable-streaming/TAS
 
 ## Compatibility status
 
-The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, and typed Go client use durable v1 sequences. The standalone dashboard, legacy Go-client methods, unversioned daemon routes, and server chat-log pagination remain temporarily during migration; their byte offsets are a separate cursor domain and must not be treated as v1 event sequences.
+The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, and typed Go client use durable v1 sequences. Legacy Go-client methods, unversioned daemon routes, and server chat-log pagination remain temporarily during migration; their byte offsets are a separate cursor domain and must not be treated as v1 event sequences.
 
 AgentD currently has no API authentication layer. Bind it to a trusted interface or place it behind authenticated transport until the versioned security follow-up lands.
 
