@@ -23,6 +23,7 @@ const (
 
 type model struct {
 	conn     *websocket.Conn
+	port     int
 	meta     chatMeta
 	renderer *renderer
 	program  **tea.Program // double pointer — survives model copy
@@ -34,13 +35,13 @@ type model struct {
 	lines []string
 
 	// State tracking.
-	mode       inputMode
-	connected  bool
-	exited     bool
-	exitCode   int
-	streaming      bool             // currently receiving delta chunks
-	streamBuf      *strings.Builder // pointer — Builder can't be copied by value
-	interruptSent  *bool            // pointer — survives model copy
+	mode          inputMode
+	connected     bool
+	exited        bool
+	exitCode      int
+	streaming     bool             // currently receiving delta chunks
+	streamBuf     *strings.Builder // pointer — Builder can't be copied by value
+	interruptSent *bool            // pointer — survives model copy
 
 	// Metrics from events.
 	inputTokens  int
@@ -56,7 +57,7 @@ type model struct {
 	height int
 }
 
-func newModel(conn *websocket.Conn, meta chatMeta) model {
+func newModel(conn *websocket.Conn, meta chatMeta, port int) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (/steer, /interrupt, /info, esc to quit)"
 	ta.SetHeight(1)
@@ -67,12 +68,13 @@ func newModel(conn *websocket.Conn, meta chatMeta) model {
 	vp := viewport.New(80, 20)
 
 	m := model{
-		conn:       conn,
-		meta:       meta,
-		renderer:   newRenderer(80),
-		viewport:   vp,
-		input:      ta,
-		lines:      make([]string, 0, 256),
+		conn:          conn,
+		port:          port,
+		meta:          meta,
+		renderer:      newRenderer(80),
+		viewport:      vp,
+		input:         ta,
+		lines:         make([]string, 0, 256),
 		streamBuf:     &strings.Builder{},
 		interruptSent: new(bool),
 		program:       new(*tea.Program),
@@ -122,7 +124,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			*m.interruptSent = true
-			_ = m.conn.WriteJSON(map[string]string{"type": "interrupt"})
+			if err := interruptSession(m.port, m.meta.SessionID); err != nil {
+				m.appendLine(errorStyle.Render("interrupt failed: " + err.Error()))
+			}
 			m.appendLine(systemStyle.Render("sent interrupt (ctrl+c again to quit)"))
 			m.updateViewport()
 			return m, nil
@@ -266,13 +270,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendLine(systemStyle.Render("⏳ thinking..."))
 		m.updateViewport()
 
-		// Send the pending message on the new connection.
-		debugLog.Printf("reconnected: session=%s, sending: %q", msg.sessionID, msg.message)
-		_ = msg.conn.WriteJSON(map[string]string{"type": "stdin", "data": msg.message})
-
 		// Restart the event pump — needs tea.Program reference stored on model.
 		if *m.program != nil {
 			go pumpEvents(msg.conn, *m.program)
+		}
+		debugLog.Printf("reconnected: session=%s, sending: %q", msg.sessionID, msg.message)
+		if err := sendSessionInput(m.port, msg.sessionID, "prompt", msg.message); err != nil {
+			m.appendLine(errorStyle.Render("send failed: " + err.Error()))
 		}
 
 	case wsErrorMsg:
@@ -457,14 +461,13 @@ type reconnectedMsg struct {
 
 // reconnectAndSend spawns a new session via the attach endpoint and reconnects the WS.
 func (m *model) reconnectAndSend(message string) tea.Cmd {
-	port := 8090 // TODO: pass through from main
 	name := m.meta.Name
 	return func() tea.Msg {
-		sid, err := attachChat(port, name)
+		sid, err := attachChat(m.port, name)
 		if err != nil {
 			return reconnectedMsg{err: err}
 		}
-		wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, sid)
+		wsURL := eventStreamURL(m.port, sid, 0)
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 		if err != nil {
 			return reconnectedMsg{err: err}
@@ -475,10 +478,7 @@ func (m *model) reconnectAndSend(message string) tea.Cmd {
 
 func (m *model) sendStdin(text string) {
 	debugLog.Printf("sendStdin: %q", text)
-	err := m.conn.WriteJSON(map[string]string{
-		"type": "stdin",
-		"data": text,
-	})
+	err := sendSessionInput(m.port, m.meta.SessionID, "prompt", text)
 	if err != nil {
 		debugLog.Printf("sendStdin error: %v", err)
 	}
@@ -490,12 +490,18 @@ func (m *model) handleCommand(cmd string) {
 	switch parts[0] {
 	case "/steer":
 		if len(parts) > 1 {
-			_ = m.conn.WriteJSON(map[string]string{"type": "steer", "data": parts[1]})
-			m.appendLine(systemStyle.Render("steered: " + parts[1]))
+			if err := sendSessionInput(m.port, m.meta.SessionID, "steer", parts[1]); err != nil {
+				m.appendLine(errorStyle.Render("steer failed: " + err.Error()))
+			} else {
+				m.appendLine(systemStyle.Render("steered: " + parts[1]))
+			}
 		}
 	case "/interrupt":
-		_ = m.conn.WriteJSON(map[string]string{"type": "interrupt"})
-		m.appendLine(systemStyle.Render("sent interrupt"))
+		if err := interruptSession(m.port, m.meta.SessionID); err != nil {
+			m.appendLine(errorStyle.Render("interrupt failed: " + err.Error()))
+		} else {
+			m.appendLine(systemStyle.Render("sent interrupt"))
+		}
 	case "/info":
 		info, _ := json.MarshalIndent(m.meta, "", "  ")
 		m.appendLine(systemStyle.Render(string(info)))

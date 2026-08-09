@@ -1,11 +1,11 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
-	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gorilla/websocket"
@@ -22,16 +22,25 @@ func init() {
 	debugLog = log.New(f, "[tui] ", log.LstdFlags|log.Lmicroseconds)
 }
 
-// Bridge frame from daemon WS.
-type serverFrame struct {
-	Type      string `json:"type"`
-	Data      string `json:"data,omitempty"`
-	ExitCode  *int   `json:"exit_code,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	Error     string `json:"error,omitempty"`
+type streamReadyFrame struct {
+	FrameType     string `json:"frame_type"`
+	SessionID     string `json:"session_id"`
+	AfterSequence int64  `json:"after_sequence"`
+	ReplayThrough int64  `json:"replay_through"`
+	Error         struct {
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
-// Parsed NDJSON event from sidecar (carried inside stdout/replay frames).
+type durableEvent struct {
+	SessionID string                 `json:"session_id"`
+	Sequence  int64                  `json:"sequence"`
+	Timestamp time.Time              `json:"timestamp"`
+	Type      string                 `json:"type"`
+	Stream    string                 `json:"stream"`
+	Payload   map[string]interface{} `json:"payload"`
+}
+
 type agentEvent struct {
 	Type      string                 `json:"type"`
 	Data      map[string]interface{} `json:"data"`
@@ -39,122 +48,97 @@ type agentEvent struct {
 	Timestamp int64                  `json:"timestamp"`
 }
 
-// Tea messages produced by the WS pump.
 type (
-	connectedMsg   struct{ sessionID string }
-	agentEventMsg  struct{ event agentEvent; replay bool }
+	connectedMsg  struct{ sessionID string }
+	agentEventMsg struct {
+		event  agentEvent
+		replay bool
+	}
 	sessionExitMsg struct{ code int }
 	wsErrorMsg     struct{ err error }
 )
 
-// pumpEvents reads frames from the WS and sends them as tea.Msg to the program.
 func pumpEvents(conn *websocket.Conn, p *tea.Program) {
 	defer conn.Close()
 	debugLog.Println("pumpEvents started")
-
+	var cursor int64
+	var replayThrough int64
 	for {
-		var frame serverFrame
-		if err := conn.ReadJSON(&frame); err != nil {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
 			debugLog.Printf("WS read error: %v", err)
 			p.Send(wsErrorMsg{err: err})
 			return
 		}
+		var ready streamReadyFrame
+		if err := json.Unmarshal(raw, &ready); err != nil {
+			p.Send(wsErrorMsg{err: fmt.Errorf("decode event frame: %w", err)})
+			return
+		}
+		switch ready.FrameType {
+		case "stream.ready":
+			cursor = ready.AfterSequence
+			replayThrough = ready.ReplayThrough
+			p.Send(connectedMsg{sessionID: ready.SessionID})
+			continue
+		case "error":
+			p.Send(wsErrorMsg{err: fmt.Errorf("event stream: %s", ready.Error.Message)})
+			return
+		}
 
-		debugLog.Printf("frame: type=%s data_len=%d", frame.Type, len(frame.Data))
-
-		switch frame.Type {
-		case "connected":
-			p.Send(connectedMsg{sessionID: frame.SessionID})
-
-		case "replay", "stdout":
-			isReplay := frame.Type == "replay"
-			// Try base64 first (legacy bridge), fall back to raw NDJSON.
-			data, err := base64.StdEncoding.DecodeString(frame.Data)
-			if err != nil {
-				data = []byte(frame.Data)
-			}
-			var replayBuf strings.Builder
-			// Parse NDJSON lines.
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				var ev agentEvent
-				if err := json.Unmarshal([]byte(line), &ev); err != nil {
-					debugLog.Printf("NDJSON parse error: %v line=%s", err, line[:min(len(line), 100)])
-					continue
-				}
-				// Skip noise events.
-				if ev.Type == "system" {
-					if sub, _ := ev.Data["subtype"].(string); sub == "heartbeat" || sub == "init" || sub == "hook_started" || sub == "hook_response" {
-						continue
-					}
-				}
-				// Skip result events (turn-end noise in interactive mode).
-				if ev.Type == "result" {
-					continue
-				}
-
-				// During replay, coalesce delta chunks into one message
-				// instead of sending each individually (avoids 100s of Glamour renders).
-				if isReplay && ev.Type == "agent_message" {
-					if isDelta, _ := ev.Data["delta"].(bool); isDelta {
-						text, _ := ev.Data["text"].(string)
-						replayBuf.WriteString(text)
-						continue
-					}
-				}
-				// Flush any accumulated replay deltas before a non-delta event.
-				if isReplay && replayBuf.Len() > 0 {
-					p.Send(agentEventMsg{
-						event: agentEvent{
-							Type: "agent_message",
-							Data: map[string]interface{}{"text": replayBuf.String()},
-						},
-						replay: true,
-					})
-					replayBuf.Reset()
-				}
-
-				debugLog.Printf("event: type=%s replay=%v", ev.Type, isReplay)
-				p.Send(agentEventMsg{event: ev, replay: isReplay})
-			}
-			// Flush any remaining coalesced replay deltas.
-			if replayBuf.Len() > 0 {
-				p.Send(agentEventMsg{
-					event: agentEvent{
-						Type: "agent_message",
-						Data: map[string]interface{}{"text": replayBuf.String()},
-					},
-					replay: true,
-				})
-			}
-
-		case "exit":
+		var event durableEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			p.Send(wsErrorMsg{err: fmt.Errorf("decode durable event: %w", err)})
+			return
+		}
+		if event.Sequence != cursor+1 {
+			p.Send(wsErrorMsg{err: fmt.Errorf("event sequence gap: got %d after %d", event.Sequence, cursor)})
+			return
+		}
+		cursor = event.Sequence
+		if event.Stream == "terminal" {
 			code := -1
-			if frame.ExitCode != nil {
-				code = *frame.ExitCode
+			if value, ok := event.Payload["exit_code"].(float64); ok {
+				code = int(value)
 			}
-			debugLog.Printf("exit frame: code=%d", code)
 			p.Send(sessionExitMsg{code: code})
 			return
-
-		case "error":
-			debugLog.Printf("error frame: %s", frame.Error)
-			p.Send(agentEventMsg{
-				event: agentEvent{
-					Type: "error",
-					Data: map[string]interface{}{"error_detail": frame.Error},
-				},
-			})
 		}
+		mapped, ok := mapDurableEvent(event)
+		if !ok {
+			continue
+		}
+		debugLog.Printf("event: sequence=%d type=%s replay=%v", event.Sequence, event.Type, event.Sequence <= replayThrough)
+		p.Send(agentEventMsg{event: mapped, replay: event.Sequence <= replayThrough})
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func mapDurableEvent(event durableEvent) (agentEvent, bool) {
+	data := event.Payload
+	if data == nil {
+		data = map[string]interface{}{}
 	}
-	return b
+	typeName := ""
+	switch event.Type {
+	case "content.delta":
+		typeName = "agent_message"
+		data["delta"] = true
+	case "tool.call":
+		typeName = "tool_use"
+	case "tool.result":
+		typeName = "tool_result"
+	case "usage":
+		typeName = "result"
+	case "runtime.stderr", "error.protocol":
+		typeName = "error"
+		if _, exists := data["error_detail"]; !exists {
+			data["error_detail"] = data["text"]
+		}
+	case "control.approval.request":
+		typeName = "system"
+		data["subtype"] = "input_request"
+	default:
+		return agentEvent{}, false
+	}
+	return agentEvent{Type: typeName, Data: data, Offset: event.Sequence, Timestamp: event.Timestamp.UnixMilli()}, true
 }

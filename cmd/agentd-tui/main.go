@@ -56,7 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := newModel(conn, meta)
+	m := newModel(conn, meta, *port)
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

@@ -10,14 +10,14 @@ import (
 
 var (
 	// Styles
-	agentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
-	toolStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // orange
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")) // red
-	systemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241")) // gray
-	resultStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))  // blue
-	promptStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true) // yellow bold
-	userMsgStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)  // blue bold
-	replayDim     = lipgloss.NewStyle().Faint(true)
+	agentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))             // green
+	toolStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))            // orange
+	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))            // red
+	systemStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))            // gray
+	resultStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))             // blue
+	promptStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true) // yellow bold
+	userMsgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)  // blue bold
+	replayDim    = lipgloss.NewStyle().Faint(true)
 )
 
 // renderer handles markdown rendering with glamour.

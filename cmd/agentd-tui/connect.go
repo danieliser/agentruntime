@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,16 +9,18 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
 // chatMeta holds metadata about the connected chat/session.
 type chatMeta struct {
-	Name      string         // chat name (empty if raw session)
-	SessionID string
-	Agent     string         // "claude", "codex", etc.
-	State     string         // "running", "idle", etc.
-	History   []chatMessage  // prior conversation messages
+	Name         string // chat name (empty if raw session)
+	SessionID    string
+	SessionChain []string
+	Agent        string        // "claude", "codex", etc.
+	State        string        // "running", "idle", etc.
+	History      []chatMessage // prior conversation messages
 }
 
 type connectOpts struct {
@@ -36,6 +39,7 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 		meta.Name = chatResp.Name
 		meta.Agent = chatResp.Config.Agent
 		meta.State = chatResp.State
+		meta.SessionChain = append([]string(nil), chatResp.SessionChain...)
 
 		if chatResp.State == "idle" || chatResp.State == "created" || (chatResp.State == "running" && chatResp.CurrentSession != "") {
 			// Attach via the chat manager — spawns interactive session if needed,
@@ -52,6 +56,12 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 	} else if isUUID(target) {
 		// Looks like a raw session ID.
 		meta.SessionID = target
+		inspected, inspectErr := inspectDurableSession(port, target)
+		if inspectErr != nil {
+			return nil, meta, fmt.Errorf("inspect session: %w", inspectErr)
+		}
+		meta.Agent = inspected.Agent
+		meta.State = inspected.State
 	} else if opts.create {
 		// Auto-create the chat.
 		if err := createChat(port, target, opts.agent, opts.idleTimeout); err != nil {
@@ -71,14 +81,20 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 		return nil, meta, fmt.Errorf("chat %q not found. Create it with --create or:\n  agentd chat create %s --agent claude", target, target)
 	}
 
-	// Connect to the session WS.
-	// Load conversation history from prior sessions' logs.
+	afterSequence := int64(0)
+	// Load chat history from the same durable event ledgers used for live
+	// streaming, then continue the active session after its loaded tail.
 	if meta.Name != "" && !noReplay {
-		meta.History = loadChatHistory(port, meta.Name)
+		meta.History, afterSequence = loadChatHistory(port, meta.SessionChain, meta.SessionID)
 	}
-
-	// Connect WS — skip replay since we loaded history from logs.
-	wsURL := fmt.Sprintf("ws://localhost:%d/ws/sessions/%s", port, meta.SessionID)
+	if noReplay {
+		inspected, inspectErr := inspectDurableSession(port, meta.SessionID)
+		if inspectErr != nil {
+			return nil, meta, fmt.Errorf("inspect replay boundary: %w", inspectErr)
+		}
+		afterSequence = inspected.LastSequence
+	}
+	wsURL := eventStreamURL(port, meta.SessionID, afterSequence)
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
@@ -86,6 +102,69 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 	}
 
 	return conn, meta, nil
+}
+
+type durableSessionResponse struct {
+	SessionID    string `json:"session_id"`
+	Agent        string `json:"agent"`
+	State        string `json:"state"`
+	LastSequence int64  `json:"last_sequence"`
+}
+
+func inspectDurableSession(port int, sessionID string) (durableSessionResponse, error) {
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s", port, url.PathEscape(sessionID)))
+	if err != nil {
+		return durableSessionResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return durableSessionResponse{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	var envelope struct {
+		Data durableSessionResponse `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return durableSessionResponse{}, err
+	}
+	return envelope.Data, nil
+}
+
+func eventStreamURL(port int, sessionID string, afterSequence int64) string {
+	return fmt.Sprintf("ws://localhost:%d/api/v1/ws/sessions/%s/events?after_sequence=%d",
+		port, url.PathEscape(sessionID), afterSequence)
+}
+
+func sendSessionInput(port int, sessionID, kind, text string) error {
+	return postDurableControl(port, sessionID, "input", map[string]string{
+		"idempotency_key": "tui-input:" + uuid.NewString(), "kind": kind, "text": text,
+	})
+}
+
+func interruptSession(port int, sessionID string) error {
+	return postDurableControl(port, sessionID, "interrupt", map[string]string{
+		"idempotency_key": "tui-interrupt:" + uuid.NewString(),
+	})
+}
+
+func postDurableControl(port int, sessionID, operation string, body any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(
+		fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s/%s", port, url.PathEscape(sessionID), operation),
+		"application/json", bytes.NewReader(encoded),
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, responseBody)
+	}
+	return nil
 }
 
 type chatAPIResponse struct {
@@ -156,7 +235,7 @@ func isUUID(s string) bool {
 	return true
 }
 
-// chatMessage is a message from GET /chats/:name/messages.
+// chatMessage is the TUI's renderable projection of durable native events.
 type chatMessage struct {
 	SessionID string                 `json:"session_id"`
 	Type      string                 `json:"type"`
@@ -165,23 +244,81 @@ type chatMessage struct {
 	Timestamp int64                  `json:"timestamp"`
 }
 
-// loadChatHistory fetches prior conversation messages for display on connect.
-func loadChatHistory(port int, name string) []chatMessage {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/chats/%s/messages?limit=100", port, url.PathEscape(name)))
-	if err != nil {
-		return nil
+// loadChatHistory derives the renderable conversation from immutable v1
+// events. The returned cursor belongs only to the current active session.
+func loadChatHistory(port int, chain []string, currentSessionID string) ([]chatMessage, int64) {
+	ids := append([]string(nil), chain...)
+	if currentSessionID != "" && !containsString(ids, currentSessionID) {
+		ids = append(ids, currentSessionID)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil
+	messages := make([]chatMessage, 0)
+	var currentCursor int64
+	for _, sessionID := range ids {
+		cursor := int64(0)
+		var deltas strings.Builder
+		flushDeltas := func() {
+			if deltas.Len() == 0 {
+				return
+			}
+			messages = append(messages, chatMessage{
+				SessionID: sessionID, Type: "agent_message",
+				Data: map[string]interface{}{"text": deltas.String()}, Offset: cursor,
+			})
+			deltas.Reset()
+		}
+		for {
+			path := fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s/events?after_sequence=%d&limit=1000",
+				port, url.PathEscape(sessionID), cursor)
+			resp, err := http.Get(path)
+			if err != nil {
+				break
+			}
+			var envelope struct {
+				Data struct {
+					Events  []durableEvent `json:"events"`
+					HasMore bool           `json:"has_more"`
+				} `json:"data"`
+			}
+			decodeErr := json.NewDecoder(resp.Body).Decode(&envelope)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || decodeErr != nil {
+				break
+			}
+			for _, event := range envelope.Data.Events {
+				cursor = event.Sequence
+				if event.Type == "content.delta" {
+					text, _ := event.Payload["text"].(string)
+					deltas.WriteString(text)
+					continue
+				}
+				flushDeltas()
+				mapped, ok := mapDurableEvent(event)
+				if ok {
+					messages = append(messages, chatMessage{
+						SessionID: sessionID, Type: mapped.Type, Data: mapped.Data,
+						Offset: event.Sequence, Timestamp: event.Timestamp.UnixMilli(),
+					})
+				}
+			}
+			if !envelope.Data.HasMore {
+				break
+			}
+		}
+		flushDeltas()
+		if sessionID == currentSessionID {
+			currentCursor = cursor
+		}
 	}
-	var result struct {
-		Messages []chatMessage `json:"messages"`
+	return messages, currentCursor
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-	return result.Messages
+	return false
 }
 
 // attachChat calls POST /chats/:name/attach to spawn (or reuse) an interactive
