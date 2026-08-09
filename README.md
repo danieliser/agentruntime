@@ -51,6 +51,14 @@ Useful daemon flags:
 
 ## Durable v1 session API
 
+Check compatibility before submitting work:
+
+```sh
+curl -sS http://127.0.0.1:8090/api/v1/capabilities
+```
+
+The handshake reports the AgentD/API/event-schema versions, native providers, configured runtimes, replay persistence, Docker reconstruction, and plugin API versions. An empty plugin-version list means no plugin contract is currently available.
+
 Create a session with a caller-owned idempotency key:
 
 ```sh

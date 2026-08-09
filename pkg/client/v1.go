@@ -29,6 +29,25 @@ type DurableSession struct {
 	EventStreamURL string `json:"event_stream_url"`
 }
 
+type ReplayCapabilities struct {
+	SequenceCursor     bool `json:"sequence_cursor"`
+	StoredThenLive     bool `json:"stored_then_live"`
+	RestartPersistence bool `json:"restart_persistence"`
+}
+
+// Capabilities is the v1 compatibility handshake a caller checks before
+// submitting paid work.
+type Capabilities struct {
+	AgentDVersion        string             `json:"agentd_version"`
+	APIVersions          []string           `json:"api_versions"`
+	EventSchemaVersions  []string           `json:"event_schema_versions"`
+	NativeProviders      []string           `json:"native_providers"`
+	Runtimes             []string           `json:"runtimes"`
+	Replay               ReplayCapabilities `json:"replay"`
+	DockerReconstruction bool               `json:"docker_reconstruction"`
+	PluginAPIVersions    []string           `json:"plugin_api_versions"`
+}
+
 // Event is one immutable v1 AgentD event with decoded exact raw bytes.
 type Event struct {
 	SchemaVersion string          `json:"schema_version"`
@@ -64,6 +83,20 @@ type eventWire struct {
 	Payload       json.RawMessage `json:"payload"`
 	RawBase64     string          `json:"raw_base64"`
 	RawSHA256     string          `json:"raw_sha256"`
+}
+
+func (c *Client) GetCapabilities(ctx context.Context) (*Capabilities, error) {
+	httpRequest, err := c.newRequest(ctx, http.MethodGet, "/api/v1/capabilities", nil)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Data Capabilities `json:"data"`
+	}
+	if err := c.doJSON(httpRequest, &envelope); err != nil {
+		return nil, err
+	}
+	return &envelope.Data, nil
 }
 
 // DispatchDurable creates or idempotently looks up one v1 logical session.
