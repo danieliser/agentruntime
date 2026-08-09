@@ -311,6 +311,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
 			SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
 			ImageReference:  resolvedImageReference(req, rt.Name()),
+			ImageDigest:     runtimeGenerationImageDigest(handle),
 			SandboxProfile:  runtimeSandboxProfile(rt.Name(), nativeGeneration),
 			DockerLogDriver: generationDockerLogDriver(rt.Name(), nativeGeneration), CreatedAt: time.Now().UTC(),
 		})

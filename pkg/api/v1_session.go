@@ -283,6 +283,13 @@ func runtimeGenerationIdentity(handle runtime.ProcessHandle, runtimeName, sessio
 	return fmt.Sprintf("%s:%s:g%d:%s", runtimeName, sessionID, generation, identity)
 }
 
+func runtimeGenerationImageDigest(handle runtime.ProcessHandle) string {
+	if identified, ok := handle.(runtime.RuntimeImageIdentifiedHandle); ok {
+		return identified.RuntimeImageDigest()
+	}
+	return ""
+}
+
 func resolvedImageReference(request SessionRequest, runtimeName string) string {
 	if runtimeName != "docker" {
 		return "local-process"

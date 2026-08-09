@@ -108,7 +108,9 @@ The logical session is committed before runtime admission. A successful spawn
 then records generation identity and transitions generation/session to
 `running`. Docker launches receive labels for logical session ID, generation,
 idempotency key, request hash, and task ID. Recovery reads those labels instead
-of guessing identity from a container name.
+of guessing identity from a container name. After launch, AgentD inspects and
+validates the concrete container image ID and stores that `sha256:` digest in
+the runtime-generation record rather than trusting a mutable image tag alone.
 
 Durable Claude/Codex generations do not publish or dial the execution-sidecar
 port. Native input is connected with `docker attach`; exact provider output is
@@ -116,8 +118,8 @@ read from Docker's retained `json-file` log using `docker logs --follow`; and
 the container result comes from `docker wait`. Containers and materialized
 session files remain available after exit for reconciliation and receipt proof.
 
-Resolved image digest capture, crash-before-generation reconciliation,
-signal/OOM classification, and real-Docker restart
+Crash-before-generation reconciliation, signal/OOM classification, and
+real-Docker restart
 qualification remain required before Gate G3.
 
 ## Controlled shutdown

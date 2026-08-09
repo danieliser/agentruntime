@@ -147,8 +147,9 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	}
 	generation, err := s.durableStore.CreateGeneration(context.Background(), durable.CreateGenerationParams{
 		SessionID: stored.ID, Runtime: rt.Name(), ContainerID: runtimeID,
-		ImageReference: resolvedImageReference(request, rt.Name()), SandboxProfile: runtimeSandboxProfile(rt.Name(), true),
-		ProviderID: previous.ProviderID, DockerLogDriver: generationDockerLogDriver(rt.Name(), true), CreatedAt: time.Now().UTC(),
+		ImageReference: resolvedImageReference(request, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
+		SandboxProfile: runtimeSandboxProfile(rt.Name(), true),
+		ProviderID:     previous.ProviderID, DockerLogDriver: generationDockerLogDriver(rt.Name(), true), CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		_ = handle.Kill()

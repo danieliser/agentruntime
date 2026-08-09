@@ -288,7 +288,11 @@ case "$1" in
     [ "$2" = "inspect" ]
     ;;
   inspect)
-    printf 'true\n'
+    if [ "$3" = "{{.Image}}" ]; then
+      printf 'sha256:native-image\n'
+    else
+      printf 'true\n'
+    fi
     ;;
   run)
     printf 'container-native\n'
@@ -322,6 +326,10 @@ esac
 	}
 	if _, ok := handle.(*nativeDockerHandle); !ok {
 		t.Fatalf("durable native spawn returned %T", handle)
+	}
+	identified, ok := handle.(RuntimeImageIdentifiedHandle)
+	if !ok || identified.RuntimeImageDigest() != "sha256:native-image" {
+		t.Fatalf("durable image identity = %T %q", handle, identified.RuntimeImageDigest())
 	}
 	_ = handle.Stdin().Close()
 	result := <-handle.Wait()

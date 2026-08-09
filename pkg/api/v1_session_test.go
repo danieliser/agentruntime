@@ -251,7 +251,7 @@ func TestV1ClaudeOutputUsesDurableNativeLedger(t *testing.T) {
 		t.Fatalf("first native raw = %q", page.Events[0].Raw)
 	}
 	generation, err := store.GetGeneration(context.Background(), created.Data.SessionID, 1)
-	if err != nil || generation.ProviderID != "claude-fixture-session" || generation.SandboxProfile != "test-native-v1" {
+	if err != nil || generation.ProviderID != "claude-fixture-session" || generation.ImageDigest != "sha256:test-image" || generation.SandboxProfile != "test-native-v1" {
 		t.Fatalf("native provider identity = %+v err=%v", generation, err)
 	}
 	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
@@ -562,8 +562,17 @@ func (counting *countingRuntime) Name() string { return "test" }
 
 func (counting *countingRuntime) Spawn(ctx context.Context, config runtime.SpawnConfig) (runtime.ProcessHandle, error) {
 	counting.count.Add(1)
-	return counting.Runtime.Spawn(ctx, config)
+	handle, err := counting.Runtime.Spawn(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	return &imageIdentifiedTestHandle{ProcessHandle: handle}, nil
 }
+
+type imageIdentifiedTestHandle struct{ runtime.ProcessHandle }
+
+func (*imageIdentifiedTestHandle) RuntimeImageDigest() string { return "sha256:test-image" }
+func (*imageIdentifiedTestHandle) NativeStdio() bool          { return true }
 
 func (counting *countingRuntime) Recover(ctx context.Context) ([]runtime.ProcessHandle, error) {
 	return counting.Runtime.Recover(ctx)

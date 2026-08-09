@@ -88,6 +88,12 @@ type RuntimeIdentifiedHandle interface {
 	RuntimeID() string
 }
 
+// RuntimeImageIdentifiedHandle exposes the immutable image/binary digest that
+// produced a concrete runtime generation.
+type RuntimeImageIdentifiedHandle interface {
+	RuntimeImageDigest() string
+}
+
 // NativeStdioHandle marks a process handle whose stdio is the provider's exact
 // native protocol rather than a compatibility bridge.
 type NativeStdioHandle interface {

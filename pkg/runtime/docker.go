@@ -150,6 +150,17 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		}
 		return nil, &SpawnError{Reason: "docker run", Err: fmt.Errorf("missing container ID")}
 	}
+	imageDigest := ""
+	if cfg.Generation > 0 {
+		imageDigest, err = r.containerImageDigest(ctx, containerID)
+		if err != nil {
+			stopDockerContainerHost(r.cfg.Host, containerID)
+			if spec.cleanup != nil {
+				spec.cleanup()
+			}
+			return nil, &SpawnError{Reason: "container image digest", Err: err}
+		}
+	}
 	handle, err := newNativeDockerHandle(r.cfg.Host, containerID, RecoveryInfo{})
 	if err != nil {
 		stopDockerContainerHost(r.cfg.Host, containerID)
@@ -158,9 +169,25 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		}
 		return nil, &SpawnError{Reason: "native docker stdio", Err: err}
 	}
+	handle.imageDigest = imageDigest
 	// Materialized files remain in place for restart reconstruction. A later
 	// session-retention pass owns their eventual removal.
 	return handle, nil
+}
+
+func (r *DockerRuntime) containerImageDigest(ctx context.Context, containerID string) (string, error) {
+	var stderr bytes.Buffer
+	cmd := r.dockerCmd(ctx, "inspect", "--format", "{{.Image}}", containerID)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", dockerCommandError(err, stderr.String())
+	}
+	digest := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(digest, "sha256:") || len(digest) <= len("sha256:") {
+		return "", fmt.Errorf("invalid container image digest %q", digest)
+	}
+	return digest, nil
 }
 
 func (r *DockerRuntime) buildRunArgs(cfg SpawnConfig) ([]string, error) {

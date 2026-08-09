@@ -18,6 +18,7 @@ import (
 type nativeDockerHandle struct {
 	containerID string
 	dockerHost  string
+	imageDigest string
 	recovery    RecoveryInfo
 
 	attachCmd *exec.Cmd
@@ -118,13 +119,14 @@ func stopDockerCLI(cmd *exec.Cmd) {
 	}
 }
 
-func (h *nativeDockerHandle) Stdin() io.WriteCloser   { return h.stdin }
-func (h *nativeDockerHandle) Stdout() io.ReadCloser   { return h.stdout }
-func (h *nativeDockerHandle) Stderr() io.ReadCloser   { return h.stderr }
-func (h *nativeDockerHandle) Wait() <-chan ExitResult { return h.done }
-func (h *nativeDockerHandle) PID() int                { return 0 }
-func (h *nativeDockerHandle) RuntimeID() string       { return h.containerID }
-func (*nativeDockerHandle) NativeStdio() bool         { return true }
+func (h *nativeDockerHandle) Stdin() io.WriteCloser      { return h.stdin }
+func (h *nativeDockerHandle) Stdout() io.ReadCloser      { return h.stdout }
+func (h *nativeDockerHandle) Stderr() io.ReadCloser      { return h.stderr }
+func (h *nativeDockerHandle) Wait() <-chan ExitResult    { return h.done }
+func (h *nativeDockerHandle) PID() int                   { return 0 }
+func (h *nativeDockerHandle) RuntimeID() string          { return h.containerID }
+func (h *nativeDockerHandle) RuntimeImageDigest() string { return h.imageDigest }
+func (*nativeDockerHandle) NativeStdio() bool            { return true }
 
 func (h *nativeDockerHandle) RecoveryInfo() *RecoveryInfo {
 	if h.recovery.SessionID == "" && h.recovery.TaskID == "" {
