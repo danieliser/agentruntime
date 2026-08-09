@@ -117,5 +117,13 @@ the container result comes from `docker wait`. Containers and materialized
 session files remain available after exit for reconciliation and receipt proof.
 
 Resolved image digest capture, crash-before-generation reconciliation,
-signal/OOM classification, controlled shutdown, and real-Docker restart
+signal/OOM classification, and real-Docker restart
 qualification remain required before Gate G3.
+
+## Controlled shutdown
+
+Shutdown closes create/resume admission before draining active work. Completed
+and local sessions are released after the bounded drain window. Active Docker
+generations are intentionally left running with their runtime infrastructure
+so the next AgentD generation can reconstruct them from the durable database,
+container labels, retained logs, and native stdin attachment.

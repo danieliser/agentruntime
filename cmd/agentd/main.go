@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -188,19 +187,6 @@ func main() {
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("shutdown error: %v", err)
-		}
-
-		// Tear down runtime infrastructure (proxy containers, networks) from all runtimes.
-		var cleanupErrs []error
-		allRuntimes := []runtime.Runtime{rt}
-		allRuntimes = append(allRuntimes, extraRuntimes...)
-		for _, r := range allRuntimes {
-			if err := r.Cleanup(ctx); err != nil {
-				cleanupErrs = append(cleanupErrs, fmt.Errorf("%s runtime cleanup: %w", r.Name(), err))
-			}
-		}
-		if len(cleanupErrs) > 0 {
-			log.Printf("runtime cleanup errors: %v", errors.Join(cleanupErrs...))
 		}
 	}()
 

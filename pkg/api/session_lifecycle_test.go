@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/bridge"
+	runtimepkg "github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
@@ -173,9 +176,9 @@ func TestKillSessionMidOutput_ReplayBufferCloses(t *testing.T) {
 	}
 }
 
-// --- Test 6: Graceful shutdown with 10 active sessions — all killed, no goroutine leaks ---
+// --- Test 6: Controlled shutdown drains then stops local sessions ---
 
-func TestGracefulShutdown_KillsAllSessions(t *testing.T) {
+func TestGracefulShutdown_DrainsThenStopsLocalSessions(t *testing.T) {
 	ts, srv := newTestServer(t)
 
 	goroutinesBefore := runtime.NumGoroutine()
@@ -194,7 +197,7 @@ func TestGracefulShutdown_KillsAllSessions(t *testing.T) {
 	}
 
 	// Graceful shutdown.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		t.Fatalf("shutdown error: %v", err)
@@ -204,6 +207,11 @@ func TestGracefulShutdown_KillsAllSessions(t *testing.T) {
 	remaining := srv.sessions.List()
 	if len(remaining) != 0 {
 		t.Fatalf("expected 0 sessions after shutdown, got %d", len(remaining))
+	}
+	resp := post(t, ts, "/sessions", SessionRequest{Agent: "sleep-test", Prompt: "must not start"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("post-drain admission status=%d, want 503", resp.StatusCode)
 	}
 
 	// Give goroutines time to wind down.
@@ -219,6 +227,54 @@ func TestGracefulShutdown_KillsAllSessions(t *testing.T) {
 	}
 	t.Logf("warning: goroutine count did not fully converge (before=%d, after=%d)",
 		goroutinesBefore, runtime.NumGoroutine())
+}
+
+type shutdownHandle struct{ kills atomic.Int32 }
+
+func (*shutdownHandle) Stdin() io.WriteCloser                  { return nil }
+func (*shutdownHandle) Stdout() io.ReadCloser                  { return nil }
+func (*shutdownHandle) Stderr() io.ReadCloser                  { return nil }
+func (*shutdownHandle) Wait() <-chan runtimepkg.ExitResult     { return make(chan runtimepkg.ExitResult) }
+func (handle *shutdownHandle) Kill() error                     { handle.kills.Add(1); return nil }
+func (*shutdownHandle) PID() int                               { return 0 }
+func (*shutdownHandle) RecoveryInfo() *runtimepkg.RecoveryInfo { return nil }
+
+type shutdownRuntime struct {
+	name     string
+	cleanups atomic.Int32
+}
+
+func (runtime *shutdownRuntime) Name() string { return runtime.name }
+func (*shutdownRuntime) Spawn(context.Context, runtimepkg.SpawnConfig) (runtimepkg.ProcessHandle, error) {
+	return nil, errors.New("unexpected spawn")
+}
+func (*shutdownRuntime) Recover(context.Context) ([]runtimepkg.ProcessHandle, error) { return nil, nil }
+func (runtime *shutdownRuntime) Cleanup(context.Context) error {
+	runtime.cleanups.Add(1)
+	return nil
+}
+
+func TestGracefulShutdown_PreservesActiveDockerGeneration(t *testing.T) {
+	manager := session.NewManager()
+	handle := &shutdownHandle{}
+	sess := session.NewSession("task", "claude", "docker")
+	sess.SetRunning(handle)
+	if err := manager.Add(sess); err != nil {
+		t.Fatalf("add Docker session: %v", err)
+	}
+	dockerRuntime := &shutdownRuntime{name: "docker"}
+	server := NewServer(manager, dockerRuntime, agent.DefaultRegistry())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("controlled Docker handoff: %v", err)
+	}
+	if manager.Get(sess.ID) == nil || handle.kills.Load() != 0 {
+		t.Fatalf("active Docker generation was removed or killed: session=%v kills=%d", manager.Get(sess.ID), handle.kills.Load())
+	}
+	if dockerRuntime.cleanups.Load() != 0 {
+		t.Fatalf("Docker infrastructure cleaned while generation active: %d", dockerRuntime.cleanups.Load())
+	}
 }
 
 // --- Test 7: Create session, connect WS, delete session — WS should receive exit frame ---

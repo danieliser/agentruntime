@@ -59,6 +59,15 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 }
 
 func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 bool) {
+	if !s.beginAdmission() {
+		if durableV1 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidState, Message: errAdmissionClosed.Error()}})
+		} else {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errAdmissionClosed.Error()})
+		}
+		return
+	}
+	defer s.endAdmission()
 	if req.Agent == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "agent is required"})
 		return
@@ -663,6 +672,10 @@ func (s *Server) handleSessionHistory(c *gin.Context) {
 // SpawnSession implements chat.SessionSpawner. It creates and starts a session
 // using the same pipeline as handleCreateSession, without HTTP context.
 func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session.Session, error) {
+	if !s.beginAdmission() {
+		return nil, errAdmissionClosed
+	}
+	defer s.endAdmission()
 	rt := s.RuntimeFor(req.Runtime)
 	if rt == nil {
 		return nil, fmt.Errorf("unknown runtime: %s", req.Runtime)

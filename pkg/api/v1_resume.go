@@ -24,6 +24,11 @@ type v1ResumeRequest struct {
 
 func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	const op = "resume_v1_session"
+	if !s.beginAdmission() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidState, Message: errAdmissionClosed.Error()}})
+		return
+	}
+	defer s.endAdmission()
 	s.resumeMu.Lock()
 	defer s.resumeMu.Unlock()
 	if s.durableStore == nil || s.eventBroker == nil {

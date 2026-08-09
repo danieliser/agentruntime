@@ -20,11 +20,11 @@ import (
 type mockSteerableHandle struct {
 	*mockHandle
 
-	mu       sync.Mutex
-	prompts  []string
-	steers   []string
-	contexts []contextCall
-	mentions []mentionCall
+	mu         sync.Mutex
+	prompts    []string
+	steers     []string
+	contexts   []contextCall
+	mentions   []mentionCall
 	interrupts int
 }
 
@@ -310,8 +310,8 @@ func TestBridge_SteerOnNonSteerableReturnsError(t *testing.T) {
 	if f.Type != "error" {
 		t.Fatalf("expected error frame for steer on non-steerable, got %q", f.Type)
 	}
-	if !strings.Contains(f.Error, "steerable") && !strings.Contains(f.Error, "sidecar") {
-		t.Fatalf("expected error about steerable/sidecar, got %q", f.Error)
+	if !strings.Contains(f.Error, "compatibility controls") {
+		t.Fatalf("expected compatibility-control error, got %q", f.Error)
 	}
 
 	h.exit(0)

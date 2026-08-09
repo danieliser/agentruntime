@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -33,12 +34,29 @@ type Server struct {
 	eventBroker  *eventstream.Broker
 	srv          *http.Server
 	resumeMu     sync.Mutex
+	admissionMu  sync.RWMutex
+	draining     bool
 	nativeMu     sync.RWMutex
 	native       map[string]*activeNativeSession
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
 	chatManager  *chat.Manager
+}
+
+var errAdmissionClosed = errors.New("agentd is draining and no longer accepts new work")
+
+func (s *Server) beginAdmission() bool {
+	s.admissionMu.RLock()
+	if s.draining {
+		s.admissionMu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (s *Server) endAdmission() {
+	s.admissionMu.RUnlock()
 }
 
 // RuntimeFor returns the runtime matching the requested name, or the default.
@@ -152,12 +170,14 @@ func (s *Server) Start(addr string) error {
 	return s.srv.ListenAndServe()
 }
 
-// Shutdown gracefully stops the server, killing all active sessions first,
-// then cleaning up all runtime infrastructure.
+// Shutdown closes admission, allows active work to drain until ctx expires,
+// preserves live Docker generations for restart reconstruction, and only
+// tears down runtime infrastructure that has no preserved work.
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.sessions.ShutdownAll()
+	s.admissionMu.Lock()
+	s.draining = true
+	s.admissionMu.Unlock()
 
-	// Shut down HTTP server.
 	var errs []error
 	if s.srv != nil {
 		if err := s.srv.Shutdown(ctx); err != nil {
@@ -165,15 +185,60 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Clean up all runtimes.
+	waitForSessionDrain(ctx, s.sessions)
+	preserveDocker := false
+	for _, sess := range s.sessions.List() {
+		snapshot := sess.Snapshot()
+		active := snapshot.State != session.StateCompleted && snapshot.State != session.StateFailed
+		if snapshot.RuntimeName == "docker" && active {
+			preserveDocker = true
+			continue
+		}
+		if active {
+			_ = sess.Kill()
+			sess.SetCompleted(-1)
+		}
+		sess.Replay.Close()
+		s.sessions.Remove(sess.ID)
+	}
+
+	cleanupCtx := ctx
+	var cancel context.CancelFunc
+	if ctx.Err() != nil {
+		cleanupCtx, cancel = context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+	}
 	for _, r := range s.runtimes {
-		if err := r.Cleanup(ctx); err != nil {
+		if preserveDocker && r.Name() == "docker" {
+			continue
+		}
+		if err := r.Cleanup(cleanupCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
 
-	if len(errs) > 0 {
-		return errs[0] // Return first error; caller can use errors.Join if needed
+	return errors.Join(errs...)
+}
+
+func waitForSessionDrain(ctx context.Context, manager *session.Manager) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		active := false
+		for _, sess := range manager.List() {
+			state := sess.Snapshot().State
+			if state != session.StateCompleted && state != session.StateFailed {
+				active = true
+				break
+			}
+		}
+		if !active {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
-	return nil
 }
