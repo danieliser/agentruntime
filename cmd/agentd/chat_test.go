@@ -348,15 +348,17 @@ func TestAttach_ByName(t *testing.T) {
 				CurrentSession: sessionID,
 			})
 
-		case "/ws/sessions/" + sessionID:
+		case "/api/v1/sessions/" + sessionID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"last_sequence": 0}})
+
+		case "/api/v1/ws/sessions/" + sessionID + "/events":
 			conn, err := wsUpgrader.Upgrade(w, r, nil)
 			if err != nil {
 				return
 			}
 			defer conn.Close()
-			conn.WriteJSON(ServerFrame{Type: "connected", SessionID: sessionID}) //nolint:errcheck
-			code := 0
-			conn.WriteJSON(ServerFrame{Type: "exit", ExitCode: &code}) //nolint:errcheck
+			writeReady(t, conn, sessionID, 0, 0)
+			writeTerminal(t, conn, 1, "completed", 0)
 
 		default:
 			http.NotFound(w, r)
