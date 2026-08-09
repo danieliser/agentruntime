@@ -246,8 +246,8 @@ func (h *wsHandle) SendMention(filePath string, lineStart, lineEnd int) error {
 		data["line_end"] = lineEnd
 	}
 	return h.writeJSON(wsClientFrame{
-		Type:    "mention",
-		Data:    data,
+		Type: "mention",
+		Data: data,
 	})
 }
 
@@ -360,6 +360,8 @@ func (h *wsHandle) Kill() error {
 }
 
 func (h *wsHandle) PID() int { return 0 }
+
+func (h *wsHandle) RuntimeID() string { return h.containerID }
 
 func (h *wsHandle) RecoveryInfo() *RecoveryInfo {
 	h.metaMu.RLock()

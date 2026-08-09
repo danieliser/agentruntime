@@ -22,6 +22,7 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/bridge"
+	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
@@ -53,6 +54,10 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	s.createSession(c, req, false)
+}
+
+func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 bool) {
 	if req.Agent == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "agent is required"})
 		return
@@ -194,10 +199,24 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a valid UUID"})
 			return
 		}
-		if s.sessions.Get(requestedID) != nil {
+		if !durableV1 && s.sessions.Get(requestedID) != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "session_id already exists"})
 			return
 		}
+	}
+	var admitted durable.Session
+	if durableV1 {
+		result, err := s.admitV1Session(c.Request.Context(), req, rt.Name())
+		if err != nil {
+			writeDurableError(c, err)
+			return
+		}
+		if !result.Created {
+			s.writeV1Session(c, http.StatusOK, result.Session)
+			return
+		}
+		admitted = result.Session
+		requestedID = admitted.ID
 	}
 	sess := session.NewSessionWithID(requestedID, req.TaskID, req.Agent, rt.Name(), req.Tags)
 	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
@@ -228,20 +247,39 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	}
 
 	// Spawn the process.
+	var generationNumber int64
+	lifecycleCtx := context.Background()
+	var lifecycleCancel context.CancelFunc
+	if durableV1 {
+		generationNumber = admitted.ActiveGeneration + 1
+		lifecycleCtx, lifecycleCancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer lifecycleCancel()
+		admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
+			SessionID: admitted.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
+		})
+		if err != nil {
+			s.sessions.Remove(sess.ID)
+			writeDurableError(c, err)
+			return
+		}
+	}
 	ctx := context.Background()
 	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
-		SessionID:  sess.ID,
-		AgentName:  req.Agent,
-		Cmd:        spawnCmd,
-		Prompt:     req.Prompt,
-		Model:      req.Model,
-		Env:        req.Env,
-		WorkDir:    workDir,
-		TaskID:     req.TaskID,
-		Request:    &req,
-		SessionDir: &sess.SessionDir,
-		VolumeName: volumeNameForSpawn,
-		PTY:        req.PTY,
+		SessionID:      sess.ID,
+		Generation:     generationNumber,
+		IdempotencyKey: admitted.IdempotencyKey,
+		RequestHash:    admitted.RequestHash,
+		AgentName:      req.Agent,
+		Cmd:            spawnCmd,
+		Prompt:         req.Prompt,
+		Model:          req.Model,
+		Env:            req.Env,
+		WorkDir:        workDir,
+		TaskID:         req.TaskID,
+		Request:        &req,
+		SessionDir:     &sess.SessionDir,
+		VolumeName:     volumeNameForSpawn,
+		PTY:            req.PTY,
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
@@ -250,6 +288,44 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	}
 
 	sess.SetRunning(handle)
+	if durableV1 {
+		runtimeID := runtimeGenerationIdentity(handle, rt.Name(), sess.ID, generationNumber)
+		if runtimeID == "" {
+			_ = handle.Kill()
+			s.sessions.Remove(sess.ID)
+			writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "activate_v1_generation", "runtime did not expose a reconstructable identity", nil))
+			return
+		}
+		generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
+			SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
+			ImageReference: resolvedImageReference(req, rt.Name()),
+			SandboxProfile: rt.Name() + "-compat-v1", CreatedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			_ = handle.Kill()
+			s.sessions.Remove(sess.ID)
+			writeDurableError(c, err)
+			return
+		}
+		if _, err := s.durableStore.TransitionGeneration(lifecycleCtx, durable.TransitionGenerationParams{
+			SessionID: sess.ID, Generation: generation.Number,
+			From: durable.GenerationStarting, To: durable.GenerationRunning, At: time.Now().UTC(),
+		}); err != nil {
+			_ = handle.Kill()
+			s.sessions.Remove(sess.ID)
+			writeDurableError(c, err)
+			return
+		}
+		admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
+			SessionID: sess.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Now().UTC(),
+		})
+		if err != nil {
+			_ = handle.Kill()
+			s.sessions.Remove(sess.ID)
+			writeDurableError(c, err)
+			return
+		}
+	}
 	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), agent.RedactPrompt(cmd, req.Prompt))
 
 	// Close stdin for prompt-mode agents (claude -p, codex exec).
@@ -262,11 +338,21 @@ func (s *Server) handleCreateSession(c *gin.Context) {
 	// Output is tee'd to both the replay buffer (for WS streaming) and the
 	// log file (for permanent NDJSON record). The log file path is returned
 	// in the session response so callers can retrieve it later.
-	AttachSessionIO(sess, s.logDir)
+	if durableV1 {
+		AttachSessionIO(sess, s.logDir, func(result runtime.ExitResult) {
+			s.finalizeV1Session(sess.ID, result)
+		})
+	} else {
+		AttachSessionIO(sess, s.logDir)
+	}
 
 	// Snapshot after SetRunning — the goroutine hasn't had a chance to call
 	// SetCompleted yet, but we use Snapshot for correctness with the race detector.
 	snap := sess.Snapshot()
+	if durableV1 {
+		s.writeV1Session(c, http.StatusCreated, admitted)
+		return
+	}
 	c.JSON(http.StatusCreated, SessionResponse{
 		SessionID: snap.ID,
 		TaskID:    snap.TaskID,

@@ -18,10 +18,13 @@ type HealthResponse struct {
 // Minimum valid request: Agent + Prompt + (WorkDir or a Mount).
 type SessionRequest struct {
 	// Task identity
-	SessionID string            `json:"session_id,omitempty" yaml:"session_id,omitempty"` // caller-defined session ID (must be valid UUID if set)
-	TaskID    string            `json:"task_id,omitempty" yaml:"task_id,omitempty"`
-	Name      string            `json:"name,omitempty"    yaml:"name,omitempty"` // human label for observability
-	Tags      map[string]string `json:"tags,omitempty"    yaml:"tags,omitempty"`
+	SessionID string `json:"session_id,omitempty" yaml:"session_id,omitempty"` // caller-defined session ID (must be valid UUID if set)
+	// IdempotencyKey is required by POST /api/v1/sessions. Repeating the same
+	// key and effective request returns the existing logical session.
+	IdempotencyKey string            `json:"idempotency_key,omitempty" yaml:"idempotency_key,omitempty"`
+	TaskID         string            `json:"task_id,omitempty" yaml:"task_id,omitempty"`
+	Name           string            `json:"name,omitempty"    yaml:"name,omitempty"` // human label for observability
+	Tags           map[string]string `json:"tags,omitempty"    yaml:"tags,omitempty"`
 
 	// What to run
 	Agent   string `json:"agent"              yaml:"agent"`
@@ -90,6 +93,9 @@ type SessionRequest struct {
 
 	// Clean-room env: only these vars enter the container. Never inherits host env.
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+	// SecretGrants lists Env keys whose values may be used for this launch but
+	// must be excluded from the durable reconstructable request manifest.
+	SecretGrants []string `json:"secret_grants,omitempty" yaml:"secret_grants,omitempty"`
 
 	// Container settings — image, resource limits, network, security options.
 	// Renamed from "resources" because image isn't a resource — honest naming.

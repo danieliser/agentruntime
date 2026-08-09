@@ -22,6 +22,8 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 
 	v1 := r.Group("/api/v1")
 	{
+		v1.POST("/sessions", s.handleV1CreateSession)
+		v1.GET("/sessions/:id", s.handleV1GetSession)
 		v1.GET("/sessions/:id/events", s.handleV1EventReplay)
 		v1.GET("/ws/sessions/:id/events", s.handleV1EventStream)
 	}

@@ -37,7 +37,7 @@ if [ "$1" = "inspect" ]; then
     echo "unexpected container id: $4" >&2
     exit 3
   fi
-  printf '%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered"}'
+  printf '%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request"}'
   exit 0
 fi
 if [ "$1" = "logs" ]; then
@@ -64,11 +64,11 @@ exit 2
 	if !ok {
 		t.Fatalf("expected recoveredDockerHandle, got %T", handles[0])
 	}
-	if recovered.SessionID != "sess-recovered" {
-		t.Fatalf("expected session ID from label, got %q", recovered.SessionID)
+	if recovered.recovery.SessionID != "sess-recovered" {
+		t.Fatalf("expected session ID from label, got %q", recovered.recovery.SessionID)
 	}
-	if recovered.TaskID != "task-recovered" {
-		t.Fatalf("expected task ID from label, got %q", recovered.TaskID)
+	if recovered.recovery.TaskID != "task-recovered" {
+		t.Fatalf("expected task ID from label, got %q", recovered.recovery.TaskID)
 	}
 
 	info := handles[0].RecoveryInfo()
@@ -77,6 +77,30 @@ exit 2
 	}
 	if info.SessionID != "sess-recovered" {
 		t.Fatalf("expected recovery info session ID %q, got %q", "sess-recovered", info.SessionID)
+	}
+	if info.Generation != 2 || info.IdempotencyKey != "job-recovered" || info.RequestHash != "sha256:request" {
+		t.Fatalf("expected durable recovery labels, got %+v", info)
+	}
+}
+
+func TestDockerRunCarriesDurableGenerationLabels(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	args, err := rt.buildRunArgs(SpawnConfig{
+		Cmd: []string{"echo"}, SessionID: "durable-session", TaskID: "task",
+		Generation: 3, IdempotencyKey: "job-123", RequestHash: "sha256:abc",
+	})
+	if err != nil {
+		t.Fatalf("build durable args: %v", err)
+	}
+	for _, label := range []string{
+		"agentruntime.session_id=durable-session",
+		"agentruntime.generation=3",
+		"agentruntime.idempotency_key=job-123",
+		"agentruntime.request_hash=sha256:abc",
+	} {
+		if !hasFlagValue(args, "--label", label) {
+			t.Errorf("missing label %q in %v", label, args)
+		}
 	}
 }
 
@@ -787,7 +811,7 @@ exit 2
 	spec, err := rt.prepareRun(SpawnConfig{
 		Cmd:        []string{"claude"},
 		SessionID:  "new-session-5678",
-		VolumeName: "agentruntime-vol-old-session-1234",  // Reuse existing volume
+		VolumeName: "agentruntime-vol-old-session-1234", // Reuse existing volume
 		Request: &apischema.SessionRequest{
 			WorkDir:        workDir,
 			PersistSession: true,

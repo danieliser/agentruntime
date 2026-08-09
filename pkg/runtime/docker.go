@@ -78,8 +78,11 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 }
 
 const (
-	dockerTaskLabelKey    = "agentruntime.task_id"
-	dockerSessionLabelKey = "agentruntime.session_id"
+	dockerTaskLabelKey        = "agentruntime.task_id"
+	dockerSessionLabelKey     = "agentruntime.session_id"
+	dockerGenerationLabelKey  = "agentruntime.generation"
+	dockerIdempotencyLabelKey = "agentruntime.idempotency_key"
+	dockerRequestHashLabelKey = "agentruntime.request_hash"
 )
 
 type dockerMaterializer interface {
@@ -459,6 +462,13 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		"--workdir", "/workspace",
 		"--env-file", envFile,
 	}
+	if cfg.Generation > 0 {
+		args = append(args,
+			"--label", fmt.Sprintf("%s=%d", dockerGenerationLabelKey, cfg.Generation),
+			"--label", fmt.Sprintf("%s=%s", dockerIdempotencyLabelKey, dockerLabelValue(cfg.IdempotencyKey)),
+			"--label", fmt.Sprintf("%s=%s", dockerRequestHashLabelKey, dockerLabelValue(cfg.RequestHash)),
+		)
+	}
 	if cfg.PTY || (req != nil && req.PTY) {
 		args = append(args, "-t")
 	}
@@ -703,21 +713,33 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		}
 		sessionID := strings.TrimSpace(labels[dockerSessionLabelKey])
 		taskID := strings.TrimSpace(labels[dockerTaskLabelKey])
+		generation := int64(0)
+		if rawGeneration := strings.TrimSpace(labels[dockerGenerationLabelKey]); rawGeneration != "" {
+			generation, err = strconv.ParseInt(rawGeneration, 10, 64)
+			if err != nil || generation < 1 {
+				return nil, fmt.Errorf("docker inspect %s: invalid durable generation label %q", id, rawGeneration)
+			}
+		}
+		idempotencyKey := strings.TrimSpace(labels[dockerIdempotencyLabelKey])
+		requestHash := strings.TrimSpace(labels[dockerRequestHashLabelKey])
 
 		if hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, id, dockerSidecarContainerPort); err == nil {
 			handle, err := dialSidecar(id, hostPort, 0, "")
 			if err == nil {
 				handle.dockerHost = r.cfg.Host
 				handle.setRecoveryInfo(&RecoveryInfo{
-					SessionID: sessionID,
-					TaskID:    taskID,
+					SessionID: sessionID, TaskID: taskID, Generation: generation,
+					IdempotencyKey: idempotencyKey, RequestHash: requestHash,
 				})
 				handles = append(handles, handle)
 				continue
 			}
 		}
 
-		handle, err := newRecoveredDockerHandle(ctx, r.cfg.Host, id, sessionID, taskID)
+		handle, err := newRecoveredDockerHandle(ctx, r.cfg.Host, id, RecoveryInfo{
+			SessionID: sessionID, TaskID: taskID, Generation: generation,
+			IdempotencyKey: idempotencyKey, RequestHash: requestHash,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("docker logs %s: %w", id, err)
 		}
@@ -901,13 +923,19 @@ func (h *dockerHandle) PID() int {
 
 func (h *dockerHandle) RecoveryInfo() *RecoveryInfo { return nil }
 
+func (h *dockerHandle) RuntimeID() string {
+	if pid := h.PID(); pid > 0 {
+		return fmt.Sprintf("docker-cli-pid:%d", pid)
+	}
+	return ""
+}
+
 // recoveredDockerHandle is a minimal handle for containers found during recovery.
 // It follows docker logs so recovered sessions can resume stdout/stderr streaming.
 type recoveredDockerHandle struct {
 	containerID string
 	dockerHost  string
-	SessionID   string
-	TaskID      string
+	recovery    RecoveryInfo
 
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
@@ -926,14 +954,14 @@ func (h *recoveredDockerHandle) PID() int {
 	return 0
 }
 func (h *recoveredDockerHandle) RecoveryInfo() *RecoveryInfo {
-	if h.SessionID == "" && h.TaskID == "" {
+	if h.recovery.SessionID == "" && h.recovery.TaskID == "" {
 		return nil
 	}
-	return &RecoveryInfo{
-		SessionID: h.SessionID,
-		TaskID:    h.TaskID,
-	}
+	copy := h.recovery
+	return &copy
 }
+
+func (h *recoveredDockerHandle) RuntimeID() string { return h.containerID }
 
 func (h *recoveredDockerHandle) Wait() <-chan ExitResult {
 	return h.done
@@ -946,7 +974,7 @@ func (h *recoveredDockerHandle) Kill() error {
 	return err
 }
 
-func newRecoveredDockerHandle(ctx context.Context, host, containerID, sessionID, taskID string) (*recoveredDockerHandle, error) {
+func newRecoveredDockerHandle(ctx context.Context, host, containerID string, recovery RecoveryInfo) (*recoveredDockerHandle, error) {
 	cmd := exec.CommandContext(ctx, "docker", "logs", "--follow", "--since=0", containerID)
 	if host != "" {
 		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
@@ -969,8 +997,7 @@ func newRecoveredDockerHandle(ctx context.Context, host, containerID, sessionID,
 	handle := &recoveredDockerHandle{
 		containerID: containerID,
 		dockerHost:  host,
-		SessionID:   sessionID,
-		TaskID:      taskID,
+		recovery:    recovery,
 		cmd:         cmd,
 		stdout:      stdout,
 		stderr:      stderr,

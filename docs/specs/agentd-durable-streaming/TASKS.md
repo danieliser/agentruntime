@@ -234,8 +234,8 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| RES-401 | TODO | Replace duplicate-create `409` with idempotent lookup semantics. | Same key/hash returns same session concurrently and after daemon restart. | M |
-| RES-402 | TODO | Persist provider session/thread identity and resume inputs. | Claude/Codex continuation uses the exact stored provider identity. | M |
+| RES-401 | DONE | Replace duplicate-create `409` with idempotent lookup semantics. | Versioned create passes 16-way concurrent admission with one process/generation, changed-request conflict, terminal lookup, and SQLite close/reopen lookup without respawn. | M |
+| RES-402 | IN PROGRESS | Persist provider session/thread identity and resume inputs. | Migration v2 and typed one-way provider-ID binding pass; native continuation wiring remains. | M |
 | RES-403 | TODO | Implement explicit runtime resume as generation `N+1` for eligible nonterminal sessions. | Logical ID and sequence continue; generation increments once. | L |
 | RES-404 | TODO | Make interrupt/cancel/resume requests idempotent with durable outcomes. | Repeated controls have stable responses and no duplicate side effects. | M |
 
@@ -243,7 +243,7 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
-| DKR-501 | TODO | Persist and label session ID, job key, request hash, generation, container ID, image reference/digest, and sandbox-profile version. | DB and `docker inspect` can be reconciled without guessing identity. | M |
+| DKR-501 | IN PROGRESS | Persist and label session ID, job key, request hash, generation, container ID, image reference/digest, and sandbox-profile version. | v1 admission persists session/generation and Docker durable labels/recovery metadata; resolved image digest and native sandbox profile remain. | M |
 | DKR-502 | TODO | Implement startup reconciliation across expected/running/exited/missing/duplicate containers. | Each case has an explicit state transition or `indeterminate`; no implicit rerun. | L |
 | DKR-503 | TODO | Reattach native input/output at the last durable boundary. | Restart during active output yields no missing or newly identified duplicate event. | L |
 | DKR-504 | TODO | Recover terminal state when container exits while AgentD is down. | Exit reason/receipt is reconstructed or explicitly indeterminate. | M |
@@ -329,3 +329,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — User selected `~/.agentd` as the default persistence root. Database, backups, chat JSON/history, logs, credentials, and reconstructable runtime files share that root; `--data-dir` and `AGENTRUNTIME_DATA_DIR` still relocate it as one unit.
 - 2026-08-09 — Added the shared Claude/Codex native transport, exact-record event broker, commit-before-publish fanout, sequence replay API, race-free stored-to-live WebSocket handshake, explicit slow-subscriber recovery, and discoverable replay boundaries.
 - 2026-08-09 — Added reviewed migration v2 and typed one-way provider identity binding, including v1 database upgrade coverage and immutable second-bind rejection.
+- 2026-08-09 — Added versioned durable create/inspect: concurrent/restarted duplicate requests return the same session, one admitted request spawns one generation, changed request hashes return `idempotency_conflict`, terminal receipt state survives reopen, and Docker receives durable reconciliation labels.
+- 2026-08-09 — Durable request manifests now exclude explicit environment and nested request secrets, record grant references without values, and reject obvious undeclared secret environment keys before admission.

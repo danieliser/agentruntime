@@ -37,6 +37,12 @@ type SpawnConfig struct {
 	// SessionID identifies the owning session and is used for container naming/labels.
 	SessionID string
 
+	// Generation and idempotency fields label reconstructable durable work.
+	// They are empty for legacy, non-durable callers.
+	Generation     int64
+	IdempotencyKey string
+	RequestHash    string
+
 	// AgentName identifies the agent type ("claude", "codex").
 	AgentName string
 
@@ -74,6 +80,12 @@ type SpawnConfig struct {
 
 	// PTY requests a pseudo-terminal allocation. Not all runtimes support this.
 	PTY bool
+}
+
+// RuntimeIdentifiedHandle exposes the stable runtime process/container ID
+// needed to persist a reconstructable generation.
+type RuntimeIdentifiedHandle interface {
+	RuntimeID() string
 }
 
 // ProcessHandle provides access to a running agent process's stdio streams
@@ -129,12 +141,12 @@ type SteerableHandle interface {
 
 // Compile-time interface assertions.
 var (
-	_ Runtime        = (*LocalRuntime)(nil)
-	_ Runtime        = (*LocalSidecarRuntime)(nil)
-	_ Runtime        = (*DockerRuntime)(nil)
-	_ ProcessHandle  = (*localHandle)(nil)
-	_ ProcessHandle  = (*dockerHandle)(nil)
-	_ ProcessHandle  = (*recoveredDockerHandle)(nil)
+	_ Runtime         = (*LocalRuntime)(nil)
+	_ Runtime         = (*LocalSidecarRuntime)(nil)
+	_ Runtime         = (*DockerRuntime)(nil)
+	_ ProcessHandle   = (*localHandle)(nil)
+	_ ProcessHandle   = (*dockerHandle)(nil)
+	_ ProcessHandle   = (*recoveredDockerHandle)(nil)
 	_ SteerableHandle = (*wsHandle)(nil)
 )
 
@@ -156,6 +168,9 @@ type ExitResult struct {
 
 // RecoveryInfo carries stable identifiers for a recovered process handle.
 type RecoveryInfo struct {
-	SessionID string
-	TaskID    string
+	SessionID      string
+	TaskID         string
+	Generation     int64
+	IdempotencyKey string
+	RequestHash    string
 }

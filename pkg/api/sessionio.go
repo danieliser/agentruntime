@@ -7,12 +7,13 @@ import (
 	"log"
 	"sync"
 
+	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
 // AttachSessionIO starts stdout/stderr drain goroutines and an exit watcher for
 // a session handle, mirroring the normal create-session lifecycle.
-func AttachSessionIO(sess *session.Session, logDir string) {
+func AttachSessionIO(sess *session.Session, logDir string, onExit ...func(runtime.ExitResult)) {
 	if sess == nil || sess.Handle == nil {
 		return
 	}
@@ -56,6 +57,11 @@ func AttachSessionIO(sess *session.Session, logDir string) {
 		}
 		log.Printf("[session %s] exited: code=%d err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, sess.Replay.TotalBytes())
 		sess.SetCompleted(result.Code)
+		for _, callback := range onExit {
+			if callback != nil {
+				callback(result)
+			}
+		}
 	}()
 }
 

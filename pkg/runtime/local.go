@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -15,7 +16,7 @@ func NewLocalRuntime() *LocalRuntime {
 	return &LocalRuntime{}
 }
 
-func (r *LocalRuntime) Name() string    { return "local" }
+func (r *LocalRuntime) Name() string                    { return "local" }
 func (r *LocalRuntime) Cleanup(_ context.Context) error { return nil }
 
 // Spawn starts a local subprocess with the given configuration.
@@ -146,6 +147,13 @@ func (h *localHandle) PID() int {
 }
 
 func (h *localHandle) RecoveryInfo() *RecoveryInfo { return nil }
+
+func (h *localHandle) RuntimeID() string {
+	if pid := h.PID(); pid > 0 {
+		return fmt.Sprintf("pid:%d", pid)
+	}
+	return ""
+}
 
 // SpawnError wraps errors from the spawn process.
 type SpawnError struct {

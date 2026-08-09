@@ -78,7 +78,11 @@ persist secret values.
 
 The compatibility adapter must split the existing generic `env` map into
 ordinary environment and explicit secret grants before it calls the v1 store.
-Until that classification exists, public v1 idempotent creation is not enabled.
+Versioned creation now requires `secret_grants` for sensitive environment
+names, removes those values from the manifest, and rejects obvious undeclared
+secret keys. Secret-valued nested request fields (for example an MCP `token`)
+are removed and recorded as stable request-path grant references. Legacy
+unversioned creation remains outside this durable admission contract.
 
 ## Approved tables
 
