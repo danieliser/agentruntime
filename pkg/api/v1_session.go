@@ -313,6 +313,16 @@ func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult, 
 	s.finalizeV1SessionAs(sessionID, result, "", streamErrors...)
 }
 
+func runtimeTerminalState(result runtime.ExitResult) durable.SessionState {
+	if result.OOMKilled || result.Signal != "" || result.ErrorDetail != "" || result.Err != nil {
+		return durable.StateCrashed
+	}
+	if result.Code != 0 {
+		return durable.StateFailed
+	}
+	return durable.StateCompleted
+}
+
 func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult, override durable.SessionState, streamErrors ...error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -329,16 +339,12 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 		log.Printf("[session %s] durable generation lookup failed: %v", sessionID, err)
 		return
 	}
-	state := durable.StateCompleted
+	state := runtimeTerminalState(result)
 	generationTo := durable.GenerationExited
 	streamErr := errors.Join(streamErrors...)
 	if streamErr != nil {
 		state = durable.StateIndeterminate
 		generationTo = durable.GenerationIndeterminate
-	} else if result.Err != nil {
-		state = durable.StateCrashed
-	} else if result.Code != 0 {
-		state = durable.StateFailed
 	}
 	if override != "" {
 		state = override
@@ -348,11 +354,25 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 		}
 	}
 	exitCode := result.Code
+	startedAt := result.StartedAt
+	if startedAt.IsZero() {
+		startedAt = generation.CreatedAt
+	}
+	endedAt := result.EndedAt
+	if endedAt.IsZero() {
+		endedAt = time.Now().UTC()
+	}
+	if endedAt.Before(stored.UpdatedAt) {
+		endedAt = stored.UpdatedAt
+	}
+	if endedAt.Before(generation.UpdatedAt) {
+		endedAt = generation.UpdatedAt
+	}
 	_, err = s.durableStore.FinalizeSession(ctx, durable.FinalizeSessionParams{
 		From: stored.State, GenerationFrom: generation.State, GenerationTo: generationTo,
 		Receipt: durable.TerminalReceipt{
 			SessionID: sessionID, Generation: generation.Number, State: state,
-			ExitCode: &exitCode, StartedAt: generation.CreatedAt, EndedAt: time.Now().UTC(),
+			ExitCode: &exitCode, Signal: result.Signal, StartedAt: startedAt, EndedAt: endedAt,
 			OutputHash: outputHash(session.LogFilePath(s.logDir, sessionID)), LastSequence: stored.LastSequence,
 		},
 	})

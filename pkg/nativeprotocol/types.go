@@ -66,9 +66,13 @@ type Record struct {
 
 // Exit is the process-level terminal result.
 type Exit struct {
-	Code   int
-	Signal string
-	Err    error
+	Code        int
+	Signal      string
+	OOMKilled   bool
+	ErrorDetail string
+	StartedAt   time.Time
+	EndedAt     time.Time
+	Err         error
 }
 
 // RecoveryMetadata identifies the runtime incarnation behind a transport.

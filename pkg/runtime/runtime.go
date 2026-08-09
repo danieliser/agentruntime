@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 )
@@ -176,6 +177,18 @@ type ExitResult struct {
 
 	// ErrorDetail contains runtime-specific terminal detail, if present.
 	ErrorDetail string
+
+	// Signal records a process signal only when the runtime has evidence beyond
+	// an ambiguous conventional exit code (for example, OOMKilled plus 137).
+	Signal string
+
+	// OOMKilled is durable Docker proof that the kernel OOM killer terminated
+	// the container; exit code 137 alone is not sufficient proof.
+	OOMKilled bool
+
+	// StartedAt and EndedAt are runtime-observed lifecycle timestamps.
+	StartedAt time.Time
+	EndedAt   time.Time
 }
 
 // RecoveryInfo carries stable identifiers for a recovered process handle.

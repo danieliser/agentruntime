@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // nativeDockerHandle exposes a detached container's native provider stdio.
@@ -97,11 +99,53 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 			handle.done <- ExitResult{Code: -1, Err: fmt.Errorf("parse docker wait exit code %q: %w", strings.TrimSpace(waitStdout.String()), err)}
 			return
 		}
-		handle.done <- ExitResult{Code: code}
+		handle.done <- inspectDockerExitResult(handle.dockerHost, handle.containerID, code)
 	}()
 	go func() { _ = attachCmd.Wait() }()
 	go func() { _ = logsCmd.Wait() }()
 	return handle, nil
+}
+
+type dockerContainerState struct {
+	Status     string `json:"Status"`
+	Running    bool   `json:"Running"`
+	OOMKilled  bool   `json:"OOMKilled"`
+	Dead       bool   `json:"Dead"`
+	ExitCode   int    `json:"ExitCode"`
+	Error      string `json:"Error"`
+	StartedAt  string `json:"StartedAt"`
+	FinishedAt string `json:"FinishedAt"`
+}
+
+func inspectDockerExitResult(host, containerID string, waitCode int) ExitResult {
+	const op = "inspect Docker terminal state"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := dockerOutputHost(ctx, host, "inspect", "--format", "{{json .State}}", containerID)
+	if err != nil {
+		return ExitResult{Code: waitCode, Err: fmt.Errorf("%s: %w", op, err)}
+	}
+	var state dockerContainerState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return ExitResult{Code: waitCode, Err: fmt.Errorf("%s: decode %q: %w", op, raw, err)}
+	}
+	if state.Running || state.ExitCode != waitCode {
+		return ExitResult{Code: waitCode, Err: fmt.Errorf("%s: docker wait=%d state.running=%t state.exit_code=%d", op, waitCode, state.Running, state.ExitCode)}
+	}
+	result := ExitResult{
+		Code: waitCode, OOMKilled: state.OOMKilled,
+		ErrorDetail: strings.TrimSpace(state.Error),
+	}
+	if state.OOMKilled {
+		result.Signal = "SIGKILL"
+	}
+	if value, parseErr := time.Parse(time.RFC3339Nano, state.StartedAt); parseErr == nil {
+		result.StartedAt = value.UTC()
+	}
+	if value, parseErr := time.Parse(time.RFC3339Nano, state.FinishedAt); parseErr == nil {
+		result.EndedAt = value.UTC()
+	}
+	return result
 }
 
 func nativeDockerCommand(host string, args ...string) *exec.Cmd {

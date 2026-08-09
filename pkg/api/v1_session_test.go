@@ -399,6 +399,44 @@ func TestActiveNativeSessionDoesNotReclassifyClaimedTerminalAsCancelled(t *testi
 	}
 }
 
+func TestRuntimeTerminalStateDistinguishesFailureSignalAndOOM(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result runtime.ExitResult
+		want   durable.SessionState
+	}{
+		{name: "success", result: runtime.ExitResult{Code: 0}, want: durable.StateCompleted},
+		{name: "failure", result: runtime.ExitResult{Code: 7}, want: durable.StateFailed},
+		{name: "signal", result: runtime.ExitResult{Code: 143, Signal: "SIGTERM"}, want: durable.StateCrashed},
+		{name: "oom", result: runtime.ExitResult{Code: 137, Signal: "SIGKILL", OOMKilled: true}, want: durable.StateCrashed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runtimeTerminalState(test.result); got != test.want {
+				t.Fatalf("terminal state = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFinalizeV1SessionPersistsOOMReceiptProof(t *testing.T) {
+	store, sessionID := runningRecoveryStore(t)
+	server := NewServer(session.NewManager(), &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	startedAt := time.Unix(2_001, 0).UTC()
+	endedAt := time.Unix(2_010, 0).UTC()
+	server.finalizeV1Session(sessionID, runtime.ExitResult{
+		Code: 137, Signal: "SIGKILL", OOMKilled: true, StartedAt: startedAt, EndedAt: endedAt,
+	})
+	receipt, err := store.GetTerminalReceipt(context.Background(), sessionID)
+	if err != nil || receipt.State != durable.StateCrashed || receipt.Signal != "SIGKILL" || receipt.ExitCode == nil || *receipt.ExitCode != 137 {
+		t.Fatalf("OOM receipt = %+v err=%v", receipt, err)
+	}
+	if !receipt.StartedAt.Equal(startedAt) || !receipt.EndedAt.Equal(endedAt) {
+		t.Fatalf("OOM receipt timestamps = %s .. %s", receipt.StartedAt, receipt.EndedAt)
+	}
+}
+
 func TestActiveNativeSessionWaitsForDurableCancelOutcome(t *testing.T) {
 	active := newActiveNativeSession(nil)
 	if !active.beginCancel() {

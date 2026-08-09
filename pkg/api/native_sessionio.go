@@ -47,7 +47,10 @@ func AttachNativeSessionIO(
 		if !ok {
 			result.Err = io.EOF
 		}
-		nativeWait <- nativeprotocol.Exit{Code: result.Code, Err: result.Err}
+		nativeWait <- nativeprotocol.Exit{
+			Code: result.Code, Signal: result.Signal, OOMKilled: result.OOMKilled,
+			ErrorDetail: result.ErrorDetail, StartedAt: result.StartedAt, EndedAt: result.EndedAt, Err: result.Err,
+		}
 		close(nativeWait)
 	}()
 	transport := nativeprotocol.NewStreamTransport(adapter, nativeprotocol.ProcessIO{
@@ -128,21 +131,24 @@ func AttachNativeSessionIO(
 		if turnCompleted && ingestErr == nil && nativeExit.Err == nil {
 			nativeExit.Code = 0
 		}
-		endedAt := time.Now().UTC()
+		endedAt := nativeExit.EndedAt
+		if endedAt.IsZero() {
+			endedAt = time.Now().UTC()
+		}
 		if streamErr == nil {
 			reason := ""
 			if terminalReason != nil {
 				reason = terminalReason()
 			}
 			if reason == "" {
-				reason = "completed"
-				if nativeExit.Code != 0 {
-					reason = "failed"
-				}
+				reason = string(runtimeTerminalState(runtime.ExitResult{
+					Code: nativeExit.Code, Signal: nativeExit.Signal, OOMKilled: nativeExit.OOMKilled,
+					ErrorDetail: nativeExit.ErrorDetail,
+				}))
 			}
 			_, err := broker.IngestTerminal(context.Background(), eventstream.TerminalParams{
 				SessionID: sess.ID, Generation: generation, Timestamp: endedAt,
-				Reason: reason, ExitCode: nativeExit.Code,
+				Reason: reason, ExitCode: nativeExit.Code, Signal: nativeExit.Signal, Error: nativeExit.ErrorDetail,
 			})
 			streamErr = errors.Join(streamErr, err)
 		}
@@ -156,7 +162,11 @@ func AttachNativeSessionIO(
 				log.Printf("[session %s] native log saved: %s", sess.ID, logWriter.Path())
 			}
 		}
-		result := runtime.ExitResult{Code: nativeExit.Code, Err: nativeExit.Err}
+		result := runtime.ExitResult{
+			Code: nativeExit.Code, Signal: nativeExit.Signal, OOMKilled: nativeExit.OOMKilled,
+			ErrorDetail: nativeExit.ErrorDetail, StartedAt: nativeExit.StartedAt, EndedAt: nativeExit.EndedAt,
+			Err: nativeExit.Err,
+		}
 		log.Printf("[session %s] native transport exited: code=%d err=%v stream_err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, streamErr, sess.Replay.TotalBytes())
 		sess.SetCompleted(result.Code)
 		if onExit != nil {

@@ -237,6 +237,11 @@ case "$1" in
     [ "$2" = "container-native" ]
     printf '7\n'
     ;;
+  inspect)
+    [ "$3" = "{{json .State}}" ]
+    [ "$4" = "container-native" ]
+    printf '%%s\n' '{"Status":"exited","Running":false,"OOMKilled":false,"Dead":false,"ExitCode":7,"Error":"","StartedAt":"2026-08-09T12:00:00Z","FinishedAt":"2026-08-09T12:00:01Z"}'
+    ;;
   kill)
     [ "$2" = "container-native" ]
     ;;
@@ -284,6 +289,47 @@ esac
 	}
 }
 
+func TestNativeDockerHandleInspectsOOMTerminalProof(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+case "$1" in
+  attach)
+    while IFS= read -r input; do :; done
+    ;;
+  logs)
+    ;;
+  wait)
+    printf '137\n'
+    ;;
+  inspect)
+    [ "$2" = "--format" ]
+    [ "$3" = "{{json .State}}" ]
+    [ "$4" = "container-oom" ]
+    printf '%s\n' '{"Status":"exited","Running":false,"OOMKilled":true,"Dead":false,"ExitCode":137,"Error":"","StartedAt":"2026-08-09T12:00:00.123456789Z","FinishedAt":"2026-08-09T12:00:05.987654321Z"}'
+    ;;
+  kill)
+    ;;
+  *)
+    echo "unexpected docker command: $*" >&2
+    exit 2
+    ;;
+esac
+`)
+	handle, err := newNativeDockerHandle("", "container-oom", RecoveryInfo{})
+	if err != nil {
+		t.Fatalf("new native Docker handle: %v", err)
+	}
+	_ = handle.Stdin().Close()
+	result := <-handle.Wait()
+	if result.Err != nil || result.Code != 137 || !result.OOMKilled || result.Signal != "SIGKILL" {
+		t.Fatalf("OOM terminal proof = %+v", result)
+	}
+	if result.StartedAt.Format(time.RFC3339Nano) != "2026-08-09T12:00:00.123456789Z" ||
+		result.EndedAt.Format(time.RFC3339Nano) != "2026-08-09T12:00:05.987654321Z" {
+		t.Fatalf("OOM timestamps = %s .. %s", result.StartedAt, result.EndedAt)
+	}
+}
+
 func TestDockerSpawnDurableNativeSkipsSidecarBridge(t *testing.T) {
 	stateDir := t.TempDir()
 	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
@@ -298,7 +344,9 @@ case "$1" in
     [ "$2" = "inspect" ]
     ;;
   inspect)
-    if [ "$3" = "{{.Image}}" ]; then
+    if [ "$3" = "{{json .State}}" ]; then
+      printf '%%s\n' '{"Status":"exited","Running":false,"OOMKilled":false,"Dead":false,"ExitCode":0,"Error":"","StartedAt":"2026-08-09T12:00:00Z","FinishedAt":"2026-08-09T12:00:01Z"}'
+    elif [ "$3" = "{{.Image}}" ]; then
       printf 'sha256:native-image\n'
     else
       printf 'true\n'
