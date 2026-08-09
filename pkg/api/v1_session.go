@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -251,7 +252,7 @@ func outputHash(path string) string {
 	return "sha256:" + hex.EncodeToString(digest.Sum(nil))
 }
 
-func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult) {
+func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult, streamErrors ...error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stored, err := s.durableStore.GetSession(ctx, sessionID)
@@ -268,14 +269,19 @@ func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult) 
 		return
 	}
 	state := durable.StateCompleted
-	if result.Err != nil {
+	generationTo := durable.GenerationExited
+	streamErr := errors.Join(streamErrors...)
+	if streamErr != nil {
+		state = durable.StateIndeterminate
+		generationTo = durable.GenerationIndeterminate
+	} else if result.Err != nil {
 		state = durable.StateCrashed
 	} else if result.Code != 0 {
 		state = durable.StateFailed
 	}
 	exitCode := result.Code
 	_, err = s.durableStore.FinalizeSession(ctx, durable.FinalizeSessionParams{
-		From: stored.State, GenerationFrom: generation.State, GenerationTo: durable.GenerationExited,
+		From: stored.State, GenerationFrom: generation.State, GenerationTo: generationTo,
 		Receipt: durable.TerminalReceipt{
 			SessionID: sessionID, Generation: generation.Number, State: state,
 			ExitCode: &exitCode, StartedAt: generation.CreatedAt, EndedAt: time.Now().UTC(),

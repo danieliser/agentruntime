@@ -1,6 +1,6 @@
 # AgentD durable session protocol v1
 
-Status: idempotent admission and inspect implemented; native Docker resume in progress
+Status: idempotent admission, inspect, and direct native Docker launch implemented; restart reconciliation in progress
 
 Task IDs: RES-401, RES-402, DKR-501
 
@@ -72,6 +72,11 @@ then records generation identity and transitions generation/session to
 idempotency key, request hash, and task ID. Recovery reads those labels instead
 of guessing identity from a container name.
 
-The current Docker compatibility runtime still needs native transport wiring,
-resolved image digest capture, startup DB↔Docker reconciliation, and stopped
-container recovery before Gate G3.
+Durable Claude/Codex generations do not publish or dial the execution-sidecar
+port. Native input is connected with `docker attach`; exact provider output is
+read from Docker's retained `json-file` log using `docker logs --follow`; and
+the container result comes from `docker wait`. Containers and materialized
+session files remain available after exit for reconciliation and receipt proof.
+
+Resolved image digest capture, startup DB↔Docker ledger reconciliation, and
+stopped-container recovery remain required before Gate G3.

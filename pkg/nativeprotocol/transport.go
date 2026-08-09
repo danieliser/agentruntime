@@ -30,6 +30,7 @@ type StreamTransport struct {
 	turnID     string
 	nextRPCID  int64
 	readErr    error
+	pending    map[string]chan codexRPCResponse
 
 	writeMu   sync.Mutex
 	closeOnce sync.Once
@@ -37,6 +38,12 @@ type StreamTransport struct {
 	records   chan Record
 	stderr    chan Record
 	wait      chan Exit
+	done      chan struct{}
+}
+
+type codexRPCResponse struct {
+	result json.RawMessage
+	err    error
 }
 
 // NewStreamTransport builds a transport around an already-created native
@@ -44,9 +51,11 @@ type StreamTransport struct {
 func NewStreamTransport(adapter Adapter, process ProcessIO, recovery RecoveryMetadata) *StreamTransport {
 	return &StreamTransport{
 		adapter: adapter, process: process, recovery: recovery, nextRPCID: 1,
+		pending: make(map[string]chan codexRPCResponse),
 		records: make(chan Record, transportBufferSize),
 		stderr:  make(chan Record, transportBufferSize),
 		wait:    make(chan Exit, 1),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -100,6 +109,124 @@ func (transport *StreamTransport) Send(ctx context.Context, input Input) error {
 	if err != nil {
 		return err
 	}
+	return transport.writeMessages(ctx, op, messages)
+}
+
+// Bootstrap initializes Codex app-server and opens or resumes its thread.
+// Claude's CLI needs no handshake; its optional provider ID is retained for
+// subsequent native input.
+func (transport *StreamTransport) Bootstrap(ctx context.Context, request BootstrapRequest) error {
+	const op = "bootstrap_native_transport"
+	transport.mu.Lock()
+	if !transport.started || transport.closed {
+		transport.mu.Unlock()
+		return newError(CodeInvalidState, op, "transport is not running", nil)
+	}
+	if transport.adapter.Provider() == ProviderClaude {
+		transport.providerID = request.ProviderID
+		transport.mu.Unlock()
+		return nil
+	}
+	transport.mu.Unlock()
+	clientName := request.ClientName
+	if clientName == "" {
+		clientName = "agentruntime"
+	}
+	clientVersion := request.ClientVersion
+	if clientVersion == "" {
+		clientVersion = "dev"
+	}
+	result, err := transport.callCodex(ctx, json.RawMessage("0"), "initialize", map[string]any{
+		"clientInfo":   map[string]string{"name": clientName, "version": clientVersion},
+		"capabilities": map[string]any{"experimentalApi": true},
+	})
+	if err != nil {
+		return err
+	}
+	var initializeResult struct {
+		UserAgent string `json:"userAgent"`
+	}
+	if err := json.Unmarshal(result, &initializeResult); err != nil || initializeResult.UserAgent == "" {
+		return newError(CodeDecode, op, "Codex initialize response is missing userAgent", err)
+	}
+	initialized, err := json.Marshal(map[string]any{"method": "initialized", "params": map[string]any{}})
+	if err != nil {
+		return newError(CodeEncode, op, "encode initialized notification", err)
+	}
+	if err := transport.writeMessages(ctx, op, [][]byte{initialized}); err != nil {
+		return err
+	}
+	id := transport.allocateRPCID()
+	method := "thread/start"
+	params := map[string]any{}
+	if request.ProviderID != "" {
+		method = "thread/resume"
+		params["threadId"] = request.ProviderID
+	}
+	threadResult, err := transport.callCodex(ctx, json.RawMessage(strconv.FormatInt(id, 10)), method, params)
+	if err != nil {
+		return err
+	}
+	threadID := request.ProviderID
+	if threadID == "" {
+		threadID = codexThreadID(threadResult)
+	}
+	if threadID == "" {
+		return newError(CodeDecode, op, "Codex thread response is missing thread ID", nil)
+	}
+	transport.mu.Lock()
+	transport.providerID = threadID
+	transport.mu.Unlock()
+	return nil
+}
+
+func (transport *StreamTransport) callCodex(ctx context.Context, id json.RawMessage, method string, params any) (json.RawMessage, error) {
+	const op = "call_codex_rpc"
+	key := string(id)
+	response := make(chan codexRPCResponse, 1)
+	transport.mu.Lock()
+	if transport.closed {
+		transport.mu.Unlock()
+		return nil, newError(CodeInvalidState, op, "transport is closed", nil)
+	}
+	transport.pending[key] = response
+	transport.mu.Unlock()
+	message, err := json.Marshal(map[string]any{"id": json.RawMessage(id), "method": method, "params": params})
+	if err != nil {
+		transport.removePending(key)
+		return nil, newError(CodeEncode, op, "encode Codex RPC", err)
+	}
+	if err := transport.writeMessages(ctx, op, [][]byte{message}); err != nil {
+		transport.removePending(key)
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		transport.removePending(key)
+		return nil, ctx.Err()
+	case <-transport.done:
+		transport.removePending(key)
+		return nil, newError(CodeTransport, op, "transport exited before Codex response", nil)
+	case result := <-response:
+		return result.result, result.err
+	}
+}
+
+func (transport *StreamTransport) allocateRPCID() int64 {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	id := transport.nextRPCID
+	transport.nextRPCID++
+	return id
+}
+
+func (transport *StreamTransport) removePending(key string) {
+	transport.mu.Lock()
+	delete(transport.pending, key)
+	transport.mu.Unlock()
+}
+
+func (transport *StreamTransport) writeMessages(ctx context.Context, op string, messages [][]byte) error {
 	transport.writeMu.Lock()
 	defer transport.writeMu.Unlock()
 	for _, message := range messages {
@@ -160,6 +287,9 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 		ordinal++
 		raw := append([]byte(nil), scanner.Bytes()...)
 		if stream == StreamProviderStdout {
+			if transport.adapter.Provider() == ProviderCodex {
+				transport.deliverCodexResponse(raw)
+			}
 			derived, err := transport.adapter.Decode(raw)
 			if err == nil {
 				transport.mu.Lock()
@@ -200,6 +330,55 @@ func (transport *StreamTransport) waitForExit() {
 	close(transport.stderr)
 	transport.wait <- exit
 	close(transport.wait)
+	close(transport.done)
+}
+
+func (transport *StreamTransport) deliverCodexResponse(raw []byte) {
+	var envelope struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Method != "" || len(envelope.ID) == 0 {
+		return
+	}
+	key := string(envelope.ID)
+	transport.mu.Lock()
+	pending := transport.pending[key]
+	if pending != nil {
+		delete(transport.pending, key)
+	}
+	transport.mu.Unlock()
+	if pending == nil {
+		return
+	}
+	response := codexRPCResponse{result: append(json.RawMessage(nil), envelope.Result...)}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		response.err = newError(CodeTransport, "call_codex_rpc", "Codex RPC returned an error", nil)
+	}
+	pending <- response
+	close(pending)
+}
+
+func codexThreadID(raw json.RawMessage) string {
+	var result struct {
+		ThreadID string `json:"threadId"`
+		ID       string `json:"id"`
+		Thread   struct {
+			ID       string `json:"id"`
+			ThreadID string `json:"threadId"`
+		} `json:"thread"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return ""
+	}
+	for _, value := range []string{result.ThreadID, result.ID, result.Thread.ThreadID, result.Thread.ID} {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 var _ Transport = (*StreamTransport)(nil)

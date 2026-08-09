@@ -213,10 +213,10 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 | ID | Status | Task | Acceptance evidence | Size |
 |---|---|---|---|---|
 | NAT-201 | DONE | Add one canonical native transport interface for start, input, interrupt, output records, stderr, wait, and recovery metadata. | `pkg/nativeprotocol`; Claude and Codex pass the same transport contract, including observable stream-read failure. | M |
-| NAT-202 | IN PROGRESS | Route Claude native stream-json input/output directly into AgentD ingestion. | Claude input/output adapter and byte-exact fixture derivation pass; production Docker path still uses the compatibility transport. | L |
-| NAT-203 | IN PROGRESS | Route Codex app-server JSON-RPC directly into AgentD ingestion. | Codex JSON-RPC input/output/control adapter and fixtures pass; initialize/resume and production Docker wiring remain. | L |
+| NAT-202 | DONE | Route Claude native stream-json input/output directly into AgentD ingestion. | Durable Claude generations retain their full native command, use direct Docker attach/logs/wait, and commit byte-exact fixture output plus terminal state. | L |
+| NAT-203 | DONE | Route Codex app-server JSON-RPC directly into AgentD ingestion. | Durable Codex generations launch app-server over stdio, perform initialize plus thread start/resume and turn start, and persist each exact RPC record directly. | L |
 | NAT-204 | DONE | Add envelope derivation without raw-record loss. | `pkg/eventstream`; source-position IDs, exact raw bytes/hash, stable envelope, and derived fixture types pass. | M |
-| NAT-205 | IN PROGRESS | Separate provider stdout, runtime stderr, lifecycle, control acknowledgment, and terminal events. | Native transport and durable envelope keep stdout/stderr distinct; process terminal/control integration remains. | M |
+| NAT-205 | DONE | Separate provider stdout, runtime stderr, lifecycle, control acknowledgment, and terminal events. | Native provider/RPC records, runtime stderr, derived lifecycle/control types, and the stable terminal event are committed to distinct stream classes; receipts include the terminal sequence. | M |
 
 **Gate G2 — Native-stream parity:** Claude/Codex streaming, control, resume, usage, and terminal parity must pass before old sidecar semantics are removed.
 
@@ -245,7 +245,7 @@ Statuses: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`. Evidence is required for `DO
 |---|---|---|---|---|
 | DKR-501 | IN PROGRESS | Persist and label session ID, job key, request hash, generation, container ID, image reference/digest, and sandbox-profile version. | v1 admission persists session/generation and Docker durable labels/recovery metadata; resolved image digest and native sandbox profile remain. | M |
 | DKR-502 | TODO | Implement startup reconciliation across expected/running/exited/missing/duplicate containers. | Each case has an explicit state transition or `indeterminate`; no implicit rerun. | L |
-| DKR-503 | TODO | Reattach native input/output at the last durable boundary. | Restart during active output yields no missing or newly identified duplicate event. | L |
+| DKR-503 | IN PROGRESS | Reattach native input/output at the last durable boundary. | Fresh and recovered durable Docker handles use reattachable stdin plus retained logs directly and never query the sidecar port; startup ledger reconciliation remains. | L |
 | DKR-504 | TODO | Recover terminal state when container exits while AgentD is down. | Exit reason/receipt is reconstructed or explicitly indeterminate. | M |
 | DKR-505 | TODO | Add admission stop + bounded drain before daemon shutdown. | New starts are rejected during drain; active Docker generations remain recoverable. | M |
 
@@ -331,3 +331,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Added reviewed migration v2 and typed one-way provider identity binding, including v1 database upgrade coverage and immutable second-bind rejection.
 - 2026-08-09 — Added versioned durable create/inspect: concurrent/restarted duplicate requests return the same session, one admitted request spawns one generation, changed request hashes return `idempotency_conflict`, terminal receipt state survives reopen, and Docker receives durable reconciliation labels.
 - 2026-08-09 — Durable request manifests now exclude explicit environment and nested request secrets, record grant references without values, and reject obvious undeclared secret environment keys before admission.
+- 2026-08-09 — Durable Claude/Codex Docker generations now bypass the execution sidecar: native stdin uses `docker attach`, canonical output uses retained `docker logs --follow`, and exit status uses `docker wait`. Full provider arguments are preserved, Codex app-server bootstrap is correlated, provider identity binds durably, and a committed terminal event precedes the immutable receipt.
+- 2026-08-09 — Fixed local native pipe ownership after race testing proved `exec.Cmd.Wait` could close fast provider output before ledger ingestion; provider drains are now independent from process wait ordering.

@@ -134,6 +134,18 @@ func TestV1CreateSessionIsConcurrentAndRestartIdempotent(t *testing.T) {
 	}
 }
 
+func TestV1DockerNativeSpawnKeepsProviderArguments(t *testing.T) {
+	command := []string{"claude", "-p", "hello", "--output-format", "stream-json"}
+	got := runtimeSpawnCommand(command, "docker", true, "claude")
+	if len(got) != len(command) {
+		t.Fatalf("durable native Docker command = %v, want %v", got, command)
+	}
+	legacy := runtimeSpawnCommand(command, "docker", false, "claude")
+	if len(legacy) != 1 || legacy[0] != "claude" {
+		t.Fatalf("legacy sidecar Docker command = %v", legacy)
+	}
+}
+
 func TestV1CreateSessionRejectsChangedRequestAndScrubsGrantedSecrets(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {
@@ -205,6 +217,84 @@ func TestV1CreateSessionRejectsUndeclaredSecretEnvironment(t *testing.T) {
 	}
 }
 
+func TestV1ClaudeOutputUsesDurableNativeLedger(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	counter := &atomic.Int32{}
+	ts := newV1SessionTestServer(t, store, counter)
+	resp := postV1Session(t, ts.URL, map[string]any{
+		"idempotency_key": "job-v1-native-claude",
+		"agent":           "claude", "runtime": "test", "prompt": "fixture",
+	})
+	defer resp.Body.Close()
+	var created struct {
+		Data  v1SessionData    `json:"data"`
+		Error apiErrorEnvelope `json:"error"`
+	}
+	decodeJSON(t, resp.Body, &created)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("native create status=%d data=%+v error=%+v", resp.StatusCode, created.Data, created.Error)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 10})
+	if err != nil {
+		t.Fatalf("list native events: %v", err)
+	}
+	if len(page.Events) != 4 || page.Events[0].Type != "lifecycle.provider.initialized" || page.Events[1].Type != "content.delta" || page.Events[2].Type != "turn.completed" || page.Events[3].Stream != durable.StreamTerminal {
+		t.Fatalf("native event ledger = %+v", page.Events)
+	}
+	if string(page.Events[0].Raw) != `{"type":"system","subtype":"init","session_id":"claude-fixture-session"}` {
+		t.Fatalf("first native raw = %q", page.Events[0].Raw)
+	}
+	generation, err := store.GetGeneration(context.Background(), created.Data.SessionID, 1)
+	if err != nil || generation.ProviderID != "claude-fixture-session" {
+		t.Fatalf("native provider identity = %+v err=%v", generation, err)
+	}
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.LastSequence != 4 {
+		t.Fatalf("native terminal receipt = %+v err=%v", receipt, err)
+	}
+}
+
+func TestV1CodexAppServerBootstrapsAndPersistsNativeLedger(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatalf("open durable store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	counter := &atomic.Int32{}
+	ts := newV1SessionTestServer(t, store, counter)
+	resp := postV1Session(t, ts.URL, map[string]any{
+		"idempotency_key": "job-v1-native-codex",
+		"agent":           "codex", "runtime": "test", "prompt": "fixture prompt",
+	})
+	defer resp.Body.Close()
+	var created struct {
+		Data  v1SessionData    `json:"data"`
+		Error apiErrorEnvelope `json:"error"`
+	}
+	decodeJSON(t, resp.Body, &created)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("native create status=%d data=%+v error=%+v", resp.StatusCode, created.Data, created.Error)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 20})
+	if err != nil {
+		t.Fatalf("list Codex native events: %v", err)
+	}
+	if len(page.Events) != 8 || page.Events[2].Type != "lifecycle.provider.session" || page.Events[5].Type != "content.delta" || page.Events[6].Type != "turn.completed" || page.Events[7].Stream != durable.StreamTerminal {
+		t.Fatalf("Codex native event ledger = %+v", page.Events)
+	}
+	generation, err := store.GetGeneration(context.Background(), created.Data.SessionID, 1)
+	if err != nil || generation.ProviderID != "codex-fixture-thread" {
+		t.Fatalf("Codex provider identity = %+v err=%v", generation, err)
+	}
+}
+
 type v1SessionTestServer struct {
 	*httptest.Server
 	manager *session.Manager
@@ -215,6 +305,8 @@ func newV1SessionTestServer(t *testing.T, store durable.Store, counter *atomic.I
 	rt := &countingRuntime{Runtime: runtime.NewLocalRuntime(), count: counter}
 	reg := agent.NewRegistry()
 	reg.Register(&sleepAgent{})
+	reg.Register(&nativeClaudeFixtureAgent{})
+	reg.Register(&nativeCodexFixtureAgent{})
 	mgr := session.NewManager()
 	server := NewServer(mgr, rt, reg, ServerConfig{
 		DataDir: t.TempDir(), LogDir: filepath.Join(t.TempDir(), "logs"),
@@ -225,6 +317,38 @@ func newV1SessionTestServer(t *testing.T, store durable.Store, counter *atomic.I
 	t.Cleanup(ts.Close)
 	return &v1SessionTestServer{Server: ts, manager: mgr}
 }
+
+type nativeClaudeFixtureAgent struct{}
+
+func (*nativeClaudeFixtureAgent) Name() string { return "claude" }
+
+func (*nativeClaudeFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
+	return []string{"/bin/sh", "-c", `printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-fixture-session"}' '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"hello"}}}' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'`}, nil
+}
+
+func (*nativeClaudeFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
+
+type nativeCodexFixtureAgent struct{}
+
+func (*nativeCodexFixtureAgent) Name() string { return "codex" }
+
+func (*nativeCodexFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
+	return []string{"/bin/sh", "-c", `
+IFS= read -r initialize
+printf '%s\n' '{"id":0,"result":{"userAgent":"codex-fixture"}}'
+IFS= read -r initialized
+IFS= read -r thread_start
+printf '%s\n' '{"id":1,"result":{"threadId":"codex-fixture-thread"}}'
+printf '%s\n' '{"method":"thread/started","params":{"threadId":"codex-fixture-thread"}}'
+IFS= read -r turn_start
+printf '%s\n' '{"id":2,"result":{}}'
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn"}}'
+printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","delta":"hello"}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-thread","turnId":"codex-fixture-turn","status":"completed","usage":{"inputTokens":2,"outputTokens":1}}}'
+`}, nil
+}
+
+func (*nativeCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
 
 type countingRuntime struct {
 	Runtime runtime.Runtime

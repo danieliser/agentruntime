@@ -39,16 +39,17 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 	if err != nil {
 		return nil, &SpawnError{Reason: "stdin pipe", Err: err}
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, &SpawnError{Reason: "stdout pipe", Err: err}
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, &SpawnError{Reason: "stderr pipe", Err: err}
-	}
+	stdout, stdoutWriter := io.Pipe()
+	stderr, stderrWriter := io.Pipe()
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return nil, &SpawnError{Reason: "start", Err: err}
 	}
 
@@ -63,6 +64,8 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 
 	go func() {
 		waitErr := cmd.Wait()
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
 		code := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
@@ -154,6 +157,8 @@ func (h *localHandle) RuntimeID() string {
 	}
 	return ""
 }
+
+func (*localHandle) NativeStdio() bool { return true }
 
 // SpawnError wraps errors from the spawn process.
 type SpawnError struct {

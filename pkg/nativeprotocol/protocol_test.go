@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -169,6 +170,81 @@ func TestNativeTransportContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCodexTransportBootstrapsNewAndResumedThreads(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		providerID string
+		wantMethod string
+	}{
+		{name: "new", wantMethod: "thread/start"},
+		{name: "resume", providerID: "existing-thread", wantMethod: "thread/resume"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, err := NewAdapter(ProviderCodex)
+			if err != nil {
+				t.Fatalf("new adapter: %v", err)
+			}
+			process := newFakeProcess()
+			transport := NewStreamTransport(adapter, process.IO(), RecoveryMetadata{SessionID: "bootstrap", Generation: 1})
+			if err := transport.Start(context.Background()); err != nil {
+				t.Fatalf("start transport: %v", err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- transport.Bootstrap(context.Background(), BootstrapRequest{
+					ProviderID: test.providerID, ClientName: "agentruntime", ClientVersion: "test",
+				})
+			}()
+
+			initialize := decodeInputObject(t, process.readInput(t))
+			if initialize["method"] != "initialize" {
+				t.Fatalf("initialize message = %+v", initialize)
+			}
+			process.writeStdout(t, []byte(`{"id":0,"result":{"userAgent":"codex-test"}}`))
+			initialized := decodeInputObject(t, process.readInput(t))
+			if initialized["method"] != "initialized" {
+				t.Fatalf("initialized message = %+v", initialized)
+			}
+			thread := decodeInputObject(t, process.readInput(t))
+			if thread["method"] != test.wantMethod {
+				t.Fatalf("thread method = %v, want %s", thread["method"], test.wantMethod)
+			}
+			threadID := test.providerID
+			if threadID == "" {
+				threadID = "new-thread"
+			}
+			process.writeStdout(t, []byte(fmt.Sprintf(`{"id":1,"result":{"threadId":%q}}`, threadID)))
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("bootstrap: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for bootstrap")
+			}
+			if err := transport.Send(context.Background(), Input{Kind: InputPrompt, Text: "hello"}); err != nil {
+				t.Fatalf("send bootstrapped prompt: %v", err)
+			}
+			turn := decodeInputObject(t, process.readInput(t))
+			params, _ := turn["params"].(map[string]any)
+			if turn["method"] != "turn/start" || params["threadId"] != threadID {
+				t.Fatalf("turn start = %+v", turn)
+			}
+			process.finish(Exit{Code: 0})
+			<-transport.Wait()
+		})
+	}
+}
+
+func decodeInputObject(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatalf("decode input object: %v", err)
+	}
+	return value
 }
 
 func readFixture(t *testing.T, name string) [][]byte {

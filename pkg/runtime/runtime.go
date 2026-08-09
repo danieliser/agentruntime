@@ -88,6 +88,12 @@ type RuntimeIdentifiedHandle interface {
 	RuntimeID() string
 }
 
+// NativeStdioHandle marks a process handle whose stdio is the provider's exact
+// native protocol rather than a compatibility bridge.
+type NativeStdioHandle interface {
+	NativeStdio() bool
+}
+
 // ProcessHandle provides access to a running agent process's stdio streams
 // and lifecycle. It is the runtime-agnostic interface that the bridge and
 // session manager interact with.
@@ -146,6 +152,7 @@ var (
 	_ Runtime         = (*DockerRuntime)(nil)
 	_ ProcessHandle   = (*localHandle)(nil)
 	_ ProcessHandle   = (*dockerHandle)(nil)
+	_ ProcessHandle   = (*nativeDockerHandle)(nil)
 	_ ProcessHandle   = (*recoveredDockerHandle)(nil)
 	_ SteerableHandle = (*wsHandle)(nil)
 )

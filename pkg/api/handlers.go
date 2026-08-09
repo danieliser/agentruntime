@@ -23,6 +23,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/bridge"
 	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
@@ -186,11 +187,11 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	spawnCmd := cmd
-	if rt.Name() == "docker" && len(cmd) > 0 {
-		spawnCmd = []string{cmd[0]}
+	if _, nativeCodex := ag.(*agent.CodexAgent); durableV1 && nativeCodex {
+		cmd = []string{"codex", "app-server", "--listen", "stdio://"}
 	}
+
+	spawnCmd := runtimeSpawnCommand(cmd, rt.Name(), durableV1, req.Agent)
 
 	// Create the session. Use caller-provided session ID if valid UUID.
 	requestedID := req.SessionID
@@ -326,11 +327,13 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 			return
 		}
 	}
+	_, nativeStdio := handle.(runtime.NativeStdioHandle)
+	usesNativeTransport := durableV1 && nativeStdio && (req.Agent == string(nativeprotocol.ProviderClaude) || req.Agent == string(nativeprotocol.ProviderCodex))
 	log.Printf("[session %s] spawned: agent=%s pid=%d cmd=%v", sess.ID, req.Agent, handle.PID(), agent.RedactPrompt(cmd, req.Prompt))
 
 	// Close stdin for prompt-mode agents (claude -p, codex exec).
 	// Interactive sessions keep stdin open so WS stdin frames can steer them.
-	if !req.Interactive && handle.Stdin() != nil {
+	if !req.Interactive && handle.Stdin() != nil && !(usesNativeTransport && req.Agent == string(nativeprotocol.ProviderCodex)) {
 		handle.Stdin().Close()
 	}
 
@@ -339,9 +342,27 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 	// log file (for permanent NDJSON record). The log file path is returned
 	// in the session response so callers can retrieve it later.
 	if durableV1 {
-		AttachSessionIO(sess, s.logDir, func(result runtime.ExitResult) {
-			s.finalizeV1Session(sess.ID, result)
-		})
+		if usesNativeTransport {
+			if err := AttachNativeSessionIO(
+				sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
+				"", req.Prompt, !req.Interactive && req.Agent == string(nativeprotocol.ProviderCodex),
+				s.eventBroker,
+				func(result runtime.ExitResult, streamErr error) {
+					s.finalizeV1Session(sess.ID, result, streamErr)
+				},
+			); err != nil {
+				log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)
+				_ = handle.Kill()
+				s.sessions.Remove(sess.ID)
+				s.finalizeV1Session(sess.ID, runtime.ExitResult{Code: -1, Err: err}, err)
+				writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "attach_native_session", "attach native event transport", err))
+				return
+			}
+		} else {
+			AttachSessionIO(sess, s.logDir, func(result runtime.ExitResult) {
+				s.finalizeV1Session(sess.ID, result)
+			})
+		}
 	} else {
 		AttachSessionIO(sess, s.logDir)
 	}
@@ -362,6 +383,16 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest, durableV1 boo
 		WSURL:     sessionWSURL(c, snap.ID),
 		LogURL:    sessionLogURL(c, snap.ID),
 	})
+}
+
+func runtimeSpawnCommand(command []string, runtimeName string, durableV1 bool, agentName string) []string {
+	if runtimeName != "docker" || len(command) == 0 {
+		return command
+	}
+	if durableV1 && (agentName == string(nativeprotocol.ProviderClaude) || agentName == string(nativeprotocol.ProviderCodex)) {
+		return command
+	}
+	return []string{command[0]}
 }
 
 func (s *Server) handleListSessions(c *gin.Context) {

@@ -26,10 +26,12 @@ func TestDockerRuntime_Name(t *testing.T) {
 }
 
 func TestDockerRecover_ReturnsSessionID(t *testing.T) {
-	installFakeDocker(t, `#!/bin/sh
+	stateDir := t.TempDir()
+	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
 set -eu
+state_dir=%q
 if [ "$1" = "ps" ]; then
-  printf '%s\n' 'container-123'
+  printf '%%s\n' 'container-123'
   exit 0
 fi
 if [ "$1" = "inspect" ]; then
@@ -37,7 +39,7 @@ if [ "$1" = "inspect" ]; then
     echo "unexpected container id: $4" >&2
     exit 3
   fi
-  printf '%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request"}'
+  printf '%%s\n' '{"agentruntime.session_id":"sess-recovered","agentruntime.task_id":"task-recovered","agentruntime.generation":"2","agentruntime.idempotency_key":"job-recovered","agentruntime.request_hash":"sha256:request"}'
   exit 0
 fi
 if [ "$1" = "logs" ]; then
@@ -47,9 +49,21 @@ if [ "$1" = "logs" ]; then
   fi
   exit 0
 fi
+if [ "$1" = "attach" ]; then
+  while IFS= read -r input; do :; done
+  exit 0
+fi
+if [ "$1" = "wait" ]; then
+  printf '0\n'
+  exit 0
+fi
+if [ "$1" = "port" ]; then
+  : >"$state_dir/port-called"
+  exit 1
+fi
 echo "unexpected docker command: $1" >&2
 exit 2
-`)
+`, stateDir))
 
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 	handles, err := rt.Recover(context.Background())
@@ -60,9 +74,9 @@ exit 2
 		t.Fatalf("expected 1 recovered handle, got %d", len(handles))
 	}
 
-	recovered, ok := handles[0].(*recoveredDockerHandle)
+	recovered, ok := handles[0].(*nativeDockerHandle)
 	if !ok {
-		t.Fatalf("expected recoveredDockerHandle, got %T", handles[0])
+		t.Fatalf("expected nativeDockerHandle, got %T", handles[0])
 	}
 	if recovered.recovery.SessionID != "sess-recovered" {
 		t.Fatalf("expected session ID from label, got %q", recovered.recovery.SessionID)
@@ -81,6 +95,10 @@ exit 2
 	if info.Generation != 2 || info.IdempotencyKey != "job-recovered" || info.RequestHash != "sha256:request" {
 		t.Fatalf("expected durable recovery labels, got %+v", info)
 	}
+	if _, err := os.Stat(filepath.Join(stateDir, "port-called")); !os.IsNotExist(err) {
+		t.Fatal("durable recovery queried the compatibility sidecar port")
+	}
+	_ = handles[0].Stdin().Close()
 }
 
 func TestDockerRunCarriesDurableGenerationLabels(t *testing.T) {
@@ -102,6 +120,175 @@ func TestDockerRunCarriesDurableGenerationLabels(t *testing.T) {
 			t.Errorf("missing label %q in %v", label, args)
 		}
 	}
+}
+
+func TestDockerDurableNativeRunHasNoSidecarTransport(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "agent:test"})
+	args, err := rt.buildRunArgs(SpawnConfig{
+		SessionID: "native-session", AgentName: "claude", Generation: 1,
+		IdempotencyKey: "native-job", RequestHash: "sha256:native",
+		Cmd: []string{"claude", "--output-format", "stream-json"},
+	})
+	if err != nil {
+		t.Fatalf("build native Docker args: %v", err)
+	}
+	for _, forbidden := range []string{"--rm", "-p", dockerSidecarContainerPort} {
+		if containsArg(args, forbidden) {
+			t.Errorf("native Docker args contain sidecar flag %q: %v", forbidden, args)
+		}
+	}
+	for flag, value := range map[string]string{
+		"--log-driver": "json-file",
+		"--entrypoint": "claude",
+	} {
+		if !hasFlagValue(args, flag, value) {
+			t.Errorf("native Docker args missing %s %s: %v", flag, value, args)
+		}
+	}
+	if !containsArg(args, "-i") {
+		t.Errorf("native Docker args do not keep stdin open: %v", args)
+	}
+	imageIndex := indexArg(args, "agent:test")
+	if imageIndex < 0 || imageIndex+2 >= len(args) || args[imageIndex+1] != "--output-format" || args[imageIndex+2] != "stream-json" {
+		t.Fatalf("native command arguments after image = %v", args)
+	}
+}
+
+func TestNativeDockerHandleUsesAttachLogsAndWait(t *testing.T) {
+	stateDir := t.TempDir()
+	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
+set -eu
+state_dir=%q
+case "$1" in
+  attach)
+    IFS= read -r input
+    printf '%%s\n' "$input" >"$state_dir/stdin"
+    ;;
+  logs)
+    [ "$2" = "--follow" ]
+    [ "$3" = "--since=0" ]
+    [ "$4" = "container-native" ]
+    printf '{"type":"system","session_id":"provider-1"}\n'
+    ;;
+  wait)
+    [ "$2" = "container-native" ]
+    printf '7\n'
+    ;;
+  kill)
+    [ "$2" = "container-native" ]
+    ;;
+  *)
+    echo "unexpected docker command: $*" >&2
+    exit 2
+    ;;
+esac
+`, stateDir))
+
+	handle, err := newNativeDockerHandle("", "container-native", RecoveryInfo{})
+	if err != nil {
+		t.Fatalf("new native Docker handle: %v", err)
+	}
+	if _, err := io.WriteString(handle.Stdin(), "hello native\n"); err != nil {
+		t.Fatalf("write native stdin: %v", err)
+	}
+	if err := handle.Stdin().Close(); err != nil {
+		t.Fatalf("close native stdin: %v", err)
+	}
+
+	stdout, err := io.ReadAll(handle.Stdout())
+	if err != nil {
+		t.Fatalf("read native stdout: %v", err)
+	}
+	if got, want := string(stdout), "{\"type\":\"system\",\"session_id\":\"provider-1\"}\n"; got != want {
+		t.Fatalf("native stdout = %q, want %q", got, want)
+	}
+	result := <-handle.Wait()
+	if result.Err != nil || result.Code != 7 {
+		t.Fatalf("native wait = %+v, want code 7", result)
+	}
+	if err := waitForFile(filepath.Join(stateDir, "stdin"), 2*time.Second); err != nil {
+		t.Fatalf("native attach did not receive stdin: %v", err)
+	}
+	input, err := os.ReadFile(filepath.Join(stateDir, "stdin"))
+	if err != nil {
+		t.Fatalf("read captured stdin: %v", err)
+	}
+	if string(input) != "hello native\n" {
+		t.Fatalf("captured stdin = %q", input)
+	}
+	if handle.RuntimeID() != "container-native" || !handle.NativeStdio() {
+		t.Fatalf("native handle identity = %q, native=%v", handle.RuntimeID(), handle.NativeStdio())
+	}
+}
+
+func TestDockerSpawnDurableNativeSkipsSidecarBridge(t *testing.T) {
+	stateDir := t.TempDir()
+	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh
+set -eu
+state_dir=%q
+printf '%%s\n' "$*" >>"$state_dir/commands"
+case "$1" in
+  network)
+    [ "$2" = "inspect" ]
+    ;;
+  inspect)
+    printf 'true\n'
+    ;;
+  run)
+    printf 'container-native\n'
+    ;;
+  attach)
+    while IFS= read -r input; do :; done
+    ;;
+  logs)
+    printf '{"type":"system","session_id":"provider-1"}\n'
+    ;;
+  wait)
+    printf '0\n'
+    ;;
+  kill)
+    ;;
+  *)
+    echo "unexpected docker command: $*" >&2
+    exit 2
+    ;;
+esac
+`, stateDir))
+
+	runtime := NewDockerRuntime(DockerConfig{Image: "agent:test"})
+	handle, err := runtime.Spawn(context.Background(), SpawnConfig{
+		SessionID: "native-session", AgentName: "claude", Generation: 1,
+		IdempotencyKey: "native-job", RequestHash: "sha256:native",
+		Cmd: []string{"claude", "--output-format", "stream-json"},
+	})
+	if err != nil {
+		t.Fatalf("spawn durable native Docker session: %v", err)
+	}
+	if _, ok := handle.(*nativeDockerHandle); !ok {
+		t.Fatalf("durable native spawn returned %T", handle)
+	}
+	_ = handle.Stdin().Close()
+	result := <-handle.Wait()
+	if result.Err != nil || result.Code != 0 {
+		t.Fatalf("native wait = %+v", result)
+	}
+
+	commands, err := os.ReadFile(filepath.Join(stateDir, "commands"))
+	if err != nil {
+		t.Fatalf("read Docker commands: %v", err)
+	}
+	if strings.Contains(string(commands), "port container-native") {
+		t.Fatalf("durable native spawn queried sidecar port:\n%s", commands)
+	}
+}
+
+func indexArg(values []string, want string) int {
+	for index, value := range values {
+		if value == want {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestRecoveredDockerHandle_StdoutFromLogs(t *testing.T) {

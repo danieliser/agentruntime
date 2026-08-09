@@ -122,8 +122,9 @@ func (r *DockerRuntime) manager() *NetworkManager {
 	return r.networkManager
 }
 
-// Spawn runs a command inside a Docker container sidecar and connects to it
-// over the in-container WebSocket bridge.
+// Spawn runs a command inside a Docker container. Durable Claude and Codex
+// generations expose native provider stdio; legacy callers retain the
+// compatibility bridge until their API surface is retired.
 func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandle, error) {
 	if len(cfg.Cmd) == 0 {
 		return nil, &SpawnError{Reason: "cmd is empty"}
@@ -158,6 +159,19 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 			spec.cleanup()
 		}
 		return nil, &SpawnError{Reason: "docker run", Err: fmt.Errorf("missing container ID")}
+	}
+	if usesNativeDockerTransport(cfg) {
+		handle, err := newNativeDockerHandle(r.cfg.Host, containerID, RecoveryInfo{})
+		if err != nil {
+			stopDockerContainerHost(r.cfg.Host, containerID)
+			if spec.cleanup != nil {
+				spec.cleanup()
+			}
+			return nil, &SpawnError{Reason: "native docker stdio", Err: err}
+		}
+		// Materialized files remain in place for restart reconstruction. A
+		// later session-retention pass owns their eventual removal.
+		return handle, nil
 	}
 
 	hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, containerID, dockerSidecarContainerPort)
@@ -295,6 +309,7 @@ func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string,
 }
 
 func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
+	nativeTransport := usesNativeDockerTransport(cfg)
 	req := cfg.Request
 	image := r.cfg.Image
 	if req != nil && req.Container != nil && req.Container.Image != "" {
@@ -405,12 +420,6 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		return nil, fmt.Errorf("volume permission init: %w", err)
 	}
 
-	agentCmd, err := json.Marshal([]string{cfg.Cmd[0]})
-	if err != nil {
-		cleanup()
-		return nil, err
-	}
-
 	envValues := make(map[string]string, len(requestEnv(cfg))+3)
 	for key, value := range requestEnv(cfg) {
 		envValues[key] = value
@@ -418,9 +427,16 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	for key, value := range r.manager().ProxyEnv() {
 		envValues[key] = value
 	}
-	envValues["AGENT_CMD"] = string(agentCmd)
-	if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
-		envValues["AGENT_CONFIG"] = acJSON
+	if !nativeTransport {
+		agentCmd, err := json.Marshal([]string{cfg.Cmd[0]})
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		envValues["AGENT_CMD"] = string(agentCmd)
+		if acJSON := buildAgentConfigJSON(cfg); acJSON != "" {
+			envValues["AGENT_CONFIG"] = acJSON
+		}
 	}
 	// Pass session identity to sidecar for lifecycle hooks.
 	if cfg.SessionID != "" {
@@ -434,7 +450,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	// Claude Code stays alive after emitting its result.
 	// Base64-encoded: Docker rejects env vars containing newlines.
 	interactive := cfg.Request != nil && cfg.Request.Interactive
-	if prompt := dockerPrompt(cfg); prompt != "" && !interactive {
+	if prompt := dockerPrompt(cfg); !nativeTransport && prompt != "" && !interactive {
 		envValues["AGENT_PROMPT"] = base64.StdEncoding.EncodeToString([]byte(prompt))
 	}
 
@@ -448,11 +464,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	})
 
 	args := []string{
-		"run",
-		"--rm",
-		"-d",
-		"-p", "0:" + dockerSidecarContainerPort,
-		"--init",
+		"run", "-d", "--init",
 		"--cap-drop", "ALL",
 		"--cap-add", "DAC_OVERRIDE",
 		"--security-opt", "no-new-privileges:true",
@@ -461,6 +473,15 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		"--name", dockerContainerName(cfg.SessionID),
 		"--workdir", "/workspace",
 		"--env-file", envFile,
+	}
+	if nativeTransport {
+		args = append(args,
+			"-i",
+			"--log-driver", "json-file",
+			"--entrypoint", cfg.Cmd[0],
+		)
+	} else {
+		args = append(args, "--rm", "-p", "0:"+dockerSidecarContainerPort)
 	}
 	if cfg.Generation > 0 {
 		args = append(args,
@@ -502,11 +523,18 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 
 	args = append(args, r.cfg.ExtraArgs...)
 	args = append(args, image)
+	if nativeTransport {
+		args = append(args, cfg.Cmd[1:]...)
+	}
 
 	return &dockerRunSpec{
 		args:    args,
 		cleanup: cleanup,
 	}, nil
+}
+
+func usesNativeDockerTransport(cfg SpawnConfig) bool {
+	return cfg.Generation > 0 && (cfg.AgentName == "claude" || cfg.AgentName == "codex")
 }
 
 func requestEnv(cfg SpawnConfig) map[string]string {
@@ -722,24 +750,31 @@ func (r *DockerRuntime) Recover(ctx context.Context) ([]ProcessHandle, error) {
 		}
 		idempotencyKey := strings.TrimSpace(labels[dockerIdempotencyLabelKey])
 		requestHash := strings.TrimSpace(labels[dockerRequestHashLabelKey])
+		recovery := RecoveryInfo{
+			SessionID: sessionID, TaskID: taskID, Generation: generation,
+			IdempotencyKey: idempotencyKey, RequestHash: requestHash,
+		}
+
+		if generation > 0 {
+			handle, err := newNativeDockerHandle(r.cfg.Host, id, recovery)
+			if err != nil {
+				return nil, fmt.Errorf("recover native docker stdio %s: %w", id, err)
+			}
+			handles = append(handles, handle)
+			continue
+		}
 
 		if hostPort, err := dockerContainerPortHost(ctx, r.cfg.Host, id, dockerSidecarContainerPort); err == nil {
 			handle, err := dialSidecar(id, hostPort, 0, "")
 			if err == nil {
 				handle.dockerHost = r.cfg.Host
-				handle.setRecoveryInfo(&RecoveryInfo{
-					SessionID: sessionID, TaskID: taskID, Generation: generation,
-					IdempotencyKey: idempotencyKey, RequestHash: requestHash,
-				})
+				handle.setRecoveryInfo(&recovery)
 				handles = append(handles, handle)
 				continue
 			}
 		}
 
-		handle, err := newRecoveredDockerHandle(ctx, r.cfg.Host, id, RecoveryInfo{
-			SessionID: sessionID, TaskID: taskID, Generation: generation,
-			IdempotencyKey: idempotencyKey, RequestHash: requestHash,
-		})
+		handle, err := newRecoveredDockerHandle(ctx, r.cfg.Host, id, recovery)
 		if err != nil {
 			return nil, fmt.Errorf("docker logs %s: %w", id, err)
 		}
@@ -930,6 +965,8 @@ func (h *dockerHandle) RuntimeID() string {
 	return ""
 }
 
+func (*dockerHandle) NativeStdio() bool { return true }
+
 // recoveredDockerHandle is a minimal handle for containers found during recovery.
 // It follows docker logs so recovered sessions can resume stdout/stderr streaming.
 type recoveredDockerHandle struct {
@@ -962,6 +999,8 @@ func (h *recoveredDockerHandle) RecoveryInfo() *RecoveryInfo {
 }
 
 func (h *recoveredDockerHandle) RuntimeID() string { return h.containerID }
+
+func (*recoveredDockerHandle) NativeStdio() bool { return true }
 
 func (h *recoveredDockerHandle) Wait() <-chan ExitResult {
 	return h.done

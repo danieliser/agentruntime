@@ -78,6 +78,14 @@ type RecoveryMetadata struct {
 	RuntimeID  string
 }
 
+// BootstrapRequest initializes a provider-native connection and optionally
+// reopens an existing provider session/thread before input is sent.
+type BootstrapRequest struct {
+	ProviderID    string
+	ClientName    string
+	ClientVersion string
+}
+
 // ProcessIO is the already-created process/container connection used by the
 // protocol transport. Runtime creation remains owned by the runtime package.
 type ProcessIO struct {
@@ -98,6 +106,7 @@ type Adapter interface {
 // Transport is the single NAT-201 runtime-neutral native connection contract.
 type Transport interface {
 	Start(context.Context) error
+	Bootstrap(context.Context, BootstrapRequest) error
 	Send(context.Context, Input) error
 	Interrupt(context.Context) error
 	Records() <-chan Record

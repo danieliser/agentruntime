@@ -123,6 +123,56 @@ func TestIngestKeepsStderrSeparateAndEventIDsStable(t *testing.T) {
 	}
 }
 
+func TestIngestBindsProviderIdentityFromNativeRecord(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-provider-identity")
+	broker := New(store)
+	raw := []byte(`{"type":"system","subtype":"init","session_id":"claude-native-session"}`)
+	_, err := broker.Ingest(ctx, IngestParams{
+		SessionID: "session-provider-identity", Generation: 1,
+		Record: nativeprotocol.Record{Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamProviderStdout, Ordinal: 1, Timestamp: time.Unix(310, 0).UTC(), Raw: raw},
+	})
+	if err != nil {
+		t.Fatalf("ingest provider identity: %v", err)
+	}
+	generation, err := store.GetGeneration(ctx, "session-provider-identity", 1)
+	if err != nil {
+		t.Fatalf("get generation: %v", err)
+	}
+	if generation.ProviderID != "claude-native-session" {
+		t.Fatalf("provider ID = %q, want claude-native-session", generation.ProviderID)
+	}
+}
+
+func TestIngestTerminalCommitsOneStableTerminalEvent(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-terminal-event")
+	broker := New(store)
+	params := TerminalParams{
+		SessionID: "session-terminal-event", Generation: 1,
+		Timestamp: time.Unix(320, 0).UTC(), Reason: "completed", ExitCode: 0,
+	}
+	first, err := broker.IngestTerminal(ctx, params)
+	if err != nil {
+		t.Fatalf("first terminal ingest: %v", err)
+	}
+	second, err := broker.IngestTerminal(ctx, params)
+	if err != nil {
+		t.Fatalf("repeat terminal ingest: %v", err)
+	}
+	if first.EventID != second.EventID || first.Sequence != second.Sequence || first.Stream != durable.StreamTerminal || first.Type != "session.completed" {
+		t.Fatalf("terminal events = %+v then %+v", first, second)
+	}
+	page, err := store.ListEvents(ctx, durable.EventQuery{SessionID: params.SessionID})
+	if err != nil || len(page.Events) != 1 {
+		t.Fatalf("stored terminal events = %+v err=%v", page, err)
+	}
+}
+
 func TestSubscribeRejectsFutureCursor(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
