@@ -22,7 +22,7 @@ func writeDurableError(c *gin.Context, err error) {
 	}
 	status := http.StatusConflict
 	switch storeErr.Code {
-	case durable.CodeInvalidArgument, durable.CodeInvalidCursor, durable.CodeExecutionPolicyUnsupported:
+	case durable.CodeInvalidArgument, durable.CodeInvalidCursor, durable.CodeExecutionPolicyUnsupported, durable.CodeStructuredOutputUnsupported:
 		status = http.StatusBadRequest
 	case durable.CodeNotFound:
 		status = http.StatusNotFound

@@ -51,6 +51,10 @@ type SessionRequest struct {
 	// the request. Omitted policy retains the documented legacy profile.
 	ExecutionPolicy *ExecutionPolicy `json:"execution_policy,omitempty" yaml:"execution_policy,omitempty"`
 
+	// StructuredOutput requires the final assistant bytes to satisfy a caller
+	// JSON Schema and remain below a bounded size.
+	StructuredOutput *StructuredOutput `json:"structured_output,omitempty" yaml:"structured_output,omitempty"`
+
 	// Context selects the context materialization mode.
 	//   ""      — default: the agent sees whatever its environment provides
 	//   "clean" — the adapter materializes a minimal ephemeral home per agent
@@ -126,6 +130,11 @@ type ExecutionPolicy struct {
 	MCPServers     []string `json:"mcp_servers" yaml:"mcp_servers"`
 	HostMounts     []string `json:"host_mounts" yaml:"host_mounts"`
 	ApprovalPolicy string   `json:"approval_policy" yaml:"approval_policy"`
+}
+
+type StructuredOutput struct {
+	JSONSchema json.RawMessage `json:"json_schema" yaml:"json_schema"`
+	MaxBytes   int             `json:"max_bytes,omitempty" yaml:"max_bytes,omitempty"`
 }
 
 type TraceConfig struct {

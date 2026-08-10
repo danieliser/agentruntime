@@ -120,7 +120,8 @@ func TestCodexAdapterEncodesRestrictedTurnPolicy(t *testing.T) {
 	}
 	messages, err := adapter.Encode(Input{
 		Kind: InputPrompt, Text: "research", ProviderID: "thread-1",
-		Policy: InputPolicy{Enforced: true, ApprovalPolicy: "never", Filesystem: "read_only", NetworkAccess: true},
+		Policy:       InputPolicy{Enforced: true, ApprovalPolicy: "never", Filesystem: "read_only", NetworkAccess: true},
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
 	})
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("encode restricted Codex turn: messages=%d err=%v", len(messages), err)
@@ -129,12 +130,13 @@ func TestCodexAdapterEncodesRestrictedTurnPolicy(t *testing.T) {
 		Params struct {
 			ApprovalPolicy string         `json:"approvalPolicy"`
 			SandboxPolicy  map[string]any `json:"sandboxPolicy"`
+			OutputSchema   map[string]any `json:"outputSchema"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(messages[0], &request); err != nil {
 		t.Fatal(err)
 	}
-	if request.Params.ApprovalPolicy != "never" || request.Params.SandboxPolicy["type"] != "readOnly" || request.Params.SandboxPolicy["networkAccess"] != true {
+	if request.Params.ApprovalPolicy != "never" || request.Params.SandboxPolicy["type"] != "readOnly" || request.Params.SandboxPolicy["networkAccess"] != true || request.Params.OutputSchema["type"] != "object" {
 		t.Fatalf("restricted Codex params = %+v", request.Params)
 	}
 }

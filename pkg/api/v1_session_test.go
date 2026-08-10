@@ -378,6 +378,89 @@ func TestV1ClaudeOutputUsesDurableNativeLedger(t *testing.T) {
 	}
 }
 
+func TestV1StructuredOutputIsValidatedCommittedAndReceiptLinked(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ts := newV1SessionTestServer(t, store, &atomic.Int32{})
+	response := postV1Session(t, ts.URL, map[string]any{
+		"idempotency_key": "job-v1-structured-claude",
+		"agent":           "claude", "runtime": "test", "prompt": "fixture",
+		"structured_output": map[string]any{
+			"json_schema": map[string]any{
+				"type": "object", "required": []string{"url"},
+				"properties":           map[string]any{"url": map[string]any{"type": "string"}},
+				"additionalProperties": false,
+			},
+			"max_bytes": 128,
+		},
+	})
+	defer response.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, response.Body, &created)
+	if response.StatusCode != http.StatusCreated || created.Data.OutputSchemaHash == "" {
+		t.Fatalf("structured create status=%d data=%+v", response.StatusCode, created.Data)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateCompleted || receipt.ArtifactHash == "" {
+		t.Fatalf("structured receipt = %+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 5 || page.Events[3].Type != "output.final" || page.Events[4].Type != "session.completed" || page.Events[3].RawSHA256 != receipt.ArtifactHash {
+		t.Fatalf("structured event ledger=%+v receipt=%+v", page.Events, receipt)
+	}
+	if got := string(page.Events[3].Raw); got != `{"url":"https://example.com"}` {
+		t.Fatalf("exact final output = %q", got)
+	}
+
+	result := get(t, ts.Server, "/api/v1/sessions/"+created.Data.SessionID+"/result")
+	defer result.Body.Close()
+	bytes, err := io.ReadAll(result.Body)
+	if err != nil || string(bytes) != `{"url":"https://example.com"}` || result.Header.Get("X-Content-SHA256") != receipt.ArtifactHash {
+		t.Fatalf("result bytes=%q hash=%q err=%v", bytes, result.Header.Get("X-Content-SHA256"), err)
+	}
+}
+
+func TestV1StructuredOutputFailureIsTypedAndHasNoArtifact(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ts := newV1SessionTestServer(t, store, &atomic.Int32{})
+	response := postV1Session(t, ts.URL, map[string]any{
+		"idempotency_key": "job-v1-invalid-structured-claude",
+		"agent":           "claude", "runtime": "test", "prompt": "fixture",
+		"structured_output": map[string]any{
+			"json_schema": map[string]any{"type": "object", "required": []string{"count"}, "properties": map[string]any{"count": map[string]any{"type": "integer"}}},
+			"max_bytes":   128,
+		},
+	})
+	defer response.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, response.Body, &created)
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateFailed || receipt.Reason != string(durable.StateFailed) || receipt.ArtifactHash != "" {
+		t.Fatalf("invalid structured receipt = %+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 10})
+	if err != nil || len(page.Events) == 0 || page.Events[len(page.Events)-1].Type != "session.structured_output_invalid" {
+		t.Fatalf("invalid structured terminal event = %+v err=%v", page.Events, err)
+	}
+}
+
 func TestV1CodexAppServerBootstrapsAndPersistsNativeLedger(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {
@@ -773,9 +856,19 @@ type nativeClaudeFixtureAgent struct{}
 
 func (*nativeClaudeFixtureAgent) Name() string { return "claude" }
 
-func (*nativeClaudeFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
+func (*nativeClaudeFixtureAgent) BuildCmd(_ string, config agent.AgentConfig) ([]string, error) {
+	result := "done"
+	delta := "hello"
+	if len(config.JSONSchema) > 0 {
+		result = `{"url":"https://example.com"}`
+		delta = result
+	}
+	deltaJSON, _ := json.Marshal(delta)
+	resultJSON, _ := json.Marshal(result)
 	return []string{"/bin/sh", "-c", `IFS= read -r prompt
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-fixture-session"}' '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"hello"}}}' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'`}, nil
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-fixture-session"}' "$1" "$2"`, "--",
+		`{"type":"stream_event","event":{"delta":{"type":"text_delta","text":` + string(deltaJSON) + `}}}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":` + string(resultJSON) + `}`}, nil
 }
 
 func (*nativeClaudeFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }

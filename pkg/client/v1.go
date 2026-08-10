@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danieliser/agentruntime/pkg/api"
@@ -18,17 +19,30 @@ import (
 
 // DurableSession is the public v1 logical-session view.
 type DurableSession struct {
-	SessionID      string    `json:"session_id"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	Agent          string    `json:"agent"`
-	Runtime        string    `json:"runtime"`
-	State          string    `json:"state"`
-	Generation     int64     `json:"generation"`
-	LastSequence   int64     `json:"last_sequence"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	EventsURL      string    `json:"events_url"`
-	EventStreamURL string    `json:"event_stream_url"`
+	SessionID           string                `json:"session_id"`
+	IdempotencyKey      string                `json:"idempotency_key"`
+	Agent               string                `json:"agent"`
+	Runtime             string                `json:"runtime"`
+	State               string                `json:"state"`
+	Generation          int64                 `json:"generation"`
+	LastSequence        int64                 `json:"last_sequence"`
+	CreatedAt           time.Time             `json:"created_at"`
+	UpdatedAt           time.Time             `json:"updated_at"`
+	EventsURL           string                `json:"events_url"`
+	EventStreamURL      string                `json:"event_stream_url"`
+	ExecutionPolicy     *api.ExecutionPolicy  `json:"execution_policy,omitempty"`
+	ExecutionPolicyHash string                `json:"execution_policy_hash,omitempty"`
+	StructuredOutput    *api.StructuredOutput `json:"structured_output,omitempty"`
+	OutputSchemaHash    string                `json:"output_schema_hash,omitempty"`
+}
+
+// StructuredResult is the exact validated final JSON artifact and its durable
+// event identity.
+type StructuredResult struct {
+	Bytes    []byte
+	SHA256   string
+	EventID  string
+	Sequence int64
 }
 
 type ReplayCapabilities struct {
@@ -312,6 +326,44 @@ func v1SessionPath(sessionID string) string {
 	return "/api/v1/sessions/" + url.PathEscape(sessionID)
 }
 
+// GetStructuredResult returns the exact bytes committed in output.final and
+// verifies the server-provided content hash before returning them.
+func (c *Client) GetStructuredResult(ctx context.Context, sessionID string) (*StructuredResult, error) {
+	request, err := c.newRequest(ctx, http.MethodGet, v1SessionPath(sessionID)+"/result", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if err := checkResponse(response); err != nil {
+		return nil, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, api.MaximumStructuredOutputBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read structured result: %w", err)
+	}
+	if len(raw) > api.MaximumStructuredOutputBytes {
+		return nil, fmt.Errorf("structured result exceeds maximum size")
+	}
+	wantHash := response.Header.Get("X-Content-SHA256")
+	digest := sha256.Sum256(raw)
+	actualHash := "sha256:" + hex.EncodeToString(digest[:])
+	if wantHash == "" || !strings.EqualFold(wantHash, actualHash) {
+		return nil, fmt.Errorf("structured result hash mismatch")
+	}
+	sequence, err := strconv.ParseInt(response.Header.Get("X-Event-Sequence"), 10, 64)
+	if err != nil || sequence < 1 {
+		return nil, fmt.Errorf("structured result has invalid event sequence")
+	}
+	return &StructuredResult{
+		Bytes: append([]byte(nil), raw...), SHA256: actualHash,
+		EventID: response.Header.Get("X-Event-ID"), Sequence: sequence,
+	}, nil
+}
+
 // GetEvents reads events strictly after afterSequence.
 func (c *Client) GetEvents(ctx context.Context, sessionID string, afterSequence int64, limit int) (*EventPage, error) {
 	values := url.Values{}
@@ -383,7 +435,10 @@ func (c *Client) pollEventRaw(ctx context.Context, writer *io.PipeWriter, sessio
 				return
 			}
 			cursor = event.Sequence
-			if event.Stream == "terminal" {
+			if event.Type == "output.final" {
+				continue
+			}
+			if event.Stream == "terminal" && strings.HasPrefix(event.Type, "session.") {
 				terminal = true
 				continue
 			}

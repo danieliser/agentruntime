@@ -86,6 +86,10 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored execution policy is no longer enforceable", err))
 		return
 	}
+	if _, err := resolveStructuredOutput(&request); err != nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored structured-output contract is no longer enforceable", err))
+		return
+	}
 	ag := s.agents.Get(stored.Agent)
 	if ag == nil {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "stored agent is unavailable", nil))
@@ -172,7 +176,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, previous.ProviderID, request.Prompt,
-		!request.Interactive, false, nativePolicy(request), s.eventBroker,
+		!request.Interactive, false, nativePolicy(request), request.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

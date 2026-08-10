@@ -100,3 +100,14 @@ func TestClaudeBuildCmdEnforcesRestrictedToolAndPermissionPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeBuildCmdAppliesNativeJSONSchema(t *testing.T) {
+	const schema = `{"type":"object","required":["url"]}`
+	cmd, err := (&ClaudeAgent{}).BuildCmd("", AgentConfig{NativeStream: true, JSONSchema: []byte(schema)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSequence(cmd, "--json-schema", schema) {
+		t.Fatalf("Claude command missing exact JSON Schema: %v", cmd)
+	}
+}

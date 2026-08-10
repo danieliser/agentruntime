@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,6 +54,30 @@ func TestV1EventReplayUsesSequenceCursor(t *testing.T) {
 	stored, err := store.GetSession(context.Background(), "replay-session")
 	if err != nil || stored.LastSequence != 2 {
 		t.Fatalf("stored session = %+v err=%v", stored, err)
+	}
+}
+
+func TestV1StructuredResultReturnsExactArtifactBytes(t *testing.T) {
+	ts, _, broker := newEventStreamTestServer(t, "result-session")
+	raw := []byte("{\n  \"answer\": 42\n}")
+	event, err := broker.IngestOutput(context.Background(), eventstream.OutputParams{
+		SessionID: "result-session", Generation: 1, Timestamp: time.Unix(205, 0).UTC(), Raw: raw,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := get(t, ts, "/api/v1/sessions/result-session/result")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("result status = %d", response.StatusCode)
+	}
+	actual, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(raw) || response.Header.Get("Content-Type") != "application/json" || response.Header.Get("X-Content-SHA256") != event.RawSHA256 {
+		t.Fatalf("result bytes=%q content-type=%q hash=%q", actual, response.Header.Get("Content-Type"), response.Header.Get("X-Content-SHA256"))
 	}
 }
 

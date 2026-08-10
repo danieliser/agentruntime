@@ -45,6 +45,42 @@ func (s *Server) handleV1EventReplay(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleV1GetStructuredResult(c *gin.Context) {
+	const op = "get_structured_result"
+	if s.durableStore == nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "durable event store unavailable", nil))
+		return
+	}
+	stored, err := s.durableStore.GetSession(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	after := stored.LastSequence - 3
+	if after < 0 {
+		after = 0
+	}
+	page, err := s.durableStore.ListEvents(c.Request.Context(), durable.EventQuery{
+		SessionID: stored.ID, AfterSequence: after, Limit: 3,
+	})
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	for index := len(page.Events) - 1; index >= 0; index-- {
+		event := page.Events[index]
+		if event.Type != "output.final" || event.Stream != durable.StreamTerminal {
+			continue
+		}
+		c.Header("X-Content-SHA256", event.RawSHA256)
+		c.Header("X-Event-ID", event.EventID)
+		c.Header("X-Event-Sequence", strconv.FormatInt(event.Sequence, 10))
+		c.Data(http.StatusOK, "application/json", event.Raw)
+		return
+	}
+	writeDurableError(c, durable.NewError(durable.CodeNotFound, op, "structured result is not available", nil))
+}
+
 func parseNonnegativeQuery(c *gin.Context, name string, fallback int64) (int64, bool) {
 	raw := c.Query(name)
 	if raw == "" {

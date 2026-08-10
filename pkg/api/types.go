@@ -14,3 +14,4 @@ type TeamConfig = apischema.TeamConfig
 type TraceConfig = apischema.TraceConfig
 type ExecutionPolicy = apischema.ExecutionPolicy
 type LifecycleConfig = apischema.LifecycleConfig
+type StructuredOutput = apischema.StructuredOutput

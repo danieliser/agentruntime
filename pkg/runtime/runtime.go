@@ -149,6 +149,14 @@ type ExitResult struct {
 	// ErrorDetail contains runtime-specific terminal detail, if present.
 	ErrorDetail string
 
+	// FailureReason is a stable AgentD-owned terminal reason such as
+	// structured_output_invalid. It is never inferred from provider text.
+	FailureReason string
+
+	// ArtifactHash identifies the exact validated final-output bytes committed
+	// immediately before the terminal event.
+	ArtifactHash string
+
 	// Signal records a process signal only when the runtime has evidence beyond
 	// an ambiguous conventional exit code (for example, OOMKilled plus 137).
 	Signal string

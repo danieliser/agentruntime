@@ -2,6 +2,8 @@
 // for AI coding assistants (Claude Code, Codex).
 package agent
 
+import "encoding/json"
+
 // Agent knows how to construct the CLI command for a specific AI tool.
 // It does not manage processes — that's the runtime's job. This separation
 // means any agent can run on any runtime without coupling.
@@ -51,6 +53,7 @@ type AgentConfig struct {
 	// execution policy instead of the legacy unrestricted automation profile.
 	EnforcePolicy  bool
 	PermissionMode string
+	JSONSchema     json.RawMessage
 
 	// Env provides additional environment variables.
 	Env map[string]string

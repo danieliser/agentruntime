@@ -41,6 +41,15 @@ type TerminalParams struct {
 	Error      string
 }
 
+// OutputParams describes the exact, schema-validated final output bytes. The
+// event is immutable and committed before the terminal receipt references it.
+type OutputParams struct {
+	SessionID  string
+	Generation int64
+	Timestamp  time.Time
+	Raw        []byte
+}
+
 // ControlParams identifies one caller-idempotent outgoing native operation.
 // Payload is the typed command body captured before provider encoding.
 type ControlParams struct {
@@ -189,6 +198,50 @@ func (broker *Broker) IngestTerminal(ctx context.Context, params TerminalParams)
 		SessionID: params.SessionID, Generation: params.Generation, Timestamp: params.Timestamp,
 		Type: "session." + params.Reason, Stream: durable.StreamTerminal,
 		Payload: raw, Raw: raw,
+	})
+	if err != nil {
+		return durable.Event{}, err
+	}
+	if !result.Created {
+		return result.Event, nil
+	}
+	if broker.afterCommit != nil {
+		if err := broker.afterCommit(result.Event); err != nil {
+			return durable.Event{}, err
+		}
+	}
+	broker.publishLocked(state, result.Event)
+	return result.Event, nil
+}
+
+// IngestOutput commits one exact final JSON artifact through the same durable
+// sequence allocator used by provider and lifecycle events.
+func (broker *Broker) IngestOutput(ctx context.Context, params OutputParams) (durable.Event, error) {
+	const op = "ingest_output_event"
+	if broker == nil || broker.store == nil {
+		return durable.Event{}, durable.NewError(durable.CodeInvalidState, op, "durable store is required", nil)
+	}
+	if params.SessionID == "" || params.Generation < 1 || params.Timestamp.IsZero() || len(params.Raw) == 0 || !json.Valid(params.Raw) {
+		return durable.Event{}, durable.NewError(durable.CodeInvalidArgument, op, "session, generation, timestamp, and valid JSON output are required", nil)
+	}
+	digest := sha256.Sum256(params.Raw)
+	hash := "sha256:" + hex.EncodeToString(digest[:])
+	payload, err := json.Marshal(map[string]any{
+		"content_type": "application/json",
+		"byte_length":  len(params.Raw),
+		"sha256":       hash,
+	})
+	if err != nil {
+		return durable.Event{}, durable.NewError(durable.CodeIndeterminate, op, "encode output metadata", err)
+	}
+	state := broker.session(params.SessionID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	result, err := broker.store.AppendEvent(ctx, durable.AppendEventParams{
+		SchemaVersion: SchemaVersion, EventID: outputEventID(params.SessionID, params.Generation),
+		SessionID: params.SessionID, Generation: params.Generation, Timestamp: params.Timestamp,
+		Type: "output.final", Stream: durable.StreamTerminal,
+		Payload: payload, Raw: append([]byte(nil), params.Raw...),
 	})
 	if err != nil {
 		return durable.Event{}, err
@@ -358,5 +411,11 @@ func sourceEventID(params IngestParams) string {
 func terminalEventID(sessionID string, generation int64) string {
 	digest := sha256.New()
 	_, _ = fmt.Fprintf(digest, "%s\x00%d\x00terminal", sessionID, generation)
+	return "evt_" + hex.EncodeToString(digest.Sum(nil))
+}
+
+func outputEventID(sessionID string, generation int64) string {
+	digest := sha256.New()
+	_, _ = fmt.Fprintf(digest, "%s\x00%d\x00output.final", sessionID, generation)
 	return "evt_" + hex.EncodeToString(digest.Sum(nil))
 }

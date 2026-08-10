@@ -67,6 +67,10 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		writeDurableError(c, err)
 		return
 	}
+	if _, err := resolveStructuredOutput(&req); err != nil {
+		writeDurableError(c, err)
+		return
+	}
 
 	mounts := req.EffectiveMounts()
 	workDir := effectiveWorkDir(req.WorkDir, mounts)
@@ -331,7 +335,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		if err := AttachNativeSessionIO(
 			sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
 			"", req.Prompt, !req.Interactive,
-			false, nativePolicy(req), s.eventBroker,
+			false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 			func() string {
 				current := active.Load()
 				if current == nil {

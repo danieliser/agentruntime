@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -80,6 +82,28 @@ func TestClientAddsBearerTokenToEveryPrivateRequest(t *testing.T) {
 	client := NewAuthenticated(server.URL, token)
 	if _, err := client.ListDurableSessions(context.Background()); err != nil {
 		t.Fatalf("list durable sessions: %v", err)
+	}
+}
+
+func TestClientGetsExactStructuredResult(t *testing.T) {
+	raw := []byte("{\n  \"answer\": 42\n}")
+	digest := sha256.Sum256(raw)
+	hash := "sha256:" + hex.EncodeToString(digest[:])
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/sessions/result-session/result" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("X-Content-SHA256", hash)
+		writer.Header().Set("X-Event-ID", "evt-output")
+		writer.Header().Set("X-Event-Sequence", "9")
+		_, _ = writer.Write(raw)
+	}))
+	defer server.Close()
+	result, err := New(server.URL).GetStructuredResult(context.Background(), "result-session")
+	if err != nil || string(result.Bytes) != string(raw) || result.SHA256 != hash || result.EventID != "evt-output" || result.Sequence != 9 {
+		t.Fatalf("structured result = %+v err=%v", result, err)
 	}
 }
 

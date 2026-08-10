@@ -39,6 +39,8 @@ type v1SessionData struct {
 	EventStreamURL      string               `json:"event_stream_url"`
 	ExecutionPolicy     *ExecutionPolicy     `json:"execution_policy,omitempty"`
 	ExecutionPolicyHash string               `json:"execution_policy_hash,omitempty"`
+	StructuredOutput    *StructuredOutput    `json:"structured_output,omitempty"`
+	OutputSchemaHash    string               `json:"output_schema_hash,omitempty"`
 }
 
 type v1TerminalReceiptData struct {
@@ -153,6 +155,9 @@ func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, run
 	if _, err := resolveExecutionPolicy(&request, runtimeName); err != nil {
 		return durable.CreateSessionResult{}, err
 	}
+	if _, err := resolveStructuredOutput(&request); err != nil {
+		return durable.CreateSessionResult{}, err
+	}
 	if err := s.validateTraceAdmission(ctx, request); err != nil {
 		return durable.CreateSessionResult{}, err
 	}
@@ -214,6 +219,10 @@ func durableRequestManifest(request SessionRequest, runtimeName string) (json.Ra
 	if err != nil {
 		return nil, nil, "", err
 	}
+	resolvedOutput, err := resolveStructuredOutput(&request)
+	if err != nil {
+		return nil, nil, "", err
+	}
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return nil, nil, "", durable.NewError(durable.CodeInvalidArgument, op, "encode request", err)
@@ -227,6 +236,9 @@ func durableRequestManifest(request SessionRequest, runtimeName string) (json.Ra
 	manifest["runtime"] = runtimeName
 	if resolvedPolicy.Hash != "" {
 		manifest["execution_policy_hash"] = resolvedPolicy.Hash
+	}
+	if resolvedOutput.Hash != "" {
+		manifest["output_schema_hash"] = resolvedOutput.Hash
 	}
 
 	grants := append([]string(nil), request.SecretGrants...)
@@ -329,6 +341,7 @@ func (s *Server) writeV1Session(c *gin.Context, status int, stored durable.Sessi
 
 func v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
 	policy, policyHash := manifestExecutionPolicy(stored.RequestManifest)
+	structuredOutput, outputSchemaHash := structuredOutputFromManifest(stored.RequestManifest)
 	return v1SessionData{
 		SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
 		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
@@ -336,6 +349,7 @@ func v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
 		CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt,
 		EventsURL: sessionEventsURL(c, stored.ID), EventStreamURL: sessionEventStreamURL(c, stored.ID),
 		ExecutionPolicy: policy, ExecutionPolicyHash: policyHash,
+		StructuredOutput: structuredOutput, OutputSchemaHash: outputSchemaHash,
 	}
 }
 
@@ -405,6 +419,9 @@ func (s *Server) finalizeV1Session(sessionID string, result runtime.ExitResult, 
 }
 
 func runtimeTerminalState(result runtime.ExitResult) durable.SessionState {
+	if result.FailureReason != "" {
+		return durable.StateFailed
+	}
 	if result.OOMKilled || result.Signal != "" || result.ErrorDetail != "" || result.Err != nil {
 		return durable.StateCrashed
 	}
@@ -481,7 +498,8 @@ func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.Ex
 			SessionID: sessionID, Generation: generation.Number, State: state,
 			Reason:   reason,
 			ExitCode: &exitCode, Signal: result.Signal, StartedAt: startedAt, EndedAt: endedAt,
-			OutputHash: outputHash(session.LogFilePath(s.logDir, sessionID)), LastSequence: stored.LastSequence,
+			OutputHash: outputHash(session.LogFilePath(s.logDir, sessionID)), ArtifactHash: result.ArtifactHash,
+			LastSequence: stored.LastSequence,
 		},
 	})
 	if err != nil {

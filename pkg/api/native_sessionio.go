@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
@@ -28,6 +29,7 @@ func AttachNativeSessionIO(
 	stopOnTurnCompletion bool,
 	reconnect bool,
 	policy nativeprotocol.InputPolicy,
+	structuredOutput *StructuredOutput,
 	broker *eventstream.Broker,
 	terminalReason func() string,
 	onAttach func(nativeprotocol.Transport),
@@ -42,6 +44,10 @@ func AttachNativeSessionIO(
 		return err
 	}
 	handle := sess.Handle
+	collector, err := newStructuredResultCollector(string(provider), structuredOutput)
+	if err != nil {
+		return durable.NewError(durable.CodeStructuredOutputUnsupported, op, "initialize structured-output validator", err)
+	}
 	nativeWait := make(chan nativeprotocol.Exit, 1)
 	terminalReasons := make(chan string, 1)
 	go func() {
@@ -74,6 +80,7 @@ func AttachNativeSessionIO(
 	defer cancelBootstrap()
 	if err := transport.Bootstrap(bootstrapCtx, nativeprotocol.BootstrapRequest{
 		ProviderID: providerID, ClientName: "agentruntime", ClientVersion: "v1", Reconnect: reconnect, Policy: policy,
+		OutputSchema: structuredOutputSchema(structuredOutput),
 	}); err != nil {
 		_ = transport.Close()
 		return err
@@ -95,6 +102,7 @@ func AttachNativeSessionIO(
 	drainTarget := session.DrainWriter(sess.Replay, logWriter)
 	var ingestMu sync.Mutex
 	var ingestErr error
+	var structuredErr error
 	turnCompleted := false
 	var drains sync.WaitGroup
 	drainRecords := func(records <-chan nativeprotocol.Record) {
@@ -108,6 +116,9 @@ func AttachNativeSessionIO(
 				if err != nil {
 					ingestErr = err
 				} else {
+					if collector != nil && structuredErr == nil {
+						structuredErr = collector.Observe(event.Type, event.Payload)
+					}
 					line := append(append([]byte(nil), record.Raw...), '\n')
 					if _, err := drainTarget.Write(line); err != nil {
 						log.Printf("[session %s] diagnostic output write failed: %v", sess.ID, err)
@@ -146,6 +157,27 @@ func AttachNativeSessionIO(
 		if endedAt.IsZero() {
 			endedAt = time.Now().UTC()
 		}
+		artifactHash := ""
+		failureReason := ""
+		if collector != nil && streamErr == nil && nativeExit.Code == 0 && reason == "" {
+			result, err := collector.Finalize()
+			if err != nil {
+				structuredErr = errors.Join(structuredErr, err)
+				failureReason = structuredOutputErrorCode(structuredErr)
+				nativeExit.Code = 1
+				nativeExit.ErrorDetail = structuredOutputErrorMessage(structuredErr)
+				reason = failureReason
+			} else {
+				outputEvent, err := broker.IngestOutput(context.Background(), eventstream.OutputParams{
+					SessionID: sess.ID, Generation: generation, Timestamp: endedAt, Raw: result.Bytes,
+				})
+				if err != nil {
+					streamErr = errors.Join(streamErr, err)
+				} else {
+					artifactHash = outputEvent.RawSHA256
+				}
+			}
+		}
 		if streamErr == nil {
 			if reason == "" {
 				reason = string(runtimeTerminalState(runtime.ExitResult{
@@ -172,7 +204,7 @@ func AttachNativeSessionIO(
 		result := runtime.ExitResult{
 			Code: nativeExit.Code, Signal: nativeExit.Signal, OOMKilled: nativeExit.OOMKilled,
 			ErrorDetail: nativeExit.ErrorDetail, StartedAt: nativeExit.StartedAt, EndedAt: nativeExit.EndedAt,
-			Err: nativeExit.Err,
+			FailureReason: failureReason, ArtifactHash: artifactHash, Err: nativeExit.Err,
 		}
 		log.Printf("[session %s] native transport exited: code=%d err=%v stream_err=%v replay_bytes=%d", sess.ID, result.Code, result.Err, streamErr, sess.Replay.TotalBytes())
 		sess.SetCompleted(result.Code)
@@ -181,4 +213,26 @@ func AttachNativeSessionIO(
 		}
 	}()
 	return nil
+}
+
+func structuredOutputSchema(contract *StructuredOutput) []byte {
+	if contract == nil {
+		return nil
+	}
+	return append([]byte(nil), contract.JSONSchema...)
+}
+
+func structuredOutputErrorCode(err error) string {
+	var structuredErr *durable.Error
+	if errors.As(err, &structuredErr) && (structuredErr.Code == durable.CodeStructuredOutputInvalid || structuredErr.Code == durable.CodeStructuredOutputTooLarge) {
+		return string(structuredErr.Code)
+	}
+	return string(durable.CodeStructuredOutputInvalid)
+}
+
+func structuredOutputErrorMessage(err error) string {
+	if durable.IsCode(err, durable.CodeStructuredOutputTooLarge) {
+		return "final structured output exceeded max_bytes"
+	}
+	return "final structured output did not satisfy the admitted JSON Schema"
 }

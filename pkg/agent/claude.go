@@ -52,6 +52,9 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	if cfg.MaxTokens > 0 {
 		cmd = append(cmd, "--max-turns", fmt.Sprintf("%d", cfg.MaxTokens))
 	}
+	if len(cfg.JSONSchema) > 0 {
+		cmd = append(cmd, "--json-schema", string(cfg.JSONSchema))
+	}
 	resumeSessionID := cfg.ResumeSessionID
 	if resumeSessionID == "" && !cfg.NativeStream {
 		resumeSessionID = cfg.SessionID

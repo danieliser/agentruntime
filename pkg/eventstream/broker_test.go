@@ -207,6 +207,49 @@ func TestIngestTerminalCommitsOneStableTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestIngestOutputCommitsExactReplayableArtifact(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-output-event")
+	broker := New(store)
+	raw := []byte(`{"answer":"exact bytes"}`)
+	params := OutputParams{
+		SessionID: "session-output-event", Generation: 1,
+		Timestamp: time.Unix(325, 0).UTC(), Raw: raw,
+	}
+	first, err := broker.IngestOutput(ctx, params)
+	if err != nil {
+		t.Fatalf("first output ingest: %v", err)
+	}
+	second, err := broker.IngestOutput(ctx, params)
+	if err != nil {
+		t.Fatalf("repeat output ingest: %v", err)
+	}
+	if first.EventID != second.EventID || first.Sequence != second.Sequence {
+		t.Fatalf("output identity changed: %+v then %+v", first, second)
+	}
+	if first.Type != "output.final" || first.Stream != durable.StreamTerminal || string(first.Raw) != string(raw) {
+		t.Fatalf("output event = %+v", first)
+	}
+	var payload struct {
+		ContentType string `json:"content_type"`
+		ByteLength  int    `json:"byte_length"`
+		SHA256      string `json:"sha256"`
+	}
+	if err := json.Unmarshal(first.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ContentType != "application/json" || payload.ByteLength != len(raw) || payload.SHA256 != first.RawSHA256 {
+		t.Fatalf("output payload = %+v event=%+v", payload, first)
+	}
+	changed := params
+	changed.Raw = []byte(`{"answer":"changed"}`)
+	if _, err := broker.IngestOutput(ctx, changed); !durable.IsCode(err, durable.CodeImmutableConflict) {
+		t.Fatalf("changed output error = %v, want %s", err, durable.CodeImmutableConflict)
+	}
+}
+
 func TestControlLedgerIsIdempotentAndExposesAmbiguousDispatch(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()

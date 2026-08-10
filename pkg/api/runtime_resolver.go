@@ -40,6 +40,9 @@ func resolveNativeExecution(
 		config.PermissionMode = "dontAsk"
 		config.AllowedTools = providerTools(request.Agent, request.ExecutionPolicy.AllowedTools)
 	}
+	if request.StructuredOutput != nil {
+		config.JSONSchema = append([]byte(nil), request.StructuredOutput.JSONSchema...)
+	}
 	command, err := implementation.BuildCmd("", config)
 	if err != nil {
 		return resolvedNativeExecution{}, fmt.Errorf("%s: build %s command: %w", op, implementation.Name(), err)

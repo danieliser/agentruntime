@@ -319,13 +319,16 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	if _, err := resolveExecutionPolicy(&manifest, stored.Runtime); err != nil {
 		return durable.NewError(durable.CodeIndeterminate, op, "stored execution policy is no longer enforceable", err)
 	}
+	if _, err := resolveStructuredOutput(&manifest); err != nil {
+		return durable.NewError(durable.CodeIndeterminate, op, "stored structured-output contract is no longer enforceable", err)
+	}
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
 		"", !manifest.Interactive,
-		true, nativePolicy(manifest), s.eventBroker,
+		true, nativePolicy(manifest), manifest.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

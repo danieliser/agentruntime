@@ -23,15 +23,16 @@ type StreamTransport struct {
 	process  ProcessIO
 	recovery RecoveryMetadata
 
-	mu          sync.RWMutex
-	started     bool
-	closed      bool
-	providerID  string
-	turnID      string
-	nextRPCID   int64
-	readErr     error
-	inputPolicy InputPolicy
-	pending     map[string]chan codexRPCResponse
+	mu           sync.RWMutex
+	started      bool
+	closed       bool
+	providerID   string
+	turnID       string
+	nextRPCID    int64
+	readErr      error
+	inputPolicy  InputPolicy
+	outputSchema json.RawMessage
+	pending      map[string]chan codexRPCResponse
 
 	writeMu   sync.Mutex
 	closeOnce sync.Once
@@ -107,6 +108,9 @@ func (transport *StreamTransport) Send(ctx context.Context, input Input) error {
 	if transport.inputPolicy.Enforced {
 		input.Policy = transport.inputPolicy
 	}
+	if len(transport.outputSchema) > 0 {
+		input.OutputSchema = append(json.RawMessage(nil), transport.outputSchema...)
+	}
 	transport.mu.Unlock()
 
 	messages, err := transport.adapter.Encode(input)
@@ -127,6 +131,7 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 		return newError(CodeInvalidState, op, "transport is not running", nil)
 	}
 	transport.inputPolicy = request.Policy
+	transport.outputSchema = append(json.RawMessage(nil), request.OutputSchema...)
 	if request.Reconnect {
 		if request.ProviderID != "" {
 			transport.providerID = request.ProviderID

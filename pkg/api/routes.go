@@ -15,6 +15,7 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 		v1.GET("/sessions", s.handleV1ListSessions)
 		v1.GET("/sessions/:id", s.handleV1GetSession)
 		v1.GET("/sessions/:id/receipt", s.handleV1GetTerminalReceipt)
+		v1.GET("/sessions/:id/result", s.handleV1GetStructuredResult)
 		v1.GET("/sessions/:id/traces", s.handleV1SessionTraces)
 		v1.POST("/sessions/:id/resume", s.handleV1ResumeSession)
 		v1.POST("/sessions/:id/input", s.handleV1NativeInput)

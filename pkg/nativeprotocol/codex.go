@@ -39,11 +39,15 @@ func (codexAdapter) Encode(input Input) ([][]byte, error) {
 				sandboxPolicy["writableRoots"] = []string{"/workspace"}
 			}
 		}
-		message = codexRequest(requestID, "turn/start", map[string]any{
+		params := map[string]any{
 			"threadId":       input.ProviderID,
 			"input":          []map[string]any{{"type": "text", "text": input.Text}},
 			"approvalPolicy": approvalPolicy, "sandboxPolicy": sandboxPolicy,
-		})
+		}
+		if len(input.OutputSchema) > 0 {
+			params["outputSchema"] = json.RawMessage(input.OutputSchema)
+		}
+		message = codexRequest(requestID, "turn/start", params)
 	case InputSteer:
 		if input.Text == "" || input.TurnID == "" {
 			return nil, newError(CodeInvalidArgument, op, "steer text and turn ID are required", nil)

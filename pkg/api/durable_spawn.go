@@ -38,6 +38,9 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if _, err := resolveExecutionPolicy(&req, rt.Name()); err != nil {
 		return nil, durable.Session{}, err
 	}
+	if _, err := resolveStructuredOutput(&req); err != nil {
+		return nil, durable.Session{}, err
+	}
 	mounts := req.EffectiveMounts()
 	workDir := effectiveWorkDir(req.WorkDir, mounts)
 	if workDir != "" {
@@ -169,7 +172,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, nativeprotocol.Provider(req.Agent), generation.Number, providerID,
-		req.Prompt, !req.Interactive, false, nativePolicy(req), s.eventBroker,
+		req.Prompt, !req.Interactive, false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

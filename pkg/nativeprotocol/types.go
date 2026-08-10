@@ -46,6 +46,7 @@ type Input struct {
 	RequestID     json.RawMessage
 	ApprovalAllow bool
 	Policy        InputPolicy
+	OutputSchema  json.RawMessage
 }
 
 // InputPolicy carries the already-admitted provider enforcement settings.
@@ -101,8 +102,9 @@ type BootstrapRequest struct {
 	// Reconnect attaches to an app-server process that AgentD initialized
 	// previously. It restores local correlation state without replaying the
 	// provider handshake on the already-running process.
-	Reconnect bool
-	Policy    InputPolicy
+	Reconnect    bool
+	Policy       InputPolicy
+	OutputSchema json.RawMessage
 }
 
 // ProcessIO is the already-created process/container connection used by the
