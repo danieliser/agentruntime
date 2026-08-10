@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ClaudeAgent builds commands for Claude Code CLI.
@@ -17,7 +18,21 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 		return nil, fmt.Errorf("prompt is required")
 	}
 
-	cmd := []string{"claude", "--dangerously-skip-permissions"}
+	cmd := []string{"claude"}
+	if cfg.EnforcePolicy {
+		permissionMode := cfg.PermissionMode
+		if permissionMode == "" {
+			permissionMode = "dontAsk"
+		}
+		cmd = append(cmd,
+			"--permission-mode", permissionMode,
+			"--tools", strings.Join(cfg.AllowedTools, ","),
+			"--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`,
+			"--disable-slash-commands", "--safe-mode",
+		)
+	} else {
+		cmd = append(cmd, "--dangerously-skip-permissions")
+	}
 	if cfg.NativeStream {
 		cmd = append(cmd,
 			"--output-format", "stream-json",
@@ -46,8 +61,10 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	} else if cfg.NativeStream && cfg.SessionID != "" {
 		cmd = append(cmd, "--session-id", cfg.SessionID)
 	}
-	for _, tool := range cfg.AllowedTools {
-		cmd = append(cmd, "--allowedTools", tool)
+	if !cfg.EnforcePolicy {
+		for _, tool := range cfg.AllowedTools {
+			cmd = append(cmd, "--allowedTools", tool)
+		}
 	}
 	if cfg.Effort != "" {
 		cmd = append(cmd, "--effort", cfg.Effort)

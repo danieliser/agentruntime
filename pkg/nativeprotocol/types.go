@@ -45,6 +45,16 @@ type Input struct {
 	TurnID        string
 	RequestID     json.RawMessage
 	ApprovalAllow bool
+	Policy        InputPolicy
+}
+
+// InputPolicy carries the already-admitted provider enforcement settings.
+// It contains no product authority and cannot be widened by provider output.
+type InputPolicy struct {
+	Enforced       bool
+	ApprovalPolicy string
+	Filesystem     string
+	NetworkAccess  bool
 }
 
 // DerivedEvent is the query-friendly view of one exact native record.
@@ -92,6 +102,7 @@ type BootstrapRequest struct {
 	// previously. It restores local correlation state without replaying the
 	// provider handshake on the already-running process.
 	Reconnect bool
+	Policy    InputPolicy
 }
 
 // ProcessIO is the already-created process/container connection used by the

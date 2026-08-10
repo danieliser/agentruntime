@@ -131,6 +131,17 @@ func runtimeSandboxProfile(runtimeName string, native bool) string {
 	return runtimeName + "-" + transport + "-v1"
 }
 
+func requestSandboxProfile(runtimeName string, native bool, request SessionRequest) string {
+	if request.ExecutionPolicy != nil {
+		transport := "compat"
+		if native {
+			transport = "native"
+		}
+		return runtimeName + "-" + transport + "-policy-v1"
+	}
+	return runtimeSandboxProfile(runtimeName, native)
+}
+
 func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, runtimeName string) (durable.CreateSessionResult, error) {
 	const op = "admit_v1_session"
 	if s.durableStore == nil {

@@ -23,14 +23,15 @@ type StreamTransport struct {
 	process  ProcessIO
 	recovery RecoveryMetadata
 
-	mu         sync.RWMutex
-	started    bool
-	closed     bool
-	providerID string
-	turnID     string
-	nextRPCID  int64
-	readErr    error
-	pending    map[string]chan codexRPCResponse
+	mu          sync.RWMutex
+	started     bool
+	closed      bool
+	providerID  string
+	turnID      string
+	nextRPCID   int64
+	readErr     error
+	inputPolicy InputPolicy
+	pending     map[string]chan codexRPCResponse
 
 	writeMu   sync.Mutex
 	closeOnce sync.Once
@@ -103,6 +104,9 @@ func (transport *StreamTransport) Send(ctx context.Context, input Input) error {
 	if input.ProviderID != "" {
 		transport.providerID = input.ProviderID
 	}
+	if transport.inputPolicy.Enforced {
+		input.Policy = transport.inputPolicy
+	}
 	transport.mu.Unlock()
 
 	messages, err := transport.adapter.Encode(input)
@@ -122,6 +126,7 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 		transport.mu.Unlock()
 		return newError(CodeInvalidState, op, "transport is not running", nil)
 	}
+	transport.inputPolicy = request.Policy
 	if request.Reconnect {
 		if request.ProviderID != "" {
 			transport.providerID = request.ProviderID
@@ -166,6 +171,17 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 	id := transport.allocateRPCID()
 	method := "thread/start"
 	params := map[string]any{}
+	if request.Policy.Enforced {
+		sandbox := "read-only"
+		if request.Policy.Filesystem == "workspace_write" {
+			sandbox = "workspace-write"
+		}
+		params["approvalPolicy"] = request.Policy.ApprovalPolicy
+		params["sandbox"] = sandbox
+		params["cwd"] = "/workspace"
+		params["dynamicTools"] = []any{}
+		params["environments"] = []any{}
+	}
 	if request.ProviderID != "" {
 		method = "thread/resume"
 		params["threadId"] = request.ProviderID

@@ -500,6 +500,34 @@ func TestDockerSpawn_SecurityFlagsPresent(t *testing.T) {
 	}
 }
 
+func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd: []string{"echo", "ok"}, SessionID: "policy-container-1234",
+		Request: &apischema.SessionRequest{ExecutionPolicy: &apischema.ExecutionPolicy{
+			Version: "1.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+			AllowedTools: []string{"web_search"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spec.cleanup()
+	for _, flag := range []string{"--read-only", "--pids-limit"} {
+		if !containsArg(spec.args, flag) {
+			t.Errorf("restricted Docker args missing %s: %v", flag, spec.args)
+		}
+	}
+	for flag, value := range map[string]string{"--memory": "2g", "--cpus": "2", "--pids-limit": "256", "--ulimit": "nofile=1024:1024"} {
+		if !hasFlagValue(spec.args, flag, value) {
+			t.Errorf("restricted Docker args missing %s %s: %v", flag, value, spec.args)
+		}
+	}
+	if containsArg(spec.args, "--cap-add") {
+		t.Fatalf("restricted Docker args add a Linux capability: %v", spec.args)
+	}
+}
+
 func TestDockerSpawn_DirectProviderEnv(t *testing.T) {
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 

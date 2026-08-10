@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 )
 
 const ExecutionPolicyVersion = "1.0"
@@ -123,4 +124,15 @@ func manifestExecutionPolicy(manifest json.RawMessage) (*ExecutionPolicy, string
 		return nil, ""
 	}
 	return stored.Policy, stored.Hash
+}
+
+func nativePolicy(request SessionRequest) nativeprotocol.InputPolicy {
+	if request.ExecutionPolicy == nil {
+		return nativeprotocol.InputPolicy{}
+	}
+	return nativeprotocol.InputPolicy{
+		Enforced: true, ApprovalPolicy: request.ExecutionPolicy.ApprovalPolicy,
+		Filesystem:    request.ExecutionPolicy.Filesystem,
+		NetworkAccess: request.ExecutionPolicy.Network == "public_https",
+	}
 }

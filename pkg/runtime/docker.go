@@ -458,10 +458,10 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		_ = os.Remove(envFile)
 	})
 
+	restricted := req != nil && req.ExecutionPolicy != nil
 	args := []string{
 		"run", "-d", "--init",
 		"--cap-drop", "ALL",
-		"--cap-add", "DAC_OVERRIDE",
 		"--security-opt", "no-new-privileges:true",
 		"--label", fmt.Sprintf("%s=%s", dockerTaskLabelKey, dockerLabelValue(requestTaskID(cfg))),
 		"--label", fmt.Sprintf("%s=%s", dockerSessionLabelKey, dockerLabelValue(cfg.SessionID)),
@@ -469,6 +469,19 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		"--name", dockerContainerName(cfg.SessionID),
 		"--workdir", "/workspace",
 		"--env-file", envFile,
+	}
+	if restricted {
+		args = append(args,
+			"--read-only",
+			"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
+			"--pids-limit", "256",
+			"--ulimit", "nofile=1024:1024",
+		)
+		if req.ExecutionPolicy.Filesystem == "workspace_write" {
+			args = append(args, "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m")
+		}
+	} else {
+		args = append(args, "--cap-add", "DAC_OVERRIDE")
 	}
 	args = append(args,
 		"-i",
@@ -511,6 +524,12 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		for _, opt := range req.Container.SecurityOpt {
 			args = append(args, "--security-opt", opt)
 		}
+	}
+	if restricted && (req.Container == nil || req.Container.Memory == "") {
+		args = append(args, "--memory", "2g")
+	}
+	if restricted && (req.Container == nil || req.Container.CPUs == 0) {
+		args = append(args, "--cpus", "2")
 	}
 	if network != "" {
 		args = append(args, "--network", network)

@@ -26,10 +26,23 @@ func (codexAdapter) Encode(input Input) ([][]byte, error) {
 		if input.Text == "" {
 			return nil, newError(CodeInvalidArgument, op, "prompt text is required", nil)
 		}
+		approvalPolicy := "never"
+		sandboxPolicy := map[string]any{"type": "dangerFullAccess"}
+		if input.Policy.Enforced {
+			approvalPolicy = input.Policy.ApprovalPolicy
+			sandboxType := "readOnly"
+			if input.Policy.Filesystem == "workspace_write" {
+				sandboxType = "workspaceWrite"
+			}
+			sandboxPolicy = map[string]any{"type": sandboxType, "networkAccess": input.Policy.NetworkAccess}
+			if sandboxType == "workspaceWrite" {
+				sandboxPolicy["writableRoots"] = []string{"/workspace"}
+			}
+		}
 		message = codexRequest(requestID, "turn/start", map[string]any{
 			"threadId":       input.ProviderID,
 			"input":          []map[string]any{{"type": "text", "text": input.Text}},
-			"approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"},
+			"approvalPolicy": approvalPolicy, "sandboxPolicy": sandboxPolicy,
 		})
 	case InputSteer:
 		if input.Text == "" || input.TurnID == "" {

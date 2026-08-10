@@ -66,6 +66,33 @@ func TestResolveNativeExecutionAppliesCodexAppServerControls(t *testing.T) {
 	}
 }
 
+func TestResolveNativeExecutionEnforcesCodexPublicResearchPolicy(t *testing.T) {
+	request := SessionRequest{
+		Agent: "codex", Prompt: "research", Codex: &CodexConfig{},
+		ExecutionPolicy: &ExecutionPolicy{
+			Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+			Network: "public_https", AllowedTools: []string{"web_search"},
+			MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+		},
+	}
+	resolved, err := resolveNativeExecution(request, agent.DefaultRegistry().Get("codex"), "/workspace", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resolved.Command, " ")
+	for _, required := range []string{
+		`approval_policy="never"`, `sandbox_mode="read-only"`, "tools.web_search=true",
+		"--disable shell_tool", "--disable unified_exec", "--disable plugins", "--disable enable_mcp_apps",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("restricted Codex command missing %q: %v", required, resolved.Command)
+		}
+	}
+	if strings.Contains(joined, "danger") {
+		t.Fatalf("restricted Codex command widened authority: %v", resolved.Command)
+	}
+}
+
 func TestResolveNativeExecutionRejectsMissingAgent(t *testing.T) {
 	_, err := resolveNativeExecution(SessionRequest{Agent: "codex"}, nil, "", "")
 	if err == nil {

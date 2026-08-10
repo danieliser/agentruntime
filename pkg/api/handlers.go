@@ -264,7 +264,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		SessionDir:     &sess.SessionDir,
 		VolumeName:     volumeNameForSpawn,
 		PTY:            req.PTY,
-		SandboxProfile: runtimeSandboxProfile(rt.Name(), nativeV1Agent(req.Agent)),
+		SandboxProfile: requestSandboxProfile(rt.Name(), nativeV1Agent(req.Agent), req),
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
@@ -285,7 +285,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
 		ImageReference:  resolvedImageReference(req, rt.Name()),
 		ImageDigest:     runtimeGenerationImageDigest(handle),
-		SandboxProfile:  runtimeSandboxProfile(rt.Name(), nativeGeneration),
+		SandboxProfile:  requestSandboxProfile(rt.Name(), nativeGeneration, req),
 		DockerLogDriver: generationDockerLogDriver(rt.Name(), nativeGeneration), CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
@@ -331,7 +331,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		if err := AttachNativeSessionIO(
 			sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
 			"", req.Prompt, !req.Interactive,
-			false, s.eventBroker,
+			false, nativePolicy(req), s.eventBroker,
 			func() string {
 				current := active.Load()
 				if current == nil {

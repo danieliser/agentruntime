@@ -113,6 +113,32 @@ func TestProviderAdaptersExposeProviderIdentity(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterEncodesRestrictedTurnPolicy(t *testing.T) {
+	adapter, err := NewAdapter(ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := adapter.Encode(Input{
+		Kind: InputPrompt, Text: "research", ProviderID: "thread-1",
+		Policy: InputPolicy{Enforced: true, ApprovalPolicy: "never", Filesystem: "read_only", NetworkAccess: true},
+	})
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("encode restricted Codex turn: messages=%d err=%v", len(messages), err)
+	}
+	var request struct {
+		Params struct {
+			ApprovalPolicy string         `json:"approvalPolicy"`
+			SandboxPolicy  map[string]any `json:"sandboxPolicy"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(messages[0], &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Params.ApprovalPolicy != "never" || request.Params.SandboxPolicy["type"] != "readOnly" || request.Params.SandboxPolicy["networkAccess"] != true {
+		t.Fatalf("restricted Codex params = %+v", request.Params)
+	}
+}
+
 func TestNativeTransportContract(t *testing.T) {
 	for _, provider := range []Provider{ProviderClaude, ProviderCodex} {
 		provider := provider
@@ -236,6 +262,46 @@ func TestCodexTransportBootstrapsNewAndResumedThreads(t *testing.T) {
 			<-transport.Wait()
 		})
 	}
+}
+
+func TestCodexTransportKeepsAdmittedPolicyAcrossFollowUpTurns(t *testing.T) {
+	adapter, err := NewAdapter(ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := newFakeProcess()
+	transport := NewStreamTransport(adapter, process.IO(), RecoveryMetadata{SessionID: "policy", Generation: 1})
+	if err := transport.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	policy := InputPolicy{Enforced: true, ApprovalPolicy: "never", Filesystem: "read_only", NetworkAccess: true}
+	done := make(chan error, 1)
+	go func() {
+		done <- transport.Bootstrap(context.Background(), BootstrapRequest{Policy: policy})
+	}()
+	_ = process.readInput(t)
+	process.writeStdout(t, []byte(`{"id":0,"result":{"userAgent":"codex-policy"}}`))
+	_ = process.readInput(t)
+	thread := decodeInputObject(t, process.readInput(t))
+	threadParams := thread["params"].(map[string]any)
+	if threadParams["sandbox"] != "read-only" || threadParams["approvalPolicy"] != "never" {
+		t.Fatalf("restricted thread params = %+v", threadParams)
+	}
+	process.writeStdout(t, []byte(`{"id":1,"result":{"threadId":"policy-thread"}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Send(context.Background(), Input{Kind: InputPrompt, Text: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	turn := decodeInputObject(t, process.readInput(t))
+	params := turn["params"].(map[string]any)
+	sandbox := params["sandboxPolicy"].(map[string]any)
+	if sandbox["type"] != "readOnly" || params["approvalPolicy"] != "never" {
+		t.Fatalf("follow-up widened admitted policy: %+v", params)
+	}
+	process.finish(Exit{Code: 0})
+	<-transport.Wait()
 }
 
 func TestCodexTransportReconnectsWithoutRepeatingAppServerInitialization(t *testing.T) {

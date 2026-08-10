@@ -57,7 +57,9 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		return
 	}
 	var resume v1ResumeRequest
-	if err := c.ShouldBindJSON(&resume); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&resume); err != nil {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode resume request", err))
 		return
 	}
@@ -130,7 +132,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		RequestHash: stored.RequestHash, AgentName: stored.Agent, Cmd: command, Prompt: request.Prompt,
 		Model: request.Model, Env: request.Env, WorkDir: workDir, TaskID: request.TaskID,
 		Request: &request, SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: request.PTY,
-		SandboxProfile: runtimeSandboxProfile(rt.Name(), true),
+		SandboxProfile: requestSandboxProfile(rt.Name(), true, request),
 	})
 	if err != nil {
 		s.sessions.Remove(stored.ID)
@@ -148,7 +150,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	generation, err := s.durableStore.CreateGeneration(context.Background(), durable.CreateGenerationParams{
 		SessionID: stored.ID, Runtime: rt.Name(), ContainerID: runtimeID,
 		ImageReference: resolvedImageReference(request, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
-		SandboxProfile: runtimeSandboxProfile(rt.Name(), true),
+		SandboxProfile: requestSandboxProfile(rt.Name(), true, request),
 		ProviderID:     previous.ProviderID, DockerLogDriver: generationDockerLogDriver(rt.Name(), true), CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
@@ -170,7 +172,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, previous.ProviderID, request.Prompt,
-		!request.Interactive, false, s.eventBroker,
+		!request.Interactive, false, nativePolicy(request), s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

@@ -47,6 +47,11 @@ type AgentConfig struct {
 	// AllowedTools restricts which tools the agent can use (agent-specific).
 	AllowedTools []string
 
+	// EnforcePolicy selects provider flags that implement an explicit AgentD
+	// execution policy instead of the legacy unrestricted automation profile.
+	EnforcePolicy  bool
+	PermissionMode string
+
 	// Env provides additional environment variables.
 	Env map[string]string
 

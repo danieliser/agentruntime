@@ -173,10 +173,15 @@ func (s *Server) adoptRecoveredStartingGeneration(sess *session.Session, info ru
 	if !createGeneration && generation.Number == 0 {
 		return durable.NewError(durable.CodeIndeterminate, op, "recovered generation was not durably identifiable", nil)
 	}
+	var admittedRequest SessionRequest
+	if err := json.Unmarshal(stored.RequestManifest, &admittedRequest); err != nil {
+		return durable.NewError(durable.CodeIndeterminate, op, "decode admitted sandbox profile", err)
+	}
+	expectedSandboxProfile := requestSandboxProfile("docker", true, admittedRequest)
 	if stored.Runtime != "docker" || sess.RuntimeName != "docker" ||
 		info.IdempotencyKey != stored.IdempotencyKey || info.RequestHash != stored.RequestHash ||
 		info.AgentName != stored.Agent || info.ImageReference == "" || info.ImageReference == "unknown" ||
-		!strings.HasPrefix(info.ImageDigest, "sha256:") || info.SandboxProfile != runtimeSandboxProfile("docker", true) {
+		!strings.HasPrefix(info.ImageDigest, "sha256:") || info.SandboxProfile != expectedSandboxProfile {
 		return durable.NewError(durable.CodeIndeterminate, op, "container labels do not prove the admitted starting generation", nil)
 	}
 	runtimeID := runtimeGenerationIdentity(sess.Handle, sess.RuntimeName, sess.ID, info.Generation)
@@ -311,13 +316,16 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 			return durable.NewError(durable.CodeIndeterminate, op, "decode stored request manifest", err)
 		}
 	}
+	if _, err := resolveExecutionPolicy(&manifest, stored.Runtime); err != nil {
+		return durable.NewError(durable.CodeIndeterminate, op, "stored execution policy is no longer enforceable", err)
+	}
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
 		"", !manifest.Interactive,
-		true, s.eventBroker,
+		true, nativePolicy(manifest), s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

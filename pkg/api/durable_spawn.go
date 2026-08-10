@@ -125,7 +125,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		Cmd: runtimeSpawnCommand(command, rt.Name(), req.Agent), Prompt: req.Prompt, Model: req.Model,
 		Env: req.Env, WorkDir: workDir, TaskID: req.TaskID, Request: &req,
 		SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: req.PTY,
-		SandboxProfile: runtimeSandboxProfile(rt.Name(), true),
+		SandboxProfile: requestSandboxProfile(rt.Name(), true, req),
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
@@ -141,7 +141,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
 		SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
 		ImageReference: resolvedImageReference(req, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
-		SandboxProfile: runtimeSandboxProfile(rt.Name(), true), DockerLogDriver: generationDockerLogDriver(rt.Name(), true),
+		SandboxProfile: requestSandboxProfile(rt.Name(), true, req), DockerLogDriver: generationDockerLogDriver(rt.Name(), true),
 		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
@@ -169,7 +169,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, nativeprotocol.Provider(req.Agent), generation.Number, providerID,
-		req.Prompt, !req.Interactive, false, s.eventBroker,
+		req.Prompt, !req.Interactive, false, nativePolicy(req), s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

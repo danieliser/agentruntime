@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestClaudeBuildCmd_WithResumeSession(t *testing.T) {
 	a := &ClaudeAgent{}
@@ -69,5 +72,31 @@ func TestClaudeBuildCmd_NativeStreamUsesBidirectionalJSON(t *testing.T) {
 	}
 	if contains(cmd, "-p") {
 		t.Fatalf("native stream prompt must arrive over stdin, got %v", cmd)
+	}
+}
+
+func TestClaudeBuildCmdEnforcesRestrictedToolAndPermissionPolicy(t *testing.T) {
+	cmd, err := (&ClaudeAgent{}).BuildCmd("", AgentConfig{
+		NativeStream: true, EnforcePolicy: true, PermissionMode: "dontAsk",
+		AllowedTools: []string{"WebSearch"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(cmd, "--dangerously-skip-permissions") || slices.Contains(cmd, "--allow-dangerously-skip-permissions") {
+		t.Fatalf("restricted Claude command bypasses permissions: %v", cmd)
+	}
+	for _, sequence := range [][2]string{
+		{"--permission-mode", "dontAsk"}, {"--tools", "WebSearch"},
+		{"--mcp-config", `{"mcpServers":{}}`},
+	} {
+		if !containsSequence(cmd, sequence[0], sequence[1]) {
+			t.Fatalf("restricted Claude command missing %v: %v", sequence, cmd)
+		}
+	}
+	for _, flag := range []string{"--strict-mcp-config", "--disable-slash-commands", "--safe-mode"} {
+		if !slices.Contains(cmd, flag) {
+			t.Fatalf("restricted Claude command missing %s: %v", flag, cmd)
+		}
 	}
 }

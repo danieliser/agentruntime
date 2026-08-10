@@ -27,6 +27,7 @@ func AttachNativeSessionIO(
 	initialPrompt string,
 	stopOnTurnCompletion bool,
 	reconnect bool,
+	policy nativeprotocol.InputPolicy,
 	broker *eventstream.Broker,
 	terminalReason func() string,
 	onAttach func(nativeprotocol.Transport),
@@ -72,7 +73,7 @@ func AttachNativeSessionIO(
 	bootstrapCtx, cancelBootstrap := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelBootstrap()
 	if err := transport.Bootstrap(bootstrapCtx, nativeprotocol.BootstrapRequest{
-		ProviderID: providerID, ClientName: "agentruntime", ClientVersion: "v1", Reconnect: reconnect,
+		ProviderID: providerID, ClientName: "agentruntime", ClientVersion: "v1", Reconnect: reconnect, Policy: policy,
 	}); err != nil {
 		_ = transport.Close()
 		return err
