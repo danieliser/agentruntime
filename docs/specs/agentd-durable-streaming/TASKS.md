@@ -1,8 +1,8 @@
 # AgentD Durable Native Streaming — Task Sheet
 
-Status: **G0 + G1 + G2 + G3 + G4 + G5 APPROVED / PHASE 8 COMPLETE**
+Status: **G0 + G1 + G2 + G3 + G4 + G5 APPROVED / PHASE 9 COMPLETE / v2.0.0 RELEASED**
 
-Last updated: 2026-08-09
+Last updated: 2026-08-10
 
 Primary scope: Claude + Codex JSON streaming, durable replay, idempotent resume, Docker reconstruction, external trace observers
 
@@ -304,9 +304,16 @@ retirement of non-native methods after this parity checkpoint.
 | OTR-803 | DONE | Implement the external `opentraces-agentd-adapter` executable against AgentD observer protocol v1. | Twenty adapter tests cover hello/health/event/ack/flush/shutdown, private append/fsync, raw-hash validation, gap/conflict detection, stable UUID linkage, concurrent duplicate delivery, partial-write recovery, degraded retry, and clean restart. | L |
 | OTR-804 | DONE | Normalize AgentD Claude/Codex events into OpenTraces trace evidence through the selected external capture seam. | Parser tests reconstruct initial and two-phase follow-up prompts, provider content, Claude/Codex tool shapes/results, usage, errors, lifecycle/control evidence, distinct terminal states, provider/job/generation/image/sandbox linkage, and exact raw hashes. | L |
 | OTR-805 | DONE | Qualify AgentD → adapter → local OpenTraces end to end. | `TestOpenTracesAdapterQualification` launches the real globally installed adapter through AgentD's stripped process environment, ingests content/tool/terminal events, auto-flushes a queryable trace, restarts the adapter, and proves duplicate replay retains the same UUID. Phase-7 manager restart/upgrade tests retain AgentD-ledger/checkpoint coverage; remote status remains unconfigured. | L |
-| OTR-806 | DONE | Package/install the adapter globally while leaving AgentD/Trading Floor adoption explicitly opt-in. | Editable pipx exposes `/Users/danieliser/.local/bin/opentraces-agentd-adapter`; private `~/.agentd/plugins.opentraces.example.json` is ready to copy; active `~/.agentd/plugins.json` remains absent. | S |
+| OTR-806 | DONE | Package/install the adapter globally while leaving AgentD/Trading Floor adoption explicitly opt-in. | Editable pipx exposes `/Users/danieliser/.local/bin/opentraces-agentd-adapter`; the user subsequently opted AgentD in through private `~/.agentd/plugins.json`, while Trading Floor adoption remains its own decision. | S |
 
 **Gate G5 — APPROVED 2026-08-09:** user authorized global OpenTraces setup and the actual external AgentD adapter, while leaving Trading Floor's direct/internal adoption to that product's own decision.
+
+### Phase 9 — Release and local activation
+
+| ID | Status | Task | Acceptance evidence | Size |
+|---|---|---|---|---|
+| REL-901 | DONE | Qualify and publish the breaking durable-native release as `v2.0.0`. | Local race, vet, build, real-Docker, real-OpenTraces, cross-build, and wheel checks pass; GitHub CI passes on Go 1.24.2 and 1.26.x; annotated tag, GitHub release, and four platform wheels are published. | M |
+| REL-902 | DONE | Activate local-only OpenTraces and run the published AgentD against the persistent user data root. | Global `agentd --version` reports `2.0.0`; the live capability handshake reports OpenTraces `0.4.13` healthy with zero unacknowledged events; AgentD uses `~/.agentd`; remote sync remains unconfigured. | S |
 
 ## 7. Qualification tests
 
@@ -378,6 +385,8 @@ Do not parallelize work across a gate whose contract has not been approved.
 - 2026-08-09 — User approved migration v2 for one-way provider identity discovery: an empty generation provider ID may bind once, while a known ID remains immutable.
 - 2026-08-09 — User expanded scope to OpenTraces, then clarified that the traces system must remain externally maintained. AgentD will provide a generic immutable-event observer protocol, replay/checkpoints, supervision, health, and linkage; it will not own OpenTraces schemas, buckets, upgrades, or remote synchronization.
 - 2026-08-09 — User authorized the external OpenTraces adapter and global machine setup. Global personal Claude/Codex/git capture is in scope; Hugging Face authentication/remote sync and automatic AgentD/Trading Floor enablement remain opt-in and are not implied.
+- 2026-08-10 — User explicitly activated the OpenTraces observer for AgentD, retained local/privately controlled storage only, and left direct/internal Trading Floor use to that product.
+- 2026-08-10 — User authorized a release after qualification; the breaking provider-native and durable-session contract is released as `v2.0.0`.
 
 ## 11. Progress log
 
@@ -426,3 +435,5 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Completed Phase 7 and Q-19–24. AgentD now supervises explicitly allowlisted trace adapters with a clean environment, active compatibility/health handshake, nonblocking durable-ledger delivery, exact acknowledgement checkpoints, crash/upgrade-safe replay, scrubbed job/provider/sandbox context, caller-selectable admission policy, versioned health/link APIs, and typed SDK support. OpenTraces storage/schema/sync remain external. Full tests, vet, and targeted race suites pass.
 - 2026-08-09 — Opened Phase 8 after Gate G5 approval. The global baseline is OpenTraces local-only global tracking with Claude/Codex observational hooks, git correlation, and shared skill; the external AgentD adapter will be packaged globally but not silently enabled for AgentD or Trading Floor.
 - 2026-08-09 — Completed Phase 8. OpenTraces is globally installed from the independently maintained checkout through editable pipx, with `agentd`, Claude, Codex, and Pi capabilities. The AgentD adapter durably stores exact frames under a private local root, validates identities/hashes/sequences, recovers concurrent/partial/replayed delivery, normalizes runtime evidence through the registered OpenTraces ingest/security path, and auto-flushes terminal traces after acknowledgement. A real AgentD process-boundary qualification proves the trace is queryable and restart replay is duplicate-safe. Remote synchronization is unconfigured; AgentD and Trading Floor activation remain opt-in.
+- 2026-08-10 — Activated the external OpenTraces adapter through private `~/.agentd/plugins.json`. A live AgentD 2.0 capability handshake reports the adapter healthy with zero ledger lag; capture remains local-only and Trading Floor is not coupled to OpenTraces.
+- 2026-08-10 — Released `v2.0.0` from commit `8870212` after local and GitHub qualification. CI-only races in the malicious-prompt helper and fast Docker log draining were reproduced and fixed before the release tag. Six wheel build jobs and trusted PyPI publication passed; the GitHub release and four supported platform wheels are public. The globally installed daemon now reports `2.0.0` and runs against `~/.agentd`.
