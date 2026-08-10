@@ -101,6 +101,22 @@ func (collector *structuredResultCollector) Observe(eventType string, payload js
 	if collector == nil || collector.failure != nil {
 		return collector.failure
 	}
+	if collector.provider == "codex" {
+		if eventType != "tool.result" {
+			return nil
+		}
+		var completed struct {
+			Item struct {
+				Type  string `json:"type"`
+				Phase string `json:"phase"`
+				Text  string `json:"text"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(payload, &completed) == nil && completed.Item.Type == "agentMessage" && completed.Item.Phase == "final_answer" {
+			return collector.setFinal([]byte(completed.Item.Text))
+		}
+		return nil
+	}
 	if eventType == "content.delta" {
 		var delta struct {
 			Text string `json:"text"`
@@ -115,13 +131,18 @@ func (collector *structuredResultCollector) Observe(eventType string, payload js
 	}
 	if collector.provider == "claude" && eventType == "turn.completed" {
 		if result := claudeResultBytes(payload); len(result) != 0 {
-			if len(result) > collector.limit {
-				collector.failure = durable.NewError(durable.CodeStructuredOutputTooLarge, "collect_structured_output", "final output exceeds max_bytes", nil)
-				return collector.failure
-			}
-			collector.final = result
+			return collector.setFinal(result)
 		}
 	}
+	return nil
+}
+
+func (collector *structuredResultCollector) setFinal(result []byte) error {
+	if len(result) > collector.limit {
+		collector.failure = durable.NewError(durable.CodeStructuredOutputTooLarge, "collect_structured_output", "final output exceeds max_bytes", nil)
+		return collector.failure
+	}
+	collector.final = append(collector.final[:0], result...)
 	return nil
 }
 

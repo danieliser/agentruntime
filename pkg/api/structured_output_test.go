@@ -47,10 +47,11 @@ func TestStructuredResultCollectorValidatesExactBoundedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{`{"url":`, `"https://example.com"}`} {
-		if err := collector.Observe("content.delta", json.RawMessage(`{"text":`+mustJSONString(t, text)+`}`)); err != nil {
-			t.Fatal(err)
-		}
+	if err := collector.Observe("content.delta", json.RawMessage(`{"text":"{\"url\":\"commentary\"}"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := collector.Observe("tool.result", json.RawMessage(`{"item":{"type":"agentMessage","phase":"final_answer","text":"{\"url\":\"https://example.com\"}"}}`)); err != nil {
+		t.Fatal(err)
 	}
 	result, err := collector.Finalize()
 	if err != nil {
@@ -61,7 +62,7 @@ func TestStructuredResultCollectorValidatesExactBoundedBytes(t *testing.T) {
 	}
 
 	invalid, _ := newStructuredResultCollector("codex", &contract)
-	_ = invalid.Observe("content.delta", json.RawMessage(`{"text":"{\"wrong\":true}"}`))
+	_ = invalid.Observe("tool.result", json.RawMessage(`{"item":{"type":"agentMessage","phase":"final_answer","text":"{\"wrong\":true}"}}`))
 	if _, err := invalid.Finalize(); err == nil || !strings.Contains(err.Error(), "structured_output_invalid") {
 		t.Fatalf("invalid result error = %v", err)
 	}
@@ -69,7 +70,7 @@ func TestStructuredResultCollectorValidatesExactBoundedBytes(t *testing.T) {
 	tooLargeContract := contract
 	tooLargeContract.MaxBytes = 4
 	tooLarge, _ := newStructuredResultCollector("codex", &tooLargeContract)
-	if err := tooLarge.Observe("content.delta", json.RawMessage(`{"text":"12345"}`)); err == nil || !strings.Contains(err.Error(), "structured_output_too_large") {
+	if err := tooLarge.Observe("tool.result", json.RawMessage(`{"item":{"type":"agentMessage","phase":"final_answer","text":"12345"}}`)); err == nil || !strings.Contains(err.Error(), "structured_output_too_large") {
 		t.Fatalf("oversized result error = %v", err)
 	}
 }
