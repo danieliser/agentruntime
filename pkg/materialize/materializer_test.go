@@ -223,6 +223,39 @@ func TestMaterialize_RestrictedPolicyDoesNotCopyAmbientCredentialsOrContext(t *t
 	assertPrivatePathMode(t, filepath.Join(codexDir, "config.toml"), 0o600)
 }
 
+func TestMaterialize_RestrictedCodexConsumesExplicitAuthGrant(t *testing.T) {
+	dataDir := t.TempDir()
+	auth := `{"auth_mode":"chatgpt","tokens":{"access_token":"one-session-secret"}}`
+	request := &api.SessionRequest{
+		Agent: "codex", Context: "clean", AutoDiscover: false,
+		ExecutionPolicy: &api.ExecutionPolicy{
+			Version: "1.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+			AllowedTools: []string{"web_search"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+		},
+		Env:          map[string]string{api.CodexAuthJSONEnv: auth, "VISIBLE_SETTING": "retained"},
+		SecretGrants: []string{api.CodexAuthJSONEnv},
+	}
+	result, err := Materialize(request, "explicit-codex-auth", dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexDir := findMount(t, result.Mounts, "/home/agent/.codex").Host
+	actual, err := os.ReadFile(filepath.Join(codexDir, "auth.json"))
+	if err != nil {
+		t.Fatalf("read explicitly granted auth: %v", err)
+	}
+	if string(actual) != auth {
+		t.Fatal("explicitly granted auth bytes changed")
+	}
+	assertPrivatePathMode(t, filepath.Join(codexDir, "auth.json"), 0o600)
+	if _, exists := request.Env[api.CodexAuthJSONEnv]; exists {
+		t.Fatal("consumed Codex auth remained in provider environment")
+	}
+	if request.Env["VISIBLE_SETTING"] != "retained" {
+		t.Fatal("materialization removed an unrelated environment value")
+	}
+}
+
 func assertPrivatePathMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)

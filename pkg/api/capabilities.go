@@ -42,6 +42,14 @@ type workspaceProfileCapabilities struct {
 	AmbientCredentials bool     `json:"ambient_credentials"`
 }
 
+type credentialGrantCapabilities struct {
+	Name            string `json:"name"`
+	Provider        string `json:"provider"`
+	RequestEnv      string `json:"request_env"`
+	Materialization string `json:"materialization"`
+	Persistence     string `json:"persistence"`
+}
+
 type v1Capabilities struct {
 	AgentDVersion           string                         `json:"agentd_version"`
 	CommitHash              string                         `json:"commit_hash"`
@@ -59,6 +67,7 @@ type v1Capabilities struct {
 	Authentication          authenticationCapabilities     `json:"authentication"`
 	StructuredOutput        structuredOutputCapabilities   `json:"structured_output"`
 	WorkspaceProfiles       []workspaceProfileCapabilities `json:"workspace_profiles"`
+	CredentialGrants        []credentialGrantCapabilities  `json:"credential_grants"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -107,6 +116,10 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		WorkspaceProfiles: []workspaceProfileCapabilities{{
 			Name: "ephemeral", Retention: "terminal_receipt", Filesystems: []string{"read_only", "workspace_write"},
 			Network: "public_https", HostMounts: false, AmbientCredentials: false,
+		}},
+		CredentialGrants: []credentialGrantCapabilities{{
+			Name: "codex_auth_json", Provider: "codex", RequestEnv: CodexAuthJSONEnv,
+			Materialization: "private_session_auth_file", Persistence: "name_only",
 		}},
 	}})
 }

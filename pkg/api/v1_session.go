@@ -293,7 +293,7 @@ func durableRequestManifest(request SessionRequest, runtimeName string) (json.Ra
 
 func sensitiveEnvironmentName(name string) bool {
 	upper := strings.ToUpper(strings.TrimSpace(name))
-	for _, exact := range []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDENTIALS", "PRIVATE_KEY", "API_KEY"} {
+	for _, exact := range []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDENTIALS", "PRIVATE_KEY", "API_KEY", CodexAuthJSONEnv} {
 		if upper == exact {
 			return true
 		}

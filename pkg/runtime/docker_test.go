@@ -549,6 +549,36 @@ func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t 
 	}
 }
 
+func TestDockerRestrictedCodexAuthGrantIsFileOnly(t *testing.T) {
+	auth := `{"auth_mode":"chatgpt","tokens":{"access_token":"must-not-enter-env-file"}}`
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04", DataDir: t.TempDir()})
+	request := &apischema.SessionRequest{
+		Agent: "codex", Context: "clean", AutoDiscover: false,
+		ExecutionPolicy: &apischema.ExecutionPolicy{
+			Version: "1.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+			AllowedTools: []string{"web_search"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+		},
+		Env: map[string]string{apischema.CodexAuthJSONEnv: auth}, SecretGrants: []string{apischema.CodexAuthJSONEnv},
+	}
+	spec, err := rt.prepareRun(SpawnConfig{Cmd: []string{"echo", "ok"}, SessionID: "explicit-auth-file-only", Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spec.cleanup()
+	envBytes, err := os.ReadFile(flagValue(spec.args, "--env-file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envBytes), apischema.CodexAuthJSONEnv) || strings.Contains(string(envBytes), "must-not-enter-env-file") {
+		t.Fatal("consumed Codex auth leaked into Docker environment")
+	}
+	codexDir := containerMountHost(spec.args, "/home/agent/.codex")
+	actual, err := os.ReadFile(filepath.Join(codexDir, "auth.json"))
+	if err != nil || string(actual) != auth {
+		t.Fatalf("materialized auth file = %q err=%v", actual, err)
+	}
+}
+
 func TestDockerSpawn_DirectProviderEnv(t *testing.T) {
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 
@@ -769,6 +799,19 @@ func hasContainerMount(args []string, containerPath string) bool {
 		}
 	}
 	return false
+}
+
+func containerMountHost(args []string, containerPath string) string {
+	for index := 0; index < len(args)-1; index++ {
+		if args[index] != "-v" {
+			continue
+		}
+		parts := strings.Split(args[index+1], ":")
+		if len(parts) >= 2 && parts[len(parts)-2] == containerPath {
+			return strings.Join(parts[:len(parts)-2], ":")
+		}
+	}
+	return ""
 }
 
 func TestDockerVolumeName(t *testing.T) {

@@ -223,6 +223,10 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 
 func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionRequest, mounts *[]apischema.Mount) (string, error) {
 	restricted := req.ExecutionPolicy != nil
+	explicitAuth, err := apischema.ExplicitCodexAuthJSON(req)
+	if err != nil {
+		return "", fmt.Errorf("validate explicit Codex credential grant: %w", err)
+	}
 	codexDir, err := codexMountSource(tmpDir, dataDir, sessionID, restricted)
 	if err != nil {
 		return "", err
@@ -301,7 +305,12 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 
 	// Copy Codex auth.json if not already placed by codexMountSource (persistent mode).
 	authDest := filepath.Join(codexDir, "auth.json")
-	if !restricted {
+	if len(explicitAuth) != 0 {
+		if err := os.WriteFile(authDest, explicitAuth, 0o600); err != nil {
+			return "", fmt.Errorf("write explicit Codex credential grant: %w", err)
+		}
+		delete(req.Env, apischema.CodexAuthJSONEnv)
+	} else if !restricted {
 		if _, err := os.Stat(authDest); os.IsNotExist(err) {
 			if authData := discoverCodexAuth(dataDir); authData != nil {
 				_ = os.WriteFile(authDest, authData, 0o600)

@@ -75,6 +75,13 @@ versions, listener and authentication contracts, native providers, configured
 runtimes, replay persistence, Docker reconstruction, structured-output modes,
 workspace profiles, and observer health.
 
+Restricted Codex sessions may receive an explicit one-session `auth.json` via
+the `AGENTD_CODEX_AUTH_JSON` environment grant. The caller must include that
+exact name in `secret_grants`. AgentD validates the JSON, writes it only to the
+private ephemeral Codex home, removes it from the provider environment, stores
+only the grant name, and destroys the file after the terminal receipt. It never
+falls back to host Codex credentials for an explicit-policy session.
+
 ## External OpenTraces observer
 
 AgentD supports separately installed trace systems through observer protocol

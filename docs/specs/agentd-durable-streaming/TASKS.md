@@ -418,6 +418,7 @@ Do not parallelize work across a gate whose contract has not been approved.
 - 2026-08-10 — User authorized a release after qualification; the breaking provider-native and durable-session contract is released as `v2.0.0`.
 - 2026-08-10 — Trading Floor returned an activation audit identifying dropped native model controls, all-interface unauthenticated HTTP, unproven/widened provider permissions, missing unified tool restrictions, structured result proof, and empty ephemeral workspace. The user authorized implementation; these requirements are locked as Phase 10 and Gate G6 without broadening OpenTraces authority.
 - 2026-08-10 — ACT-1007 completed. AgentD now exposes exact source identity and all admission-critical contract versions/profiles through capabilities and the Go client; release packaging injects both version and commit, and `--require-build` rejects checkout/installed-artifact drift before paid work is submitted. ACT-1008 acceptance canary is now active.
+- 2026-08-10 — ACT-1008 first live probe failed closed when the explicitly supplied API key received upstream `401 Unauthorized`; AgentD retained all 33 ordered error/terminal events, committed a failed receipt, and removed the ephemeral container/state. Added the advertised `AGENTD_CODEX_AUTH_JSON` secret grant: it validates a caller-supplied object, materializes it as a private one-session `auth.json`, removes it from the Docker environment and durable manifest, retains only the grant name, and never restores ambient credential discovery.
 
 ## 11. Progress log
 

@@ -105,6 +105,10 @@ func TestClientDecodesCompleteAdmissionCapabilities(t *testing.T) {
 				"name": "ephemeral", "retention": "terminal_receipt", "filesystems": []string{"read_only", "workspace_write"},
 				"network": "public_https", "host_mounts": false, "ambient_credentials": false,
 			}},
+			"credential_grants": []map[string]any{{
+				"name": "codex_auth_json", "provider": "codex", "request_env": "AGENTD_CODEX_AUTH_JSON",
+				"materialization": "private_session_auth_file", "persistence": "name_only",
+			}},
 		}})
 	}))
 	defer server.Close()
@@ -115,7 +119,8 @@ func TestClientDecodesCompleteAdmissionCapabilities(t *testing.T) {
 	if capabilities.AgentDVersion != "2.1.0" || capabilities.CommitHash == "" || capabilities.ListenerScope != "loopback" ||
 		capabilities.Authentication.WebSocketTransport != "authenticated_subprotocol" || len(capabilities.ExecutionPolicyVersions) != 1 ||
 		!capabilities.StructuredOutput.NativeEnforced || capabilities.StructuredOutput.ResultEvent != "output.final" ||
-		len(capabilities.WorkspaceProfiles) != 1 || capabilities.WorkspaceProfiles[0].AmbientCredentials {
+		len(capabilities.WorkspaceProfiles) != 1 || capabilities.WorkspaceProfiles[0].AmbientCredentials ||
+		len(capabilities.CredentialGrants) != 1 || capabilities.CredentialGrants[0].RequestEnv != "AGENTD_CODEX_AUTH_JSON" {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
 }

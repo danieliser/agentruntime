@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 )
@@ -23,6 +24,9 @@ type resolvedExecutionPolicy struct {
 // remains the documented legacy profile for v2.0 client compatibility.
 func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolvedExecutionPolicy, error) {
 	const op = "resolve_execution_policy"
+	if _, err := apischema.ExplicitCodexAuthJSON(request); err != nil {
+		return resolvedExecutionPolicy{}, durable.NewError(durable.CodeInvalidArgument, op, "invalid explicit credential grant", err)
+	}
 	if request == nil || request.ExecutionPolicy == nil {
 		return resolvedExecutionPolicy{}, nil
 	}

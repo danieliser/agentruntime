@@ -77,6 +77,14 @@ type WorkspaceProfileCapabilities struct {
 	AmbientCredentials bool     `json:"ambient_credentials"`
 }
 
+type CredentialGrantCapabilities struct {
+	Name            string `json:"name"`
+	Provider        string `json:"provider"`
+	RequestEnv      string `json:"request_env"`
+	Materialization string `json:"materialization"`
+	Persistence     string `json:"persistence"`
+}
+
 // Capabilities is the v1 compatibility handshake a caller checks before
 // submitting paid work.
 type Capabilities struct {
@@ -96,6 +104,7 @@ type Capabilities struct {
 	Authentication          AuthenticationCapabilities     `json:"authentication"`
 	StructuredOutput        StructuredOutputCapabilities   `json:"structured_output"`
 	WorkspaceProfiles       []WorkspaceProfileCapabilities `json:"workspace_profiles"`
+	CredentialGrants        []CredentialGrantCapabilities  `json:"credential_grants"`
 }
 
 type PluginStatus struct {

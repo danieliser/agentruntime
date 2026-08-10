@@ -335,6 +335,57 @@ func TestV1CreateSessionRejectsUndeclaredSecretEnvironment(t *testing.T) {
 	}
 }
 
+func TestV1CreateSessionRejectsUndeclaredOrMalformedCodexAuthGrant(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	counter := &atomic.Int32{}
+	ts := newV1SessionTestServer(t, store, counter)
+	base := map[string]any{
+		"idempotency_key": "job-explicit-codex-auth", "agent": "codex", "runtime": "test", "prompt": "reject",
+		"env": map[string]string{CodexAuthJSONEnv: `{"tokens":{"access_token":"secret"}}`},
+	}
+	undeclared := postV1Session(t, ts.URL, base)
+	defer undeclared.Body.Close()
+	if undeclared.StatusCode != http.StatusBadRequest || counter.Load() != 0 {
+		t.Fatalf("undeclared Codex auth status=%d spawn=%d", undeclared.StatusCode, counter.Load())
+	}
+	malformed := cloneJSONMap(t, base)
+	malformed["idempotency_key"] = "job-malformed-codex-auth"
+	malformed["secret_grants"] = []string{CodexAuthJSONEnv}
+	malformed["env"] = map[string]string{CodexAuthJSONEnv: `{not-json`}
+	response := postV1Session(t, ts.URL, malformed)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || counter.Load() != 0 {
+		t.Fatalf("malformed Codex auth status=%d spawn=%d", response.StatusCode, counter.Load())
+	}
+}
+
+func TestDurableManifestRetainsOnlyExplicitCodexAuthGrantName(t *testing.T) {
+	request := SessionRequest{
+		Agent: "codex", Prompt: "public research",
+		ExecutionPolicy: &ExecutionPolicy{
+			Version: ExecutionPolicyVersion, Workspace: "ephemeral", WorkspaceRetention: "terminal_receipt",
+			Filesystem: "read_only", Network: "public_https", AllowedTools: []string{"web_search"},
+			MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+		},
+		Env:          map[string]string{CodexAuthJSONEnv: `{"tokens":{"access_token":"must-not-persist"}}`},
+		SecretGrants: []string{CodexAuthJSONEnv},
+	}
+	manifest, grants, _, err := durableRequestManifest(request, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(manifest, []byte("must-not-persist")) || bytes.Contains(manifest, []byte(CodexAuthJSONEnv)) {
+		t.Fatalf("durable manifest leaked explicit credential: %s", manifest)
+	}
+	if len(grants) != 1 || grants[0] != CodexAuthJSONEnv {
+		t.Fatalf("durable grant names = %v", grants)
+	}
+}
+
 func TestV1ClaudeOutputUsesDurableNativeLedger(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {

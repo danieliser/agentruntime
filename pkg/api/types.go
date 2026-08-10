@@ -15,3 +15,5 @@ type TraceConfig = apischema.TraceConfig
 type ExecutionPolicy = apischema.ExecutionPolicy
 type LifecycleConfig = apischema.LifecycleConfig
 type StructuredOutput = apischema.StructuredOutput
+
+const CodexAuthJSONEnv = apischema.CodexAuthJSONEnv

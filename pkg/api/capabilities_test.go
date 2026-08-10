@@ -75,6 +75,13 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 				Filesystems []string `json:"filesystems"`
 				Network     string   `json:"network"`
 			} `json:"workspace_profiles"`
+			CredentialGrants []struct {
+				Name            string `json:"name"`
+				Provider        string `json:"provider"`
+				RequestEnv      string `json:"request_env"`
+				Materialization string `json:"materialization"`
+				Persistence     string `json:"persistence"`
+			} `json:"credential_grants"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
@@ -99,6 +106,11 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		envelope.Data.WorkspaceProfiles[0].Name != "ephemeral" || envelope.Data.WorkspaceProfiles[0].Retention != "terminal_receipt" ||
 		envelope.Data.WorkspaceProfiles[0].Network != "public_https" || !containsString(envelope.Data.WorkspaceProfiles[0].Filesystems, "read_only") {
 		t.Fatalf("capability data = %+v", envelope.Data)
+	}
+	if len(envelope.Data.CredentialGrants) != 1 || envelope.Data.CredentialGrants[0].Name != "codex_auth_json" ||
+		envelope.Data.CredentialGrants[0].Provider != "codex" || envelope.Data.CredentialGrants[0].RequestEnv != CodexAuthJSONEnv ||
+		envelope.Data.CredentialGrants[0].Materialization != "private_session_auth_file" || envelope.Data.CredentialGrants[0].Persistence != "name_only" {
+		t.Fatalf("credential grant capabilities = %+v", envelope.Data.CredentialGrants)
 	}
 }
 
