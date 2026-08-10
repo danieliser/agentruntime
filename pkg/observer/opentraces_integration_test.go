@@ -132,6 +132,6 @@ func qualificationEvent(
 		SchemaVersion: "1.0", EventID: fmt.Sprintf("evt_opentraces_qualification_%d", sequence),
 		SessionID: "11111111-1111-4111-8111-111111111111", Generation: 1, Sequence: sequence,
 		Timestamp: time.Date(2026, 8, 9, 12, 0, int(sequence), 0, time.UTC), Type: eventType,
-		Stream: stream, Payload: payload, Raw: raw, RawSHA256: hex.EncodeToString(digest[:]),
+		Stream: stream, Payload: payload, Raw: raw, RawSHA256: "sha256:" + hex.EncodeToString(digest[:]),
 	}
 }
