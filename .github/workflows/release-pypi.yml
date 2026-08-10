@@ -55,8 +55,15 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          go build -trimpath -ldflags="-s -w" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+          go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+
+      - name: Verify embedded version
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: test "$(packages/agentd-py/agentruntime_agentd/bin/agentd --version)" = "${VERSION}"
 
       - name: Patch version in pyproject.toml
         working-directory: packages/agentd-py
@@ -123,8 +130,9 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          go build -trimpath -ldflags="-s -w" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+          go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 
       - name: Patch version in pyproject.toml
         working-directory: packages/agentd-py

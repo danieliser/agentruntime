@@ -2,6 +2,77 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.0.0] — 2026-08-10
+
+AgentD 2.0 replaces the sidecar-era execution and byte-stream contracts with
+provider-native Claude/Codex transport, durable logical sessions, replayable
+typed events, reconstructable Docker generations, and external trace
+observers. This is a deliberately breaking release.
+
+### Breaking changes
+
+- Removed the execution sidecar, its WebSocket/health port, and its normalized
+  NDJSON protocol. Claude stream-json and Codex app-server JSON-RPC records are
+  now the canonical provider transport.
+- Removed unversioned session, log, and bidirectional WebSocket routes plus the
+  corresponding legacy Go client methods. Consumers must use `/api/v1` and
+  sequence-based replay; old byte offsets are not v1 cursors.
+- Removed Grok and Cursor from the default runtime registry. AgentD 2.0
+  qualifies native Claude and Codex execution only.
+- Replaced in-memory duplicate-session behavior with durable idempotent create:
+  the same key and request returns the same logical session; conflicting
+  request content returns `idempotency_conflict`.
+- New state defaults to the private `~/.agentd` data root. Pre-v1 NDJSON chat
+  history remains read-only and is labeled `legacy_ndjson_unverified`.
+
+### Durable sessions and streaming
+
+- Added an append-only SQLite session, generation, event, control, and terminal
+  receipt store with private filesystem permissions, integrity checks, and
+  hashed backup/restore manifests.
+- Added stable JSON event envelopes with schema version, event ID, logical
+  sequence, generation, stream class, exact raw bytes, and raw SHA-256.
+- Added commit-before-publish fanout, paginated replay from `after_sequence`,
+  and a race-free stored-to-live WebSocket handshake with explicit gap and
+  `indeterminate` reporting.
+- Added durable prompt/steer, interrupt, cancel, administrative terminate,
+  timeout, reconnect, and lost-generation resume controls with idempotency keys
+  and requested/dispatched proof.
+- Added immutable terminal receipts that distinguish completion, failure,
+  cancellation, timeout, crash, termination, and indeterminate recovery.
+
+### Docker reconstruction
+
+- Docker sessions now run provider commands directly over attach/logs/wait and
+  survive AgentD restarts without launching a duplicate provider process.
+- Persisted and labeled job/session identity, request hash, generation,
+  container ID, image reference and digest, and sandbox-profile version.
+- Added startup reconciliation for running, exited, missing, duplicate, and
+  crash-before-bind containers, including exact replay-prefix deduplication.
+- Added controlled shutdown that closes admission, drains local work, and
+  preserves reconstructable Docker generations.
+
+### Clients and observers
+
+- Migrated `agentd attach`, `agentd dispatch`, the TUI, embedded dashboard,
+  named chats, chat history, and the Go client to the durable v1 API.
+- Added a version/capability handshake for AgentD, API, event schema, native
+  providers, runtimes, replay, reconstruction, lifecycle controls, and plugins.
+- Added an allowlisted external observer protocol with clean environments,
+  compatibility handshake, replay-safe acknowledgements, durable checkpoints,
+  health/lag reporting, and caller-selected `best_effort` or `required` policy.
+- Qualified the independently maintained OpenTraces adapter end to end. Trace
+  capture is local-only unless a separate remote is explicitly configured.
+
+### Migration
+
+- Update callers to `/api/v1`, persist the last contiguous event sequence, and
+  reconnect with `after_sequence` before following the live stream.
+- Treat create keys as durable job identities and reuse them only with the
+  exact same request.
+- Configure optional observers in `~/.agentd/plugins.json`; observer failure
+  never gains lifecycle authority over a session.
+
 ## [0.9.0] — 2026-07-21
 
 Harness refresh: adapters re-verified against the July 2026 CLI surfaces,
