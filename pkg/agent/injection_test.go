@@ -302,7 +302,9 @@ func TestAgentInjectionHelperProcess(t *testing.T) {
 		return
 	}
 
-	fmt.Fprintf(os.Stdout, "ENV:%s\n", os.Getenv(helperEchoEnv))
+	if value, ok := os.LookupEnv(helperEchoEnv); ok {
+		fmt.Fprintf(os.Stdout, "ENV:%s\n", value)
+	}
 	time.Sleep(30 * time.Second)
 	os.Exit(0)
 }
