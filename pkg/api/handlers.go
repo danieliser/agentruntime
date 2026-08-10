@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -200,6 +199,10 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 			return
 		}
 	}
+	if err := s.checkRuntimeAdmission(c.Request.Context(), req, rt); err != nil {
+		writeDurableError(c, err)
+		return
+	}
 	result, err := s.admitV1Session(c.Request.Context(), req, rt.Name())
 	if err != nil {
 		writeDurableError(c, err)
@@ -214,15 +217,11 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	sess := session.NewSessionWithID(requestedID, req.TaskID, req.Agent, rt.Name(), req.Tags)
 	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 	if err := s.sessions.Add(sess); err != nil {
-		if errors.Is(err, session.ErrMaxSessions) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 
@@ -248,7 +247,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
-		writeDurableError(c, err)
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 	ctx := context.Background()
@@ -272,7 +271,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 
@@ -281,7 +280,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	if runtimeID == "" {
 		_ = handle.Kill()
 		s.sessions.Remove(sess.ID)
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "activate_v1_generation", "runtime did not expose a reconstructable identity", nil))
+		s.writeAdmittedFailure(c, admitted.ID, durable.NewError(durable.CodeIndeterminate, "activate_v1_generation", "runtime did not expose a reconstructable identity", nil))
 		return
 	}
 	nativeGeneration := nativeV1Agent(req.Agent)
@@ -295,7 +294,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	if err != nil {
 		_ = handle.Kill()
 		s.sessions.Remove(sess.ID)
-		writeDurableError(c, err)
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 	if _, err := s.durableStore.TransitionGeneration(lifecycleCtx, durable.TransitionGenerationParams{
@@ -304,7 +303,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	}); err != nil {
 		_ = handle.Kill()
 		s.sessions.Remove(sess.ID)
-		writeDurableError(c, err)
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 	admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
@@ -313,7 +312,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	if err != nil {
 		_ = handle.Kill()
 		s.sessions.Remove(sess.ID)
-		writeDurableError(c, err)
+		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 	_, nativeStdio := handle.(runtime.NativeStdioHandle)
@@ -363,8 +362,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 			log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)
 			_ = handle.Kill()
 			s.sessions.Remove(sess.ID)
-			s.finalizeV1Session(sess.ID, runtime.ExitResult{Code: -1, Err: err}, err)
-			writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "attach_native_session", "attach native event transport", err))
+			s.writeAdmittedFailure(c, admitted.ID, durable.NewError(durable.CodeIndeterminate, "attach_native_session", "attach native event transport", err))
 			return
 		}
 	} else {

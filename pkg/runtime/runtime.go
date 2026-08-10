@@ -32,6 +32,13 @@ type Runtime interface {
 	Cleanup(ctx context.Context) error
 }
 
+// AdmissionChecker proves that a runtime can accept work before AgentD writes
+// a durable logical-session admission. Implementations must be read-only and
+// bounded by the caller context.
+type AdmissionChecker interface {
+	CheckAdmission(context.Context) error
+}
+
 // EphemeralSessionReleaser is implemented by runtimes that retain resources
 // only until AgentD commits the immutable terminal receipt.
 type EphemeralSessionReleaser interface {

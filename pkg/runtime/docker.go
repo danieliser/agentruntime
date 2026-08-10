@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/materialize"
@@ -95,6 +96,17 @@ type dockerRunSpec struct {
 }
 
 func (r *DockerRuntime) Name() string { return "docker" }
+
+// CheckAdmission verifies both Docker CLI discovery and daemon reachability
+// without creating a container or otherwise mutating runtime state.
+func (r *DockerRuntime) CheckAdmission(ctx context.Context) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "ps", "-q", "--no-trunc"); err != nil {
+		return fmt.Errorf("Docker runtime unavailable: %w", err)
+	}
+	return nil
+}
 
 // dockerCmd returns an exec.Cmd for "docker <args>" with DOCKER_HOST set if configured.
 func (r *DockerRuntime) dockerCmd(ctx context.Context, args ...string) *exec.Cmd {

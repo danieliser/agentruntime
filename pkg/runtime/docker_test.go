@@ -20,6 +20,39 @@ func TestDockerRuntime_Name(t *testing.T) {
 	}
 }
 
+func TestDockerRuntimeAdmissionCheckProvesCLIAndDaemonAvailability(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "docker.log")
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "`+logFile+`"
+if [ "$*" = "ps -q --no-trunc" ]; then
+  exit 0
+fi
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	runtime := NewDockerRuntime(DockerConfig{})
+	if err := runtime.CheckAdmission(context.Background()); err != nil {
+		t.Fatalf("Docker admission check failed: %v", err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil || string(data) != "ps -q --no-trunc\n" {
+		t.Fatalf("Docker admission proof log=%q err=%v", data, err)
+	}
+}
+
+func TestDockerRuntimeAdmissionCheckFailsWhenDaemonIsUnavailable(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+echo "Cannot connect to the Docker daemon" >&2
+exit 1
+`)
+	runtime := NewDockerRuntime(DockerConfig{})
+	if err := runtime.CheckAdmission(context.Background()); err == nil || !strings.Contains(err.Error(), "Docker runtime unavailable") {
+		t.Fatalf("Docker admission error=%v", err)
+	}
+}
+
 func TestDockerRecover_ReturnsSessionID(t *testing.T) {
 	stateDir := t.TempDir()
 	installFakeDocker(t, fmt.Sprintf(`#!/bin/sh

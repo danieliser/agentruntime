@@ -73,8 +73,40 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 		}
 		discovered[recoveryGenerationKey(info.SessionID, info.Generation)] = struct{}{}
 	}
+	s.reconcileGenerationlessAdmissions(confirmedRuntimes)
 	s.reconcileMissingGenerations(discovered, confirmedRuntimes)
 	s.reconcileTerminalRetention(confirmedRuntimes)
+}
+
+func (s *Server) reconcileGenerationlessAdmissions(confirmedRuntimes []string) {
+	if s.durableStore == nil || s.eventBroker == nil || len(confirmedRuntimes) == 0 {
+		return
+	}
+	confirmed := make(map[string]struct{}, len(confirmedRuntimes))
+	for _, name := range confirmedRuntimes {
+		confirmed[name] = struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sessions, err := s.durableStore.ListSessions(ctx)
+	if err != nil {
+		log.Printf("generationless admission reconciliation could not list sessions: %v", err)
+		return
+	}
+	for _, stored := range sessions {
+		if stored.State.Terminal() || stored.ActiveGeneration != 0 || (stored.State != durable.StateCreated && stored.State != durable.StateStarting) {
+			continue
+		}
+		if _, ok := confirmed[stored.Runtime]; !ok {
+			continue
+		}
+		cause := durable.NewError(durable.CodeIndeterminate, "reconcile_generationless_admission", "admitted session has no runtime generation after confirmed recovery", nil)
+		if _, err := s.settleAdmittedSession(ctx, stored.ID, durable.StateIndeterminate, "indeterminate", cause); err != nil {
+			log.Printf("[session %s] generationless admission settlement failed: %v", stored.ID, err)
+			continue
+		}
+		log.Printf("[session %s] generationless admission terminalized as indeterminate", stored.ID)
+	}
 }
 
 func (s *Server) reconcileTerminalRetention(confirmedRuntimes []string) {

@@ -348,6 +348,44 @@ func (s *Server) handleV1NativeStop(c *gin.Context, kind string, outcome durable
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
 		return
 	}
+	reason := "cancelled"
+	if kind == "terminate" {
+		reason = "terminated"
+	}
+	stored, err := s.durableStore.GetSession(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	if stored.State.Terminal() {
+		if stored.State != outcome {
+			writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "session is already terminal", nil))
+			return
+		}
+		receipt, receiptErr := s.durableStore.GetTerminalReceipt(c.Request.Context(), stored.ID)
+		if receiptErr != nil {
+			writeDurableError(c, receiptErr)
+			return
+		}
+		if receipt.Reason != reason {
+			writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "session is already terminal with a different reason", nil))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": stored.ID, "accepted": true, "idempotent": true}})
+		return
+	}
+	if stored.ActiveGeneration == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cause := durable.NewError(durable.CodeInvalidState, op, kind+" requested before a runtime generation started", nil)
+		settled, settleErr := s.settleAdmittedSession(ctx, stored.ID, outcome, reason, cause)
+		if settleErr != nil {
+			writeDurableError(c, settleErr)
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": settled.ID, "accepted": true}})
+		return
+	}
 	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, kind, map[string]any{})
 	if err != nil {
 		writeDurableError(c, err)

@@ -136,6 +136,108 @@ func TestV1CreateSessionIsConcurrentAndRestartIdempotent(t *testing.T) {
 	}
 }
 
+func TestV1CreateSessionChecksRuntimeBeforeDurableAdmission(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&sleepAgent{})
+	runtimeUnavailable := &admissionTestRuntime{admissionErr: fmt.Errorf("docker executable unavailable")}
+	server := NewServer(session.NewManager(), runtimeUnavailable, registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+
+	response := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-runtime-unavailable", "agent": "sleep-test", "runtime": "test", "prompt": "never admit",
+	})
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable runtime status=%d, want 503", response.StatusCode)
+	}
+	sessions, err := store.ListSessions(context.Background())
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("unavailable runtime durably admitted sessions=%+v err=%v", sessions, err)
+	}
+}
+
+func TestV1DuplicateCreateDoesNotRequireRuntimeToRemainAvailable(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&sleepAgent{})
+	rt := &admissionTestRuntime{spawnErr: fmt.Errorf("first spawn fails after admission")}
+	server := NewServer(session.NewManager(), rt, registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	body := map[string]any{
+		"idempotency_key": "job-replay-while-unavailable", "agent": "sleep-test", "runtime": "test", "prompt": "same request",
+	}
+	first := postV1Session(t, httpServer.URL, body)
+	defer first.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, first.Body, &created)
+	if first.StatusCode != http.StatusCreated || created.Data.SessionID == "" || created.Data.State != durable.StateFailed {
+		t.Fatalf("first admitted failure status=%d data=%+v", first.StatusCode, created.Data)
+	}
+	rt.admissionErr = fmt.Errorf("runtime now unavailable")
+	repeat := postV1Session(t, httpServer.URL, body)
+	defer repeat.Body.Close()
+	var replay struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, repeat.Body, &replay)
+	if repeat.StatusCode != http.StatusOK || replay.Data.SessionID != created.Data.SessionID || replay.Data.State != durable.StateFailed {
+		t.Fatalf("unavailable duplicate status=%d data=%+v", repeat.StatusCode, replay.Data)
+	}
+}
+
+func TestV1CreateSessionReturnsTerminalIdentityWhenSpawnFailsAfterAdmission(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&sleepAgent{})
+	runtimeFailure := &admissionTestRuntime{spawnErr: fmt.Errorf("runtime disappeared after admission")}
+	server := NewServer(session.NewManager(), runtimeFailure, registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+
+	response := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-spawn-failed", "agent": "sleep-test", "runtime": "test", "prompt": "admit then fail",
+	})
+	defer response.Body.Close()
+	var envelope struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, response.Body, &envelope)
+	if response.StatusCode != http.StatusCreated || envelope.Data.SessionID == "" || envelope.Data.State != durable.StateFailed || envelope.Data.Generation != 1 {
+		t.Fatalf("spawn failure response status=%d data=%+v", response.StatusCode, envelope.Data)
+	}
+	receipt, err := store.GetTerminalReceipt(context.Background(), envelope.Data.SessionID)
+	if err != nil || receipt.State != durable.StateFailed || receipt.Generation != 1 {
+		t.Fatalf("spawn failure receipt=%+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: envelope.Data.SessionID, Limit: 10})
+	if err != nil || len(page.Events) != 1 || page.Events[0].Type != "session.failed" {
+		t.Fatalf("spawn failure evidence=%+v err=%v", page, err)
+	}
+}
+
 func TestV1ListSessionsReturnsDurableActiveAndTerminalHistory(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {
@@ -647,6 +749,56 @@ func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
 	}
 }
 
+func TestV1CancelClosesGenerationlessStartingAdmissionIdempotently(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: "generationless-cancel", IdempotencyKey: "generationless-cancel-job", RequestHash: "sha256:generationless-cancel",
+		RequestManifest: []byte(`{"agent":"codex","runtime":"docker"}`), Agent: "codex", Runtime: "docker", CreatedAt: time.Unix(2_100, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+		SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Unix(2_101, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(session.NewManager(), &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	body := map[string]any{"idempotency_key": "close-generationless"}
+	response := postV1Control(t, httpServer.URL, created.Session.ID, "cancel", body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("generationless cancel status=%d", response.StatusCode)
+	}
+	repeat := postV1Control(t, httpServer.URL, created.Session.ID, "cancel", body)
+	defer repeat.Body.Close()
+	if repeat.StatusCode != http.StatusOK {
+		t.Fatalf("generationless repeat cancel status=%d", repeat.StatusCode)
+	}
+	terminate := postV1Control(t, httpServer.URL, created.Session.ID, "terminate", map[string]any{"idempotency_key": "terminate-generationless"})
+	defer terminate.Body.Close()
+	if terminate.StatusCode != http.StatusConflict {
+		t.Fatalf("generationless terminate after cancel status=%d, want 409", terminate.StatusCode)
+	}
+	stored, err := store.GetSession(ctx, created.Session.ID)
+	if err != nil || stored.State != durable.StateCancelled || stored.ActiveGeneration != 1 {
+		t.Fatalf("generationless cancelled session=%+v err=%v", stored, err)
+	}
+	receipt, err := store.GetTerminalReceipt(ctx, created.Session.ID)
+	if err != nil || receipt.State != durable.StateCancelled || receipt.Reason != "cancelled" {
+		t.Fatalf("generationless cancelled receipt=%+v err=%v", receipt, err)
+	}
+}
+
 func TestV1TerminateIsDistinctFromCallerCancellation(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {
@@ -1055,6 +1207,23 @@ type countingRuntime struct {
 	Runtime runtime.Runtime
 	count   *atomic.Int32
 }
+
+type admissionTestRuntime struct {
+	admissionErr error
+	spawnErr     error
+}
+
+func (*admissionTestRuntime) Name() string { return "test" }
+func (rt *admissionTestRuntime) CheckAdmission(context.Context) error {
+	return rt.admissionErr
+}
+func (rt *admissionTestRuntime) Spawn(context.Context, runtime.SpawnConfig) (runtime.ProcessHandle, error) {
+	return nil, rt.spawnErr
+}
+func (*admissionTestRuntime) Recover(context.Context) ([]runtime.ProcessHandle, error) {
+	return nil, nil
+}
+func (*admissionTestRuntime) Cleanup(context.Context) error { return nil }
 
 type releasingTestRuntime struct {
 	recoveryTestRuntime

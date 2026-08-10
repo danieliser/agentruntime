@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -12,6 +13,19 @@ import (
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
+
+func TestInstallerLaunchdPathCoversDockerLocations(t *testing.T) {
+	installer, err := os.ReadFile(filepath.Join("..", "..", "install.sh"))
+	if err != nil {
+		t.Fatalf("read installer: %v", err)
+	}
+	content := string(installer)
+	for _, required := range []string{"<key>EnvironmentVariables</key>", "/usr/local/bin", "/opt/homebrew/bin"} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("launchd installer is missing %q", required)
+		}
+	}
+}
 
 type recoveryTestHandle struct {
 	stdoutR *io.PipeReader

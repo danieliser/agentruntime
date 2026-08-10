@@ -195,6 +195,53 @@ func TestRestoreRecoveredNativeSessionAdoptsCrashBeforeGenerationCommit(t *testi
 	}
 }
 
+func TestRestoreRecoveredSessionsTerminalizesGenerationlessAdmissions(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	createdAt := time.Unix(1_750, 0).UTC()
+	for index, state := range []durable.SessionState{durable.StateCreated, durable.StateStarting} {
+		sessionID := "generationless-" + string(state)
+		created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+			SessionID: sessionID, IdempotencyKey: sessionID + "-job", RequestHash: "sha256:" + sessionID,
+			RequestManifest: []byte(`{"agent":"claude","runtime":"docker"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt.Add(time.Duration(index) * time.Second),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state == durable.StateStarting {
+			if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{
+				SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: createdAt.Add(2 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	server := NewServer(session.NewManager(), &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+
+	server.RestoreRecoveredSessions(nil, "docker")
+	for _, priorState := range []durable.SessionState{durable.StateCreated, durable.StateStarting} {
+		sessionID := "generationless-" + string(priorState)
+		stored, err := store.GetSession(ctx, sessionID)
+		if err != nil || stored.State != durable.StateIndeterminate || stored.ActiveGeneration != 1 {
+			t.Fatalf("%s recovery session=%+v err=%v", priorState, stored, err)
+		}
+		generation, err := store.GetGeneration(ctx, sessionID, 1)
+		if err != nil || !strings.HasPrefix(generation.ContainerID, unstartedRuntimeIdentityPrefix) || generation.State != durable.GenerationIndeterminate {
+			t.Fatalf("%s recovery generation=%+v err=%v", priorState, generation, err)
+		}
+		receipt, err := store.GetTerminalReceipt(ctx, sessionID)
+		if err != nil || receipt.State != durable.StateIndeterminate || receipt.Generation != 1 || receipt.Reason != "indeterminate" {
+			t.Fatalf("%s recovery receipt=%+v err=%v", priorState, receipt, err)
+		}
+	}
+}
+
 func TestRestoreRecoveredNativeSessionSettlesUnverifiableStartingContainer(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {

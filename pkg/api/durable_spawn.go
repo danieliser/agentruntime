@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -81,6 +82,9 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve native execution", err)
 	}
 	command := resolved.Command
+	if err := s.checkRuntimeAdmission(ctx, req, rt); err != nil {
+		return nil, durable.Session{}, err
+	}
 
 	admission, err := s.admitV1Session(ctx, req, rt.Name())
 	if err != nil {
@@ -94,13 +98,23 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		return existing, admission.Session, nil
 	}
 	stored := admission.Session
+	failAdmission := func(cause error) (*session.Session, durable.Session, error) {
+		s.sessions.Remove(stored.ID)
+		settleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		settled, settleErr := s.settleAdmittedSession(settleCtx, stored.ID, durable.StateFailed, "failed", cause)
+		if settleErr != nil {
+			return nil, stored, durable.NewError(durable.CodeIndeterminate, op, "terminalize admitted session", errors.Join(cause, settleErr))
+		}
+		return nil, settled, cause
+	}
 	sess := session.NewSessionWithID(stored.ID, req.TaskID, req.Agent, rt.Name(), req.Tags)
 	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
 	if err := s.prepareSessionDir(sess, &req, workDir); err != nil {
-		return nil, stored, durable.NewError(durable.CodeIndeterminate, op, "prepare session directory", err)
+		return failAdmission(durable.NewError(durable.CodeIndeterminate, op, "prepare session directory", err))
 	}
 	if err := s.sessions.Add(sess); err != nil {
-		return nil, stored, err
+		return failAdmission(err)
 	}
 
 	volumeName := ""
@@ -118,8 +132,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		SessionID: stored.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
 	})
 	if err != nil {
-		s.sessions.Remove(sess.ID)
-		return nil, stored, err
+		return failAdmission(err)
 	}
 	generationNumber := stored.ActiveGeneration + 1
 	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
@@ -131,15 +144,13 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, req),
 	})
 	if err != nil {
-		s.sessions.Remove(sess.ID)
-		return nil, stored, durable.NewError(durable.CodeIndeterminate, op, "spawn native runtime", err)
+		return failAdmission(durable.NewError(durable.CodeIndeterminate, op, "spawn native runtime", err))
 	}
 	sess.SetRunning(handle)
 	runtimeID := runtimeGenerationIdentity(handle, rt.Name(), sess.ID, generationNumber)
 	if runtimeID == "" {
 		_ = handle.Kill()
-		s.sessions.Remove(sess.ID)
-		return nil, stored, durable.NewError(durable.CodeIndeterminate, op, "runtime did not expose a reconstructable identity", nil)
+		return failAdmission(durable.NewError(durable.CodeIndeterminate, op, "runtime did not expose a reconstructable identity", nil))
 	}
 	generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
 		SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
@@ -149,24 +160,21 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	})
 	if err != nil {
 		_ = handle.Kill()
-		s.sessions.Remove(sess.ID)
-		return nil, stored, err
+		return failAdmission(err)
 	}
 	if _, err := s.durableStore.TransitionGeneration(lifecycleCtx, durable.TransitionGenerationParams{
 		SessionID: sess.ID, Generation: generation.Number, From: durable.GenerationStarting,
 		To: durable.GenerationRunning, At: time.Now().UTC(),
 	}); err != nil {
 		_ = handle.Kill()
-		s.sessions.Remove(sess.ID)
-		return nil, stored, err
+		return failAdmission(err)
 	}
 	stored, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
 		SessionID: sess.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Now().UTC(),
 	})
 	if err != nil {
 		_ = handle.Kill()
-		s.sessions.Remove(sess.ID)
-		return nil, stored, err
+		return failAdmission(err)
 	}
 
 	var active activeNativeSessionRef
@@ -198,9 +206,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		},
 	); err != nil {
 		_ = handle.Kill()
-		s.sessions.Remove(sess.ID)
-		s.finalizeV1Session(sess.ID, runtime.ExitResult{Code: -1, Err: err}, err)
-		return nil, stored, durable.NewError(durable.CodeIndeterminate, op, "attach native transport", err)
+		return failAdmission(durable.NewError(durable.CodeIndeterminate, op, "attach native transport", err))
 	}
 	log.Printf("[session %s] spawned durable internal session: agent=%s runtime=%s generation=%d", sess.ID, req.Agent, rt.Name(), generation.Number)
 	return sess, stored, nil
