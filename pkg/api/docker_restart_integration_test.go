@@ -421,7 +421,7 @@ func prepareDockerRestartProxy(t *testing.T, image string) func() {
 		}
 		createdNetwork = true
 	}
-	if _, err := dockerTestOutput("inspect", "agentruntime-proxy"); err == nil {
+	if _, err := dockerTestOutput("container", "inspect", "agentruntime-proxy"); err == nil {
 		t.Skip("existing agentruntime-proxy makes qualification fixture ownership ambiguous")
 	}
 	if _, err := dockerTestOutput("run", "-d", "--name", "agentruntime-proxy", "--network", "agentruntime-agents", image, "sleep", "300"); err != nil {
