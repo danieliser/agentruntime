@@ -47,20 +47,15 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 	}
 
 	logsCmd := nativeDockerCommand(host, "logs", "--follow", "--since=0", containerID)
-	stdout, err := logsCmd.StdoutPipe()
-	if err != nil {
-		stopDockerCLI(attachCmd)
-		return nil, fmt.Errorf("logs stdout pipe: %w", err)
-	}
-	stderr, err := logsCmd.StderrPipe()
-	if err != nil {
-		_ = stdout.Close()
-		stopDockerCLI(attachCmd)
-		return nil, fmt.Errorf("logs stderr pipe: %w", err)
-	}
+	stdout, stdoutWriter := io.Pipe()
+	stderr, stderrWriter := io.Pipe()
+	logsCmd.Stdout = stdoutWriter
+	logsCmd.Stderr = stderrWriter
 	if err := logsCmd.Start(); err != nil {
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		stopDockerCLI(attachCmd)
 		return nil, fmt.Errorf("start logs: %w", err)
 	}
@@ -102,7 +97,11 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 		handle.done <- inspectDockerExitResult(handle.dockerHost, handle.containerID, code)
 	}()
 	go func() { _ = attachCmd.Wait() }()
-	go func() { _ = logsCmd.Wait() }()
+	go func() {
+		err := logsCmd.Wait()
+		_ = stdoutWriter.CloseWithError(err)
+		_ = stderrWriter.CloseWithError(err)
+	}()
 	return handle, nil
 }
 
