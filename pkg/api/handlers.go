@@ -63,6 +63,10 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		})
 		return
 	}
+	if _, err := resolveExecutionPolicy(&req, rt.Name()); err != nil {
+		writeDurableError(c, err)
+		return
+	}
 
 	mounts := req.EffectiveMounts()
 	workDir := effectiveWorkDir(req.WorkDir, mounts)

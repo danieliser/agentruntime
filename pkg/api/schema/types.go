@@ -46,6 +46,11 @@ type SessionRequest struct {
 	// healthy presence is required before first admission.
 	Trace *TraceConfig `json:"trace,omitempty" yaml:"trace,omitempty"`
 
+	// ExecutionPolicy is an explicit, versioned least-privilege contract. When
+	// present, AgentD rejects any field it cannot enforce rather than widening
+	// the request. Omitted policy retains the documented legacy profile.
+	ExecutionPolicy *ExecutionPolicy `json:"execution_policy,omitempty" yaml:"execution_policy,omitempty"`
+
 	// Context selects the context materialization mode.
 	//   ""      — default: the agent sees whatever its environment provides
 	//   "clean" — the adapter materializes a minimal ephemeral home per agent
@@ -109,6 +114,18 @@ type SessionRequest struct {
 	// flags and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 env var.
 	// The orchestrator must scaffold the team directory before spawning.
 	Team *TeamConfig `json:"team,omitempty" yaml:"team,omitempty"`
+}
+
+// ExecutionPolicy is the caller's enforceable runtime authority grant.
+type ExecutionPolicy struct {
+	Version        string   `json:"version" yaml:"version"`
+	Workspace      string   `json:"workspace" yaml:"workspace"`
+	Filesystem     string   `json:"filesystem" yaml:"filesystem"`
+	Network        string   `json:"network" yaml:"network"`
+	AllowedTools   []string `json:"allowed_tools" yaml:"allowed_tools"`
+	MCPServers     []string `json:"mcp_servers" yaml:"mcp_servers"`
+	HostMounts     []string `json:"host_mounts" yaml:"host_mounts"`
+	ApprovalPolicy string   `json:"approval_policy" yaml:"approval_policy"`
 }
 
 type TraceConfig struct {

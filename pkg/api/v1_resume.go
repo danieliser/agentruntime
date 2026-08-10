@@ -80,6 +80,10 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "stored runtime is unavailable", nil))
 		return
 	}
+	if _, err := resolveExecutionPolicy(&request, rt.Name()); err != nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored execution policy is no longer enforceable", err))
+		return
+	}
 	ag := s.agents.Get(stored.Agent)
 	if ag == nil {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "stored agent is unavailable", nil))

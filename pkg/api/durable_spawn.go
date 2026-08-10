@@ -35,6 +35,9 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if rt == nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("unknown runtime %q", req.Runtime), nil)
 	}
+	if _, err := resolveExecutionPolicy(&req, rt.Name()); err != nil {
+		return nil, durable.Session{}, err
+	}
 	mounts := req.EffectiveMounts()
 	workDir := effectiveWorkDir(req.WorkDir, mounts)
 	if workDir != "" {

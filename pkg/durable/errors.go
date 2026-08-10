@@ -9,16 +9,17 @@ import (
 type ErrorCode string
 
 const (
-	CodeInvalidArgument     ErrorCode = "invalid_argument"
-	CodeNotFound            ErrorCode = "not_found"
-	CodeIdempotencyConflict ErrorCode = "idempotency_conflict"
-	CodeImmutableConflict   ErrorCode = "immutable_conflict"
-	CodeInvalidState        ErrorCode = "invalid_state"
-	CodeInvalidCursor       ErrorCode = "invalid_cursor"
-	CodeEventGap            ErrorCode = "event_gap"
-	CodeBackpressure        ErrorCode = "backpressure"
-	CodeIndeterminate       ErrorCode = "indeterminate"
-	CodeStoreClosed         ErrorCode = "store_closed"
+	CodeInvalidArgument            ErrorCode = "invalid_argument"
+	CodeNotFound                   ErrorCode = "not_found"
+	CodeIdempotencyConflict        ErrorCode = "idempotency_conflict"
+	CodeImmutableConflict          ErrorCode = "immutable_conflict"
+	CodeInvalidState               ErrorCode = "invalid_state"
+	CodeInvalidCursor              ErrorCode = "invalid_cursor"
+	CodeEventGap                   ErrorCode = "event_gap"
+	CodeBackpressure               ErrorCode = "backpressure"
+	CodeIndeterminate              ErrorCode = "indeterminate"
+	CodeStoreClosed                ErrorCode = "store_closed"
+	CodeExecutionPolicyUnsupported ErrorCode = "execution_policy_unsupported"
 )
 
 // Error is the common structured error returned by durable stores.

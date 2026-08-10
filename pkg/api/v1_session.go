@@ -26,17 +26,19 @@ import (
 )
 
 type v1SessionData struct {
-	SessionID      string               `json:"session_id"`
-	IdempotencyKey string               `json:"idempotency_key"`
-	Agent          string               `json:"agent"`
-	Runtime        string               `json:"runtime"`
-	State          durable.SessionState `json:"state"`
-	Generation     int64                `json:"generation"`
-	LastSequence   int64                `json:"last_sequence"`
-	CreatedAt      time.Time            `json:"created_at"`
-	UpdatedAt      time.Time            `json:"updated_at"`
-	EventsURL      string               `json:"events_url"`
-	EventStreamURL string               `json:"event_stream_url"`
+	SessionID           string               `json:"session_id"`
+	IdempotencyKey      string               `json:"idempotency_key"`
+	Agent               string               `json:"agent"`
+	Runtime             string               `json:"runtime"`
+	State               durable.SessionState `json:"state"`
+	Generation          int64                `json:"generation"`
+	LastSequence        int64                `json:"last_sequence"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
+	EventsURL           string               `json:"events_url"`
+	EventStreamURL      string               `json:"event_stream_url"`
+	ExecutionPolicy     *ExecutionPolicy     `json:"execution_policy,omitempty"`
+	ExecutionPolicyHash string               `json:"execution_policy_hash,omitempty"`
 }
 
 type v1TerminalReceiptData struct {
@@ -137,6 +139,9 @@ func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, run
 	if request.IdempotencyKey == "" {
 		return durable.CreateSessionResult{}, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil)
 	}
+	if _, err := resolveExecutionPolicy(&request, runtimeName); err != nil {
+		return durable.CreateSessionResult{}, err
+	}
 	if err := s.validateTraceAdmission(ctx, request); err != nil {
 		return durable.CreateSessionResult{}, err
 	}
@@ -194,6 +199,10 @@ func (s *Server) validateTraceAdmission(ctx context.Context, request SessionRequ
 
 func durableRequestManifest(request SessionRequest, runtimeName string) (json.RawMessage, []string, string, error) {
 	const op = "build_durable_request_manifest"
+	resolvedPolicy, err := resolveExecutionPolicy(&request, runtimeName)
+	if err != nil {
+		return nil, nil, "", err
+	}
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return nil, nil, "", durable.NewError(durable.CodeInvalidArgument, op, "encode request", err)
@@ -205,6 +214,9 @@ func durableRequestManifest(request SessionRequest, runtimeName string) (json.Ra
 	delete(manifest, "idempotency_key")
 	delete(manifest, "secret_grants")
 	manifest["runtime"] = runtimeName
+	if resolvedPolicy.Hash != "" {
+		manifest["execution_policy_hash"] = resolvedPolicy.Hash
+	}
 
 	grants := append([]string(nil), request.SecretGrants...)
 	sort.Strings(grants)
@@ -305,12 +317,14 @@ func (s *Server) writeV1Session(c *gin.Context, status int, stored durable.Sessi
 }
 
 func v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
+	policy, policyHash := manifestExecutionPolicy(stored.RequestManifest)
 	return v1SessionData{
 		SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
 		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
 		Generation: stored.ActiveGeneration, LastSequence: stored.LastSequence,
 		CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt,
 		EventsURL: sessionEventsURL(c, stored.ID), EventStreamURL: sessionEventStreamURL(c, stored.ID),
+		ExecutionPolicy: policy, ExecutionPolicyHash: policyHash,
 	}
 }
 

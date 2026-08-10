@@ -12,3 +12,5 @@ type HealthResponse = apischema.HealthResponse
 type Resources = apischema.Resources
 type TeamConfig = apischema.TeamConfig
 type TraceConfig = apischema.TraceConfig
+type ExecutionPolicy = apischema.ExecutionPolicy
+type LifecycleConfig = apischema.LifecycleConfig
