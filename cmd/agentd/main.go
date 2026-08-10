@@ -29,6 +29,18 @@ import (
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
+const observerStartupSyncTimeout = 5 * time.Second
+
+type startupObserverSyncer interface {
+	Sync(context.Context) error
+}
+
+func syncObserversAtStartup(parent context.Context, observers startupObserverSyncer, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	return observers.Sync(ctx)
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "dispatch" {
 		os.Exit(runDispatchCommand(os.Args[2:]))
@@ -109,7 +121,9 @@ func main() {
 		log.Fatalf("failed to initialize observers: %v", err)
 	}
 	eventBroker.SetCommittedObserver(traceObservers.Notify)
-	if err := traceObservers.Sync(context.Background()); err != nil {
+	// A best-effort observer backlog must not indefinitely delay the runtime
+	// API. The background worker resumes from its durable checkpoint afterward.
+	if err := syncObserversAtStartup(context.Background(), traceObservers, observerStartupSyncTimeout); err != nil {
 		log.Printf("observer startup degraded: %v", err)
 	}
 	traceObservers.Start(context.Background())

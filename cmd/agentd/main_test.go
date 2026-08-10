@@ -1,18 +1,39 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/api"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
+
+type blockingStartupObserver struct{}
+
+func (*blockingStartupObserver) Sync(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestStartupObserverCatchupIsBounded(t *testing.T) {
+	started := time.Now()
+	err := syncObserversAtStartup(context.Background(), &blockingStartupObserver{}, 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("startup observer sync error=%v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("startup observer sync blocked for %s", elapsed)
+	}
+}
 
 func TestInstallerLaunchdPathCoversDockerLocations(t *testing.T) {
 	installer, err := os.ReadFile(filepath.Join("..", "..", "install.sh"))
