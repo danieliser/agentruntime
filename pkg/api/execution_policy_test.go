@@ -26,7 +26,7 @@ func TestResolveExecutionPolicyCanonicalizesPublicResearchProfile(t *testing.T) 
 	if resolved.Hash == "" || !strings.HasPrefix(resolved.Hash, "sha256:") {
 		t.Fatalf("resolved policy hash = %q", resolved.Hash)
 	}
-	if request.ExecutionPolicy.Version != ExecutionPolicyVersion || request.Context != "clean" {
+	if request.ExecutionPolicy.Version != ExecutionPolicyVersion || request.ExecutionPolicy.WorkspaceRetention != "terminal_receipt" || request.Context != "clean" {
 		t.Fatalf("canonical request policy=%+v context=%q", request.ExecutionPolicy, request.Context)
 	}
 	discovery, ok := request.AutoDiscover.(bool)
@@ -71,6 +71,13 @@ func TestResolveExecutionPolicyRejectsUnsupportedOrWidenedRequests(t *testing.T)
 		}},
 		{name: "lifecycle hook", runtime: "docker", mutate: func(request *SessionRequest) { request.Lifecycle = &LifecycleConfig{PreInit: "steer.sh"} }},
 		{name: "approval widening", runtime: "docker", mutate: func(request *SessionRequest) { request.ExecutionPolicy.ApprovalPolicy = "on_request" }},
+		{name: "retention widening", runtime: "docker", mutate: func(request *SessionRequest) { request.ExecutionPolicy.WorkspaceRetention = "forever" }},
+		{name: "claude private context", runtime: "docker", mutate: func(request *SessionRequest) { request.Claude = &ClaudeConfig{ClaudeMD: "private"} }},
+		{name: "claude credential path", runtime: "docker", mutate: func(request *SessionRequest) {
+			request.Claude = &ClaudeConfig{CredentialsPath: "/private/credentials.json"}
+		}},
+		{name: "claude memory", runtime: "docker", mutate: func(request *SessionRequest) { request.Claude = &ClaudeConfig{MemoryPath: "/private/memory"} }},
+		{name: "codex private context", runtime: "docker", mutate: func(request *SessionRequest) { request.Codex = &CodexConfig{Instructions: "private"} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := base()

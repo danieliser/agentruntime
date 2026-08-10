@@ -13,12 +13,13 @@ import (
 )
 
 const (
-	defaultDockerNetworkName = "agentruntime-agents"
-	defaultDockerProxyImage  = "agentruntime-proxy:latest"
-	dockerProxyContainerName = "agentruntime-proxy"
-	dockerProxyPort          = "3128"
-	dockerBridgeName         = "br-agentruntime"
-	defaultAgentRuntimePort  = "8090"
+	defaultDockerNetworkName       = "agentruntime-agents"
+	defaultDockerPolicyNetworkName = "agentruntime-policy-v1"
+	defaultDockerProxyImage        = "agentruntime-proxy:latest"
+	dockerProxyContainerName       = "agentruntime-proxy"
+	dockerProxyPort                = "3128"
+	dockerBridgeName               = "br-agentruntime"
+	defaultAgentRuntimePort        = "8090"
 )
 
 // NetworkManager owns the Docker bridge network and Squid proxy sidecar used
@@ -37,6 +38,13 @@ func (m *NetworkManager) networkName() string {
 		return m.NetworkName
 	}
 	return defaultDockerNetworkName
+}
+
+func (m *NetworkManager) policyNetworkName() string {
+	if m != nil && m.NetworkName != "" {
+		return m.NetworkName + "-policy-v1"
+	}
+	return defaultDockerPolicyNetworkName
 }
 
 func (m *NetworkManager) dockerHost() string {
@@ -69,6 +77,20 @@ func (m *NetworkManager) EnsureNetwork(ctx context.Context) error {
 			return nil
 		}
 		return fmt.Errorf("create docker network %q: %w", m.networkName(), err)
+	}
+	return nil
+}
+
+func (m *NetworkManager) ensurePolicyNetwork(ctx context.Context) error {
+	name := m.policyNetworkName()
+	if dockerNetworkExists(ctx, m.dockerHost(), name) {
+		return nil
+	}
+	if _, err := dockerOutputHost(ctx, m.dockerHost(), "network", "create", "--driver", "bridge", "--internal", name); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("create internal docker network %q: %w", name, err)
 	}
 	return nil
 }
@@ -117,6 +139,9 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	if err := m.EnsureNetwork(ctx); err != nil {
 		return err
 	}
+	if err := m.ensurePolicyNetwork(ctx); err != nil {
+		return err
+	}
 
 	if err := m.ApplyIPTablesRules(ctx); err != nil {
 		return err
@@ -126,7 +151,7 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	state, err := dockerInspectRunningHost(ctx, host, dockerProxyContainerName)
 	if err == nil {
 		if state {
-			return nil
+			return m.connectProxyToPolicyNetwork(ctx)
 		}
 		if err := dockerRemoveContainerHost(ctx, host, dockerProxyContainerName); err != nil {
 			return err
@@ -150,7 +175,14 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 		}
 		return fmt.Errorf("start docker proxy %q: %w", dockerProxyContainerName, err)
 	}
+	return m.connectProxyToPolicyNetwork(ctx)
+}
 
+func (m *NetworkManager) connectProxyToPolicyNetwork(ctx context.Context) error {
+	_, err := dockerOutputHost(ctx, m.dockerHost(), "network", "connect", "--alias", dockerProxyContainerName, m.policyNetworkName(), dockerProxyContainerName)
+	if err != nil && !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "already connected") {
+		return fmt.Errorf("connect proxy to internal policy network: %w", err)
+	}
 	return nil
 }
 
@@ -161,6 +193,18 @@ func (m *NetworkManager) ProxyEnv() map[string]string {
 		"HTTP_PROXY":  url,
 		"HTTPS_PROXY": url,
 		"NO_PROXY":    "localhost,127.0.0.1,host.docker.internal,host-gateway",
+	}
+}
+
+// RestrictedProxyEnv forces all HTTP clients through the dual-homed proxy and
+// deliberately omits host aliases from NO_PROXY. The agent itself is attached
+// only to an internal Docker network with no direct egress route.
+func (m *NetworkManager) RestrictedProxyEnv() map[string]string {
+	url := m.proxyURL()
+	return map[string]string{
+		"HTTP_PROXY": url, "HTTPS_PROXY": url,
+		"http_proxy": url, "https_proxy": url,
+		"NO_PROXY": "localhost,127.0.0.1", "no_proxy": "localhost,127.0.0.1",
 	}
 }
 
@@ -184,6 +228,11 @@ func (m *NetworkManager) Cleanup(ctx context.Context) error {
 	if dockerNetworkExists(ctx, host, m.networkName()) {
 		if _, err := dockerOutputHost(ctx, host, "network", "rm", m.networkName()); err != nil && !dockerObjectMissing(err) {
 			errs = append(errs, fmt.Errorf("remove docker network %q: %w", m.networkName(), err))
+		}
+	}
+	if dockerNetworkExists(ctx, host, m.policyNetworkName()) {
+		if _, err := dockerOutputHost(ctx, host, "network", "rm", m.policyNetworkName()); err != nil && !dockerObjectMissing(err) {
+			errs = append(errs, fmt.Errorf("remove internal network %q: %w", m.policyNetworkName(), err))
 		}
 	}
 

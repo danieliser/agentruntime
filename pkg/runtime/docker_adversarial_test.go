@@ -101,6 +101,9 @@ func TestDockerAdversarial_InvalidMemoryFailsGracefully(t *testing.T) {
 set -eu
 case "$1" in
   network)
+	if [ "$2" = "connect" ]; then
+	  exit 0
+	fi
     if [ "$2" = "inspect" ]; then
       echo "Error: No such network: agentruntime-agents" >&2
       exit 1

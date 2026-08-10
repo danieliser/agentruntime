@@ -504,5 +504,25 @@ func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.Ex
 	})
 	if err != nil {
 		log.Printf("[session %s] durable finalization failed: %v", sessionID, err)
+		return
+	}
+	s.releaseEphemeralSession(stored)
+}
+
+func (s *Server) releaseEphemeralSession(stored durable.Session) {
+	policy, _ := manifestExecutionPolicy(stored.RequestManifest)
+	if policy == nil || policy.Workspace != "ephemeral" || policy.WorkspaceRetention != "terminal_receipt" {
+		return
+	}
+	rt := s.RuntimeFor(stored.Runtime)
+	releaser, ok := rt.(runtime.EphemeralSessionReleaser)
+	if !ok {
+		log.Printf("[session %s] runtime %s cannot release terminal ephemeral workspace", stored.ID, stored.Runtime)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := releaser.ReleaseSession(ctx, stored.ID); err != nil {
+		log.Printf("[session %s] terminal ephemeral workspace cleanup failed: %v", stored.ID, err)
 	}
 }

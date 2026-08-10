@@ -32,6 +32,12 @@ type Runtime interface {
 	Cleanup(ctx context.Context) error
 }
 
+// EphemeralSessionReleaser is implemented by runtimes that retain resources
+// only until AgentD commits the immutable terminal receipt.
+type EphemeralSessionReleaser interface {
+	ReleaseSession(ctx context.Context, sessionID string) error
+}
+
 // SpawnConfig holds the parameters for spawning an agent process.
 type SpawnConfig struct {
 	// SessionID identifies the owning session and is used for container naming/labels.

@@ -746,6 +746,69 @@ func TestFinalizeV1SessionPersistsOOMReceiptProof(t *testing.T) {
 	}
 }
 
+func TestFinalizeV1SessionReleasesEphemeralWorkspaceAfterReceipt(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	request := SessionRequest{Agent: "codex", Runtime: "docker", Prompt: "research", ExecutionPolicy: &ExecutionPolicy{
+		Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+		AllowedTools: []string{"web_search"}, ApprovalPolicy: "never",
+	}}
+	manifest, grants, requestHash, err := durableRequestManifest(request, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	createdAt := time.Now().Add(-time.Second).UTC()
+	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: "11111111-2222-4333-8444-555555555555", IdempotencyKey: "release-policy-job",
+		RequestHash: requestHash, RequestManifest: manifest, SecretGrants: grants,
+		Agent: "codex", Runtime: "docker", CreatedAt: createdAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{SessionID: created.Session.ID, From: durable.StateCreated, To: durable.StateStarting, At: createdAt.Add(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{SessionID: created.Session.ID, Runtime: "docker", ContainerID: "release-container", CreatedAt: createdAt.Add(2 * time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionGeneration(ctx, durable.TransitionGenerationParams{SessionID: created.Session.ID, Generation: 1, From: durable.GenerationStarting, To: durable.GenerationRunning, At: createdAt.Add(3 * time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{SessionID: created.Session.ID, From: durable.StateStarting, To: durable.StateRunning, At: createdAt.Add(4 * time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	rt := &releasingTestRuntime{released: make(chan string, 1)}
+	server := NewServer(session.NewManager(), rt, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.finalizeV1Session(created.Session.ID, runtime.ExitResult{Code: 0})
+	if _, err := store.GetTerminalReceipt(ctx, created.Session.ID); err != nil {
+		t.Fatalf("terminal receipt missing before release: %v", err)
+	}
+	select {
+	case released := <-rt.released:
+		if released != created.Session.ID {
+			t.Fatalf("released session = %q", released)
+		}
+	default:
+		t.Fatal("ephemeral session was not released after terminal receipt")
+	}
+	server.RestoreRecoveredSessions(nil, "docker")
+	select {
+	case released := <-rt.released:
+		if released != created.Session.ID {
+			t.Fatalf("restart-released session = %q", released)
+		}
+	default:
+		t.Fatal("startup reconciliation did not retry terminal retention")
+	}
+}
+
 func TestActiveNativeSessionWaitsForDurableCancelOutcome(t *testing.T) {
 	active := newActiveNativeSession(nil)
 	if !active.beginCancel() {
@@ -940,6 +1003,16 @@ func (*cancelCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) {
 type countingRuntime struct {
 	Runtime runtime.Runtime
 	count   *atomic.Int32
+}
+
+type releasingTestRuntime struct {
+	recoveryTestRuntime
+	released chan string
+}
+
+func (runtime *releasingTestRuntime) ReleaseSession(_ context.Context, sessionID string) error {
+	runtime.released <- sessionID
+	return nil
 }
 
 func (counting *countingRuntime) Name() string { return "test" }

@@ -122,14 +122,17 @@ type SessionRequest struct {
 
 // ExecutionPolicy is the caller's enforceable runtime authority grant.
 type ExecutionPolicy struct {
-	Version        string   `json:"version" yaml:"version"`
-	Workspace      string   `json:"workspace" yaml:"workspace"`
-	Filesystem     string   `json:"filesystem" yaml:"filesystem"`
-	Network        string   `json:"network" yaml:"network"`
-	AllowedTools   []string `json:"allowed_tools" yaml:"allowed_tools"`
-	MCPServers     []string `json:"mcp_servers" yaml:"mcp_servers"`
-	HostMounts     []string `json:"host_mounts" yaml:"host_mounts"`
-	ApprovalPolicy string   `json:"approval_policy" yaml:"approval_policy"`
+	Version   string `json:"version" yaml:"version"`
+	Workspace string `json:"workspace" yaml:"workspace"`
+	// WorkspaceRetention names the point at which AgentD destroys the
+	// ephemeral workspace. Policy v1 supports terminal_receipt only.
+	WorkspaceRetention string   `json:"workspace_retention" yaml:"workspace_retention"`
+	Filesystem         string   `json:"filesystem" yaml:"filesystem"`
+	Network            string   `json:"network" yaml:"network"`
+	AllowedTools       []string `json:"allowed_tools" yaml:"allowed_tools"`
+	MCPServers         []string `json:"mcp_servers" yaml:"mcp_servers"`
+	HostMounts         []string `json:"host_mounts" yaml:"host_mounts"`
+	ApprovalPolicy     string   `json:"approval_policy" yaml:"approval_policy"`
 }
 
 type StructuredOutput struct {

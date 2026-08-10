@@ -212,12 +212,18 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 			Mode:      "ro",
 		})
 	}
+	if req.ExecutionPolicy != nil {
+		if err := hardenMaterializedTree(claudeDir); err != nil {
+			return "", err
+		}
+	}
 
 	return claudeDir, nil
 }
 
 func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionRequest, mounts *[]apischema.Mount) (string, error) {
-	codexDir, err := codexMountSource(tmpDir, dataDir, sessionID)
+	restricted := req.ExecutionPolicy != nil
+	codexDir, err := codexMountSource(tmpDir, dataDir, sessionID, restricted)
 	if err != nil {
 		return "", err
 	}
@@ -295,9 +301,11 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 
 	// Copy Codex auth.json if not already placed by codexMountSource (persistent mode).
 	authDest := filepath.Join(codexDir, "auth.json")
-	if _, err := os.Stat(authDest); os.IsNotExist(err) {
-		if authData := discoverCodexAuth(dataDir); authData != nil {
-			_ = os.WriteFile(authDest, authData, 0o600)
+	if !restricted {
+		if _, err := os.Stat(authDest); os.IsNotExist(err) {
+			if authData := discoverCodexAuth(dataDir); authData != nil {
+				_ = os.WriteFile(authDest, authData, 0o600)
+			}
 		}
 	}
 
@@ -306,8 +314,29 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 		Container: "/home/agent/.codex",
 		Mode:      "rw",
 	})
+	if restricted {
+		if err := hardenMaterializedTree(codexDir); err != nil {
+			return "", err
+		}
+	}
 
 	return codexDir, nil
+}
+
+func hardenMaterializedTree(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		mode := os.FileMode(0o600)
+		if entry.IsDir() {
+			mode = 0o700
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("set private mode on %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.SessionRequest) (string, error) {
@@ -319,6 +348,7 @@ func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.Session
 		return claudeDir, nil
 	}
 
+	restricted := req.ExecutionPolicy != nil
 	credentialsPath := ""
 	if req.Claude.CredentialsPath != "" {
 		expanded, err := expandPath(req.Claude.CredentialsPath)
@@ -330,7 +360,7 @@ func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.Session
 
 	// Auto-discover credentials from credential sync cache when not explicitly provided.
 	// The daemon's --credential-sync flag populates this cache from Keychain/file sources.
-	if credentialsPath == "" && dataDir != "" {
+	if !restricted && credentialsPath == "" && dataDir != "" {
 		syncCache := filepath.Join(dataDir, "credentials", "claude-credentials.json")
 		if _, err := os.Stat(syncCache); err == nil {
 			credentialsPath = syncCache
@@ -352,7 +382,7 @@ func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.Session
 	return agentsessions.InitClaudeSessionDir(dataDir, sessionID, claudeProjectPath(), credentialsPath)
 }
 
-func codexMountSource(tmpDir, dataDir, sessionID string) (string, error) {
+func codexMountSource(tmpDir, dataDir, sessionID string, restricted bool) (string, error) {
 	if dataDir == "" {
 		codexDir := filepath.Join(tmpDir, ".codex")
 		if err := os.MkdirAll(codexDir, 0o755); err != nil {
@@ -366,11 +396,15 @@ func codexMountSource(tmpDir, dataDir, sessionID string) (string, error) {
 		return "", err
 	}
 
-	// Auto-discover Codex auth.json for persistent session dirs.
+	// Auto-discover Codex auth.json for legacy persistent session dirs. An
+	// explicit execution policy requires credentials to arrive only through
+	// declared secret environment grants.
 	// Priority: 1) credential sync cache, 2) host ~/.codex/auth.json.
-	authData := discoverCodexAuth(dataDir)
-	if authData != nil {
-		_ = os.WriteFile(filepath.Join(codexDir, "auth.json"), authData, 0o600)
+	if !restricted {
+		authData := discoverCodexAuth(dataDir)
+		if authData != nil {
+			_ = os.WriteFile(filepath.Join(codexDir, "auth.json"), authData, 0o600)
+		}
 	}
 
 	return codexDir, nil

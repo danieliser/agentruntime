@@ -109,6 +109,48 @@ func (r *DockerRuntime) Cleanup(ctx context.Context) error {
 	return r.manager().Cleanup(ctx)
 }
 
+// ReleaseSession destroys a policy-v1 container and its provider-private
+// session state after the durable terminal receipt is committed. Durable
+// events, results, receipts, and chat history live outside these paths.
+func (r *DockerRuntime) ReleaseSession(ctx context.Context, sessionID string) error {
+	if !safeRuntimeSessionID(sessionID) {
+		return fmt.Errorf("release session: unsafe session ID")
+	}
+	var errs []error
+	output, err := dockerOutputHost(ctx, r.cfg.Host, "ps", "-aq", "--no-trunc", "--filter", fmt.Sprintf("label=%s=%s", dockerSessionLabelKey, sessionID))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list session containers: %w", err))
+	} else {
+		for _, containerID := range strings.Fields(output) {
+			if _, err := dockerOutputHost(ctx, r.cfg.Host, "rm", "-f", containerID); err != nil && !dockerObjectMissing(err) {
+				errs = append(errs, fmt.Errorf("remove session container %q: %w", containerID, err))
+			}
+		}
+	}
+	if r.cfg.DataDir != "" {
+		for _, root := range []string{"claude-sessions", "codex-sessions"} {
+			path := filepath.Join(r.cfg.DataDir, root, sessionID)
+			if err := os.RemoveAll(path); err != nil {
+				errs = append(errs, fmt.Errorf("remove %s state: %w", root, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func safeRuntimeSessionID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (r *DockerRuntime) manager() *NetworkManager {
 	if r.networkManager == nil {
 		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network}
@@ -355,7 +397,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	}
 
 	var volumeName string
-	if req != nil && (req.Claude != nil || req.Codex != nil) {
+	if req != nil && (req.Agent == "claude" || req.Agent == "codex" || req.Claude != nil || req.Codex != nil) {
 		result, err := r.materializer.Materialize(req, cfg.SessionID)
 		if err != nil {
 			return nil, err
@@ -439,7 +481,12 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	for key, value := range requestEnv(cfg) {
 		envValues[key] = value
 	}
-	for key, value := range r.manager().ProxyEnv() {
+	restricted := req != nil && req.ExecutionPolicy != nil
+	proxyEnv := r.manager().ProxyEnv()
+	if restricted {
+		proxyEnv = r.manager().RestrictedProxyEnv()
+	}
+	for key, value := range proxyEnv {
 		envValues[key] = value
 	}
 	// Session identity remains available to provider processes and hooks.
@@ -458,7 +505,6 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		_ = os.Remove(envFile)
 	})
 
-	restricted := req != nil && req.ExecutionPolicy != nil
 	args := []string{
 		"run", "-d", "--init",
 		"--cap-drop", "ALL",
@@ -514,6 +560,9 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	}
 
 	network := r.manager().networkName()
+	if restricted {
+		network = r.manager().policyNetworkName()
+	}
 	if req != nil && req.Container != nil {
 		if req.Container.Memory != "" {
 			args = append(args, "--memory", req.Container.Memory)

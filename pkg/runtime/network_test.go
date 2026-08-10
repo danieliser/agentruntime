@@ -55,10 +55,23 @@ func TestNetworkManager_ProxyEnv(t *testing.T) {
 	}
 }
 
+func TestNetworkManager_RestrictedProxyEnvHasNoHostBypass(t *testing.T) {
+	manager := &NetworkManager{}
+	env := manager.RestrictedProxyEnv()
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		if env[key] != "http://agentruntime-proxy:3128" {
+			t.Fatalf("%s = %q", key, env[key])
+		}
+	}
+	if strings.Contains(env["NO_PROXY"], "host.docker.internal") || strings.Contains(env["NO_PROXY"], "host-gateway") {
+		t.Fatalf("restricted NO_PROXY = %q", env["NO_PROXY"])
+	}
+}
+
 func TestNetworkManager_IdempotentProxy(t *testing.T) {
 	tempDir := t.TempDir()
 	logFile := filepath.Join(tempDir, "docker.log")
-	networkState := filepath.Join(tempDir, "network.created")
+	networkState := filepath.Join(tempDir, "network")
 	proxyState := filepath.Join(tempDir, "proxy.running")
 	installFakeDocker(t, `#!/bin/sh
 set -eu
@@ -68,15 +81,20 @@ PROXY_STATE="`+proxyState+`"
 printf '%s\n' "$*" >> "$LOG_FILE"
 case "$1 $2" in
   "network inspect")
-    if [ -f "$NETWORK_STATE" ]; then
+	if [ -f "$NETWORK_STATE.$3" ]; then
       exit 0
     fi
     echo "Error: No such network: agentruntime-agents" >&2
     exit 1
     ;;
   "network create")
-    : > "$NETWORK_STATE"
+	last=""
+	for arg in "$@"; do last="$arg"; done
+	: > "$NETWORK_STATE.$last"
     printf 'network-created\n'
+    exit 0
+    ;;
+  "network connect")
     exit 0
     ;;
   "inspect --type")
@@ -111,5 +129,9 @@ exit 2
 	}
 	if count := strings.Count(string(data), "run -d --name agentruntime-proxy --network "+defaultDockerNetworkName+" "+defaultDockerProxyImage+"\n"); count != 1 {
 		t.Fatalf("expected proxy container to start once, got log %q", string(data))
+	}
+	if !strings.Contains(string(data), "network create --driver bridge --internal "+defaultDockerPolicyNetworkName) ||
+		!strings.Contains(string(data), "network connect --alias agentruntime-proxy "+defaultDockerPolicyNetworkName+" agentruntime-proxy") {
+		t.Fatalf("expected internal policy network and dual-homed proxy, got log %q", string(data))
 	}
 }

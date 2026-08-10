@@ -175,6 +175,65 @@ func TestMaterialize_CredentialsCopiedIntoSessionDir(t *testing.T) {
 	}
 }
 
+func TestMaterialize_RestrictedPolicyDoesNotCopyAmbientCredentialsOrContext(t *testing.T) {
+	dataDir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(dataDir, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "credentials", "claude-credentials.json"), []byte(`{"secret":"claude"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "credentials", "codex-auth.json"), []byte(`{"secret":"codex"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy := &api.ExecutionPolicy{
+		Version: "1.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+		AllowedTools: []string{"web_search"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+	}
+
+	claude, err := Materialize(&api.SessionRequest{Agent: "claude", Context: "clean", AutoDiscover: false, ExecutionPolicy: policy}, "restricted-claude", dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeDir := findMount(t, claude.Mounts, "/home/agent/.claude").Host
+	for _, name := range []string{"credentials.json", ".credentials.json"} {
+		if _, err := os.Stat(filepath.Join(claudeDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("restricted Claude materialized ambient %s: %v", name, err)
+		}
+	}
+	var mcp map[string]any
+	readJSONFile(t, filepath.Join(claudeDir, ".mcp.json"), &mcp)
+	if servers, ok := mcp["mcpServers"].(map[string]any); !ok || len(servers) != 0 {
+		t.Fatalf("restricted Claude MCP config = %#v", mcp)
+	}
+	assertPrivatePathMode(t, claudeDir, 0o700)
+	assertPrivatePathMode(t, filepath.Join(claudeDir, ".mcp.json"), 0o600)
+
+	codex, err := Materialize(&api.SessionRequest{Agent: "codex", Context: "clean", AutoDiscover: false, ExecutionPolicy: policy}, "restricted-codex", dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexDir := findMount(t, codex.Mounts, "/home/agent/.codex").Host
+	if _, err := os.Stat(filepath.Join(codexDir, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("restricted Codex materialized ambient auth.json: %v", err)
+	}
+	assertPrivatePathMode(t, codexDir, 0o700)
+	assertPrivatePathMode(t, filepath.Join(codexDir, "config.toml"), 0o600)
+}
+
+func assertPrivatePathMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual := info.Mode().Perm(); actual != want {
+		t.Fatalf("mode %s = %04o, want %04o", path, actual, want)
+	}
+}
+
 func TestMaterialize_MemoryPathMounted(t *testing.T) {
 	dir := t.TempDir()
 	memoryDir := filepath.Join(dir, "memory")

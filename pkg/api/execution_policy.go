@@ -42,6 +42,12 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 	if policy.Workspace != "ephemeral" {
 		return unsupported("execution policy v1 supports only workspace=ephemeral")
 	}
+	if policy.WorkspaceRetention == "" {
+		policy.WorkspaceRetention = "terminal_receipt"
+	}
+	if policy.WorkspaceRetention != "terminal_receipt" {
+		return unsupported("execution policy v1 supports only workspace_retention=terminal_receipt")
+	}
 	if policy.Filesystem != "read_only" && policy.Filesystem != "workspace_write" {
 		return unsupported("filesystem must be read_only or workspace_write")
 	}
@@ -76,10 +82,11 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 	if request.Lifecycle != nil || request.Team != nil {
 		return unsupported("execution policy v1 does not grant lifecycle hooks or agent teams")
 	}
-	if request.Claude != nil && (len(request.Claude.AllowedTools) != 0 || len(request.Claude.SettingsJSON) != 0 || len(request.Claude.McpJSON) != 0) {
+	if request.Claude != nil && (len(request.Claude.AllowedTools) != 0 || len(request.Claude.SettingsJSON) != 0 || len(request.Claude.McpJSON) != 0 ||
+		request.Claude.ClaudeMD != "" || request.Claude.CredentialsPath != "" || request.Claude.MemoryPath != "") {
 		return unsupported("Claude provider configuration cannot widen the execution policy")
 	}
-	if request.Codex != nil && (len(request.Codex.ConfigTOML) != 0 || request.Codex.ApprovalMode != "") {
+	if request.Codex != nil && (len(request.Codex.ConfigTOML) != 0 || request.Codex.Instructions != "" || request.Codex.ApprovalMode != "") {
 		return unsupported("Codex provider configuration cannot widen the execution policy")
 	}
 	if request.Context != "" && request.Context != "clean" {

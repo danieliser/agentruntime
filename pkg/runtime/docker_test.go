@@ -345,6 +345,9 @@ case "$1" in
     printf 'sha256:native-image\n'
     ;;
   network)
+    if [ "$2" = "connect" ]; then
+      exit 0
+    fi
     [ "$2" = "inspect" ]
     ;;
   inspect)
@@ -504,7 +507,7 @@ func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t 
 	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
 	spec, err := rt.prepareRun(SpawnConfig{
 		Cmd: []string{"echo", "ok"}, SessionID: "policy-container-1234",
-		Request: &apischema.SessionRequest{ExecutionPolicy: &apischema.ExecutionPolicy{
+		Request: &apischema.SessionRequest{Agent: "codex", ExecutionPolicy: &apischema.ExecutionPolicy{
 			Version: "1.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
 			AllowedTools: []string{"web_search"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
 		}},
@@ -525,6 +528,24 @@ func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t 
 	}
 	if containsArg(spec.args, "--cap-add") {
 		t.Fatalf("restricted Docker args add a Linux capability: %v", spec.args)
+	}
+	if !hasContainerMount(spec.args, "/home/agent/.codex") {
+		t.Fatalf("restricted Codex request did not receive its isolated generated home: %v", spec.args)
+	}
+	if !hasFlagValue(spec.args, "--network", defaultDockerPolicyNetworkName) {
+		t.Fatalf("restricted Docker args do not use the internal policy network: %v", spec.args)
+	}
+	envFile := flagValue(spec.args, "--env-file")
+	envBytes, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(envBytes)
+	if !strings.Contains(env, "HTTPS_PROXY=http://agentruntime-proxy:3128\n") || !strings.Contains(env, "https_proxy=http://agentruntime-proxy:3128\n") {
+		t.Fatalf("restricted proxy environment = %q", env)
+	}
+	if strings.Contains(env, "host.docker.internal") || strings.Contains(env, "host-gateway") {
+		t.Fatalf("restricted proxy environment bypasses internal isolation: %q", env)
 	}
 }
 
@@ -741,6 +762,15 @@ func flagValue(args []string, flag string) string {
 	return ""
 }
 
+func hasContainerMount(args []string, containerPath string) bool {
+	for index := 0; index < len(args)-1; index++ {
+		if args[index] == "-v" && strings.Contains(args[index+1], ":"+containerPath+":") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDockerVolumeName(t *testing.T) {
 	tests := []struct {
 		sessionID string
@@ -753,6 +783,50 @@ func TestDockerVolumeName(t *testing.T) {
 		got := dockerVolumeName(tc.sessionID)
 		if got != tc.expected {
 			t.Errorf("dockerVolumeName(%q) = %q, want %q", tc.sessionID, got, tc.expected)
+		}
+	}
+}
+
+func TestDockerReleaseEphemeralSessionRemovesContainerAndProviderState(t *testing.T) {
+	dataDir := t.TempDir()
+	sessionID := "11111111-2222-4333-8444-555555555555"
+	for _, root := range []string{"claude-sessions", "codex-sessions"} {
+		path := filepath.Join(dataDir, root, sessionID)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "private.jsonl"), []byte("private"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logFile := filepath.Join(t.TempDir(), "docker.log")
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "`+logFile+`"
+if [ "$1" = "ps" ]; then
+  printf '%s\n' 'container-policy-session'
+  exit 0
+fi
+if [ "$1" = "rm" ] && [ "$2" = "-f" ]; then
+  exit 0
+fi
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	runtime := NewDockerRuntime(DockerConfig{DataDir: dataDir})
+	if err := runtime.ReleaseSession(context.Background(), sessionID); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "--filter label="+dockerSessionLabelKey+"="+sessionID) || !strings.Contains(string(commands), "rm -f container-policy-session") {
+		t.Fatalf("release commands = %q", commands)
+	}
+	for _, root := range []string{"claude-sessions", "codex-sessions"} {
+		if _, err := os.Stat(filepath.Join(dataDir, root, sessionID)); !os.IsNotExist(err) {
+			t.Fatalf("provider state %s retained: %v", root, err)
 		}
 	}
 }

@@ -74,6 +74,33 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 		discovered[recoveryGenerationKey(info.SessionID, info.Generation)] = struct{}{}
 	}
 	s.reconcileMissingGenerations(discovered, confirmedRuntimes)
+	s.reconcileTerminalRetention(confirmedRuntimes)
+}
+
+func (s *Server) reconcileTerminalRetention(confirmedRuntimes []string) {
+	if s.durableStore == nil {
+		return
+	}
+	confirmed := make(map[string]struct{}, len(confirmedRuntimes))
+	for _, name := range confirmedRuntimes {
+		confirmed[name] = struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sessions, err := s.durableStore.ListSessions(ctx)
+	if err != nil {
+		log.Printf("terminal retention reconciliation could not list sessions: %v", err)
+		return
+	}
+	for _, stored := range sessions {
+		if !stored.State.Terminal() {
+			continue
+		}
+		if _, ok := confirmed[stored.Runtime]; !ok {
+			continue
+		}
+		s.releaseEphemeralSession(stored)
+	}
 }
 
 func (s *Server) settleRecoveredStartingIndeterminate(sess *session.Session, info runtime.RecoveryInfo, cause error) {

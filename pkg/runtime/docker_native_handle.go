@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,15 +48,20 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 	}
 
 	logsCmd := nativeDockerCommand(host, "logs", "--follow", "--since=0", containerID)
-	stdout, stdoutWriter := io.Pipe()
-	stderr, stderrWriter := io.Pipe()
-	logsCmd.Stdout = stdoutWriter
-	logsCmd.Stderr = stderrWriter
+	stdout, err := logsCmd.StdoutPipe()
+	if err != nil {
+		stopDockerCLI(attachCmd)
+		return nil, fmt.Errorf("Docker logs stdout pipe: %w", err)
+	}
+	stderr, err := logsCmd.StderrPipe()
+	if err != nil {
+		_ = stdout.Close()
+		stopDockerCLI(attachCmd)
+		return nil, fmt.Errorf("Docker logs stderr pipe: %w", err)
+	}
 	if err := logsCmd.Start(); err != nil {
 		_ = stdout.Close()
-		_ = stdoutWriter.Close()
 		_ = stderr.Close()
-		_ = stderrWriter.Close()
 		stopDockerCLI(attachCmd)
 		return nil, fmt.Errorf("start logs: %w", err)
 	}
@@ -83,24 +89,41 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 		stderr:      stderr,
 		done:        make(chan ExitResult, 1),
 	}
-	go func() {
-		err := waitCmd.Wait()
-		if err != nil {
-			handle.done <- ExitResult{Code: -1, Err: dockerCommandError(err, waitStderr.String())}
-			return
-		}
-		code, err := strconv.Atoi(strings.TrimSpace(waitStdout.String()))
-		if err != nil {
-			handle.done <- ExitResult{Code: -1, Err: fmt.Errorf("parse docker wait exit code %q: %w", strings.TrimSpace(waitStdout.String()), err)}
-			return
-		}
-		handle.done <- inspectDockerExitResult(handle.dockerHost, handle.containerID, code)
-	}()
+	logsWait := make(chan error, 1)
+	go func() { logsWait <- logsCmd.Wait() }()
 	go func() { _ = attachCmd.Wait() }()
 	go func() {
-		err := logsCmd.Wait()
-		_ = stdoutWriter.CloseWithError(err)
-		_ = stderrWriter.CloseWithError(err)
+		waitErr := waitCmd.Wait()
+		result := ExitResult{}
+		if waitErr != nil {
+			result = ExitResult{Code: -1, Err: dockerCommandError(waitErr, waitStderr.String())}
+		} else {
+			code, err := strconv.Atoi(strings.TrimSpace(waitStdout.String()))
+			if err != nil {
+				result = ExitResult{Code: -1, Err: fmt.Errorf("parse docker wait exit code %q: %w", strings.TrimSpace(waitStdout.String()), err)}
+			} else {
+				result = inspectDockerExitResult(handle.dockerHost, handle.containerID, code)
+			}
+		}
+
+		forcedLogStop := false
+		var logsErr error
+		select {
+		case logsErr = <-logsWait:
+		case <-time.After(500 * time.Millisecond):
+			forcedLogStop = true
+			if logsCmd.Process != nil {
+				_ = logsCmd.Process.Kill()
+			}
+			logsErr = <-logsWait
+		}
+		if attachCmd.Process != nil {
+			_ = attachCmd.Process.Kill()
+		}
+		if logsErr != nil && !forcedLogStop {
+			result.Err = errors.Join(result.Err, logsErr)
+		}
+		handle.done <- result
 	}()
 	return handle, nil
 }
