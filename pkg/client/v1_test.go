@@ -85,6 +85,41 @@ func TestClientAddsBearerTokenToEveryPrivateRequest(t *testing.T) {
 	}
 }
 
+func TestClientDecodesCompleteAdmissionCapabilities(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/capabilities" {
+			http.NotFound(writer, request)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{
+			"agentd_version": "2.1.0", "commit_hash": "0123456789abcdef0123456789abcdef01234567",
+			"api_versions": []string{"v1"}, "event_schema_versions": []string{"1.0"}, "execution_policy_versions": []string{"1.0"},
+			"listener_scope": "loopback", "authentication": map[string]any{
+				"mode": "bearer_token_file", "transport": "authorization_header", "http_transport": "authorization_header", "websocket_transport": "authenticated_subprotocol",
+			},
+			"structured_output": map[string]any{
+				"providers": []string{"claude", "codex"}, "native_enforced": true, "schema_hash": "sha256",
+				"default_max_bytes": 1048576, "maximum_bytes": 4194304, "result_event": "output.final", "result_endpoint": "/api/v1/sessions/{session_id}/result",
+			},
+			"workspace_profiles": []map[string]any{{
+				"name": "ephemeral", "retention": "terminal_receipt", "filesystems": []string{"read_only", "workspace_write"},
+				"network": "public_https", "host_mounts": false, "ambient_credentials": false,
+			}},
+		}})
+	}))
+	defer server.Close()
+	capabilities, err := New(server.URL).GetCapabilities(context.Background())
+	if err != nil {
+		t.Fatalf("get capabilities: %v", err)
+	}
+	if capabilities.AgentDVersion != "2.1.0" || capabilities.CommitHash == "" || capabilities.ListenerScope != "loopback" ||
+		capabilities.Authentication.WebSocketTransport != "authenticated_subprotocol" || len(capabilities.ExecutionPolicyVersions) != 1 ||
+		!capabilities.StructuredOutput.NativeEnforced || capabilities.StructuredOutput.ResultEvent != "output.final" ||
+		len(capabilities.WorkspaceProfiles) != 1 || capabilities.WorkspaceProfiles[0].AmbientCredentials {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+}
+
 func TestClientGetsExactStructuredResult(t *testing.T) {
 	raw := []byte("{\n  \"answer\": 42\n}")
 	digest := sha256.Sum256(raw)

@@ -56,14 +56,18 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
           VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
         run: |
-          go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+          go build -trimpath -ldflags="-s -w -X github.com/danieliser/agentruntime/pkg/buildinfo.Version=${VERSION} -X github.com/danieliser/agentruntime/pkg/buildinfo.Commit=${COMMIT}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 
       - name: Verify embedded version
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: test "$(packages/agentd-py/agentruntime_agentd/bin/agentd --version)" = "${VERSION}"
+          COMMIT: ${{ github.sha }}
+        run: |
+          test "$(packages/agentd-py/agentruntime_agentd/bin/agentd --version)" = "${VERSION}"
+          packages/agentd-py/agentruntime_agentd/bin/agentd --require-build "${VERSION}@${COMMIT}"
 
       - name: Patch version in pyproject.toml
         working-directory: packages/agentd-py
@@ -131,8 +135,9 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
           VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
         run: |
-          go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
+          go build -trimpath -ldflags="-s -w -X github.com/danieliser/agentruntime/pkg/buildinfo.Version=${VERSION} -X github.com/danieliser/agentruntime/pkg/buildinfo.Commit=${COMMIT}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 
       - name: Patch version in pyproject.toml
         working-directory: packages/agentd-py

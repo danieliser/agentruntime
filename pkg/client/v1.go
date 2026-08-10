@@ -51,19 +51,51 @@ type ReplayCapabilities struct {
 	RestartPersistence bool `json:"restart_persistence"`
 }
 
+type AuthenticationCapabilities struct {
+	Mode               string `json:"mode"`
+	Transport          string `json:"transport"`
+	HTTPTransport      string `json:"http_transport"`
+	WebSocketTransport string `json:"websocket_transport"`
+}
+
+type StructuredOutputCapabilities struct {
+	Providers       []string `json:"providers"`
+	NativeEnforced  bool     `json:"native_enforced"`
+	SchemaHash      string   `json:"schema_hash"`
+	DefaultMaxBytes int      `json:"default_max_bytes"`
+	MaximumBytes    int      `json:"maximum_bytes"`
+	ResultEvent     string   `json:"result_event"`
+	ResultEndpoint  string   `json:"result_endpoint"`
+}
+
+type WorkspaceProfileCapabilities struct {
+	Name               string   `json:"name"`
+	Retention          string   `json:"retention"`
+	Filesystems        []string `json:"filesystems"`
+	Network            string   `json:"network"`
+	HostMounts         bool     `json:"host_mounts"`
+	AmbientCredentials bool     `json:"ambient_credentials"`
+}
+
 // Capabilities is the v1 compatibility handshake a caller checks before
 // submitting paid work.
 type Capabilities struct {
-	AgentDVersion        string             `json:"agentd_version"`
-	APIVersions          []string           `json:"api_versions"`
-	EventSchemaVersions  []string           `json:"event_schema_versions"`
-	NativeProviders      []string           `json:"native_providers"`
-	Runtimes             []string           `json:"runtimes"`
-	LifecycleControls    []string           `json:"lifecycle_controls"`
-	Replay               ReplayCapabilities `json:"replay"`
-	DockerReconstruction bool               `json:"docker_reconstruction"`
-	PluginAPIVersions    []string           `json:"plugin_api_versions"`
-	Plugins              []PluginStatus     `json:"plugins"`
+	AgentDVersion           string                         `json:"agentd_version"`
+	CommitHash              string                         `json:"commit_hash"`
+	APIVersions             []string                       `json:"api_versions"`
+	EventSchemaVersions     []string                       `json:"event_schema_versions"`
+	ExecutionPolicyVersions []string                       `json:"execution_policy_versions"`
+	NativeProviders         []string                       `json:"native_providers"`
+	Runtimes                []string                       `json:"runtimes"`
+	LifecycleControls       []string                       `json:"lifecycle_controls"`
+	Replay                  ReplayCapabilities             `json:"replay"`
+	DockerReconstruction    bool                           `json:"docker_reconstruction"`
+	PluginAPIVersions       []string                       `json:"plugin_api_versions"`
+	Plugins                 []PluginStatus                 `json:"plugins"`
+	ListenerScope           string                         `json:"listener_scope"`
+	Authentication          AuthenticationCapabilities     `json:"authentication"`
+	StructuredOutput        StructuredOutputCapabilities   `json:"structured_output"`
+	WorkspaceProfiles       []WorkspaceProfileCapabilities `json:"workspace_profiles"`
 }
 
 type PluginStatus struct {

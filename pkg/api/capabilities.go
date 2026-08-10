@@ -17,23 +17,48 @@ type replayCapabilities struct {
 }
 
 type authenticationCapabilities struct {
-	Mode      string `json:"mode"`
-	Transport string `json:"transport"`
+	Mode               string `json:"mode"`
+	Transport          string `json:"transport"` // Deprecated: use HTTPTransport.
+	HTTPTransport      string `json:"http_transport"`
+	WebSocketTransport string `json:"websocket_transport"`
+}
+
+type structuredOutputCapabilities struct {
+	Providers       []string `json:"providers"`
+	NativeEnforced  bool     `json:"native_enforced"`
+	SchemaHash      string   `json:"schema_hash"`
+	DefaultMaxBytes int      `json:"default_max_bytes"`
+	MaximumBytes    int      `json:"maximum_bytes"`
+	ResultEvent     string   `json:"result_event"`
+	ResultEndpoint  string   `json:"result_endpoint"`
+}
+
+type workspaceProfileCapabilities struct {
+	Name               string   `json:"name"`
+	Retention          string   `json:"retention"`
+	Filesystems        []string `json:"filesystems"`
+	Network            string   `json:"network"`
+	HostMounts         bool     `json:"host_mounts"`
+	AmbientCredentials bool     `json:"ambient_credentials"`
 }
 
 type v1Capabilities struct {
-	AgentDVersion        string                     `json:"agentd_version"`
-	APIVersions          []string                   `json:"api_versions"`
-	EventSchemaVersions  []string                   `json:"event_schema_versions"`
-	NativeProviders      []string                   `json:"native_providers"`
-	Runtimes             []string                   `json:"runtimes"`
-	LifecycleControls    []string                   `json:"lifecycle_controls"`
-	Replay               replayCapabilities         `json:"replay"`
-	DockerReconstruction bool                       `json:"docker_reconstruction"`
-	PluginAPIVersions    []string                   `json:"plugin_api_versions"`
-	Plugins              []observer.PluginStatus    `json:"plugins"`
-	ListenerScope        string                     `json:"listener_scope"`
-	Authentication       authenticationCapabilities `json:"authentication"`
+	AgentDVersion           string                         `json:"agentd_version"`
+	CommitHash              string                         `json:"commit_hash"`
+	APIVersions             []string                       `json:"api_versions"`
+	EventSchemaVersions     []string                       `json:"event_schema_versions"`
+	ExecutionPolicyVersions []string                       `json:"execution_policy_versions"`
+	NativeProviders         []string                       `json:"native_providers"`
+	Runtimes                []string                       `json:"runtimes"`
+	LifecycleControls       []string                       `json:"lifecycle_controls"`
+	Replay                  replayCapabilities             `json:"replay"`
+	DockerReconstruction    bool                           `json:"docker_reconstruction"`
+	PluginAPIVersions       []string                       `json:"plugin_api_versions"`
+	Plugins                 []observer.PluginStatus        `json:"plugins"`
+	ListenerScope           string                         `json:"listener_scope"`
+	Authentication          authenticationCapabilities     `json:"authentication"`
+	StructuredOutput        structuredOutputCapabilities   `json:"structured_output"`
+	WorkspaceProfiles       []workspaceProfileCapabilities `json:"workspace_profiles"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -57,13 +82,16 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	if s.observers != nil {
 		plugins = s.observers.Status()
 	}
-	authentication := authenticationCapabilities{Mode: "none", Transport: "none"}
+	authentication := authenticationCapabilities{Mode: "none", Transport: "none", HTTPTransport: "none", WebSocketTransport: "none"}
 	if s.authEnabled {
-		authentication = authenticationCapabilities{Mode: "bearer_token_file", Transport: "authorization_header"}
+		authentication = authenticationCapabilities{
+			Mode: "bearer_token_file", Transport: "authorization_header",
+			HTTPTransport: "authorization_header", WebSocketTransport: "authenticated_subprotocol",
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
-		AgentDVersion: s.version, APIVersions: []string{"v1"},
-		EventSchemaVersions: []string{eventstream.SchemaVersion}, NativeProviders: providers,
+		AgentDVersion: s.version, CommitHash: s.commitHash, APIVersions: []string{"v1"},
+		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{ExecutionPolicyVersion}, NativeProviders: providers,
 		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "interrupt", "cancel", "terminate", "resume", "receipt"},
 		Runtimes:          runtimes, Replay: replayCapabilities{
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
@@ -71,5 +99,14 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		DockerReconstruction: dockerReconstruction && durableReplay,
 		PluginAPIVersions:    []string{observer.APIVersion}, Plugins: plugins,
 		ListenerScope: s.listenerScope, Authentication: authentication,
+		StructuredOutput: structuredOutputCapabilities{
+			Providers: providers, NativeEnforced: true, SchemaHash: "sha256",
+			DefaultMaxBytes: DefaultStructuredOutputMaxBytes, MaximumBytes: MaximumStructuredOutputBytes,
+			ResultEvent: "output.final", ResultEndpoint: "/api/v1/sessions/{session_id}/result",
+		},
+		WorkspaceProfiles: []workspaceProfileCapabilities{{
+			Name: "ephemeral", Retention: "terminal_receipt", Filesystems: []string{"read_only", "workspace_write"},
+			Network: "public_https", HostMounts: false, AmbientCredentials: false,
+		}},
 	}})
 }

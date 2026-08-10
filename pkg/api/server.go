@@ -30,6 +30,7 @@ type Server struct {
 	runtime       runtime.Runtime            // default runtime (first registered or "local")
 	agents        *agent.Registry
 	version       string
+	commitHash    string
 	listenerScope string
 	authEnabled   bool
 	authTokenHash [sha256.Size]byte
@@ -80,6 +81,9 @@ func (s *Server) RuntimeFor(name string) runtime.Runtime {
 type ServerConfig struct {
 	// Version is the agentd build version string (e.g., "0.7.1").
 	Version string
+
+	// CommitHash is the exact source revision embedded in the AgentD artifact.
+	CommitHash string
 
 	// AuthToken enables bearer authentication for every private HTTP and
 	// WebSocket surface. Production AgentD always supplies the token loaded
@@ -152,20 +156,25 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 	}
 
 	version := "dev"
+	commitHash := "unknown"
 	if len(cfgs) > 0 && cfgs[0].Version != "" {
 		version = cfgs[0].Version
 	}
+	if len(cfgs) > 0 && cfgs[0].CommitHash != "" {
+		commitHash = cfgs[0].CommitHash
+	}
 
 	s := &Server{
-		router:   router,
-		sessions: sessions,
-		runtimes: runtimes,
-		runtime:  rt,
-		agents:   agents,
-		version:  version,
-		dataDir:  dataDir,
-		logDir:   logDir,
-		native:   make(map[string]*activeNativeSession),
+		router:     router,
+		sessions:   sessions,
+		runtimes:   runtimes,
+		runtime:    rt,
+		agents:     agents,
+		version:    version,
+		commitHash: commitHash,
+		dataDir:    dataDir,
+		logDir:     logDir,
+		native:     make(map[string]*activeNativeSession),
 	}
 	if len(cfgs) > 0 {
 		s.listenerScope = cfgs[0].ListenerScope

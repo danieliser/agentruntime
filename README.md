@@ -39,6 +39,7 @@ Or install a user service:
 Useful daemon flags:
 
 ```text
+--host 127.0.0.1
 --port 8090
 --runtime local|docker
 --data-dir ~/.agentd
@@ -46,6 +47,9 @@ Useful daemon flags:
 --docker-host ssh://user@host
 --max-sessions 0
 --credential-sync
+--version
+--build-info
+--require-build VERSION@COMMIT
 ```
 
 `AGENTRUNTIME_DATA_DIR` overrides the complete data root. `--data-dir` takes precedence when explicitly supplied. `AGENTRUNTIME_PLUGIN_CONFIG` overrides the external observer allowlist path when `--plugin-config` is omitted.
@@ -55,10 +59,21 @@ Useful daemon flags:
 Check compatibility before submitting work:
 
 ```sh
-curl -sS http://127.0.0.1:8090/api/v1/capabilities
+agentd_curl() {
+  curl --config <(sed 's/^/header = "Authorization: Bearer /; s/$/"/' ~/.agentd/auth.token) "$@"
+}
+agentd_curl -sS http://127.0.0.1:8090/api/v1/capabilities
 ```
 
-The handshake reports the AgentD/API/event-schema versions, native providers, configured runtimes, replay persistence, Docker reconstruction, observer API versions, and configured observer health.
+AgentD binds literal `127.0.0.1` by default. Its private bearer token is created
+as `~/.agentd/auth.token` with mode `0600`; private data directories use `0700`.
+The helper above reads the token through a private file descriptor rather than
+putting it in a URL or process argument.
+
+The handshake reports exact build version and commit, API/event/plugin/policy
+versions, listener and authentication contracts, native providers, configured
+runtimes, replay persistence, Docker reconstruction, structured-output modes,
+workspace profiles, and observer health.
 
 ## External OpenTraces observer
 
@@ -77,7 +92,7 @@ event/ack schema, replay rules, failure policies, and adapter boundary.
 Create a session with a caller-owned idempotency key:
 
 ```sh
-curl -sS http://127.0.0.1:8090/api/v1/sessions \
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions \
   -H 'content-type: application/json' \
   -d '{
     "idempotency_key": "job-2026-08-09-001",
@@ -113,7 +128,7 @@ The response includes:
 Page committed events strictly after a sequence:
 
 ```sh
-curl -sS 'http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/events?after_sequence=42&limit=100'
+agentd_curl -sS 'http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/events?after_sequence=42&limit=100'
 ```
 
 Continue stored-then-live delivery without a replay/live race:
@@ -131,15 +146,15 @@ The first WebSocket frame is `stream.ready` and identifies the durable replay bo
 Every state-changing control requires its own idempotency key:
 
 ```sh
-curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/input \
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/input \
   -H 'content-type: application/json' \
   -d '{"idempotency_key":"input-001","kind":"prompt","text":"Now apply the fix"}'
 
-curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/interrupt \
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/interrupt \
   -H 'content-type: application/json' \
   -d '{"idempotency_key":"interrupt-001"}'
 
-curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/cancel \
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/cancel \
   -H 'content-type: application/json' \
   -d '{"idempotency_key":"cancel-001"}'
 ```
@@ -147,7 +162,7 @@ curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/cancel \
 Administrative forced termination is separate from caller cancellation:
 
 ```bash
-curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/terminate \
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/terminate \
   -H 'content-type: application/json' \
   -d '{"idempotency_key":"terminate-001"}'
 ```
@@ -158,7 +173,7 @@ Both close the logical session, but the immutable receipt/event reason is
 `resume` creates generation `N+1` only for an eligible nonterminal session whose prior runtime generation is durably `lost`. Reconnect/replay of an existing generation does not call `resume`.
 
 ```sh
-curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/resume \
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/resume \
   -H 'content-type: application/json' \
   -d '{"prompt":"Continue after runtime loss"}'
 ```
@@ -166,7 +181,7 @@ curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/resume \
 Terminal proof is available after completion:
 
 ```sh
-curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/receipt
+agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/receipt
 ```
 
 ### CLI attach
@@ -231,6 +246,17 @@ go test -race ./pkg/api ./pkg/eventstream ./pkg/runtime
 go vet ./...
 ```
 
+Prove that the installed artifact is the exact release under qualification:
+
+```sh
+agentd --build-info
+agentd --require-build '2.1.0@FULL_RELEASE_COMMIT_SHA'
+```
+
+The second command exits nonzero for a version mismatch, commit mismatch, or an
+artifact without verifiable source identity. Release builds inject both values;
+capabilities expose the same pair to remote callers.
+
 Run the direct Docker attach/reconnect proof:
 
 ```sh
@@ -247,7 +273,9 @@ The canonical implementation tracker is [docs/specs/agentd-durable-streaming/TAS
 
 The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, typed Go client, and chat history use durable v1 sequences. The typed client covers dispatch, list/inspect, replay/raw streaming, prompt/steer, interrupt, cancel, terminate, lost-generation resume, and immutable receipts. Unversioned session, byte-log, and bidirectional bridge routes have been removed. Pre-v1 chat NDJSON remains read-only and is explicitly reported as unverified legacy history.
 
-AgentD currently has no API authentication layer. Bind it to a trusted interface or place it behind authenticated transport until the versioned security follow-up lands.
+AgentD's private v1 HTTP and WebSocket surfaces require the token stored below
+its data root. The health-only public surface contains no session or credential
+data. Non-loopback binding is explicit and does not weaken authentication.
 
 ## License
 

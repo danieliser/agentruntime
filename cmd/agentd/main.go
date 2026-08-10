@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/api"
+	"github.com/danieliser/agentruntime/pkg/buildinfo"
 	"github.com/danieliser/agentruntime/pkg/chat"
 	projectconfig "github.com/danieliser/agentruntime/pkg/config"
 	"github.com/danieliser/agentruntime/pkg/credentials"
@@ -26,9 +28,6 @@ import (
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
-
-// Version is set at build time via -ldflags, or defaults to "dev".
-var Version = "dev"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "dispatch" {
@@ -42,6 +41,8 @@ func main() {
 	}
 
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	showBuildInfo := flag.Bool("build-info", false, "Print verifiable build identity as JSON and exit")
+	requireBuild := flag.String("require-build", "", "Require exact version@commit identity and exit")
 	host := flag.String("host", defaultListenHost(), "HTTP server bind address")
 	port := flag.Int("port", 8090, "HTTP server port")
 	rtName := flag.String("runtime", "local", "Execution runtime (local, docker)")
@@ -52,12 +53,26 @@ func main() {
 	dockerHost := flag.String("docker-host", "", "Remote Docker daemon (e.g., ssh://deploy@host, tcp://host:2376)")
 	flag.Parse()
 
+	identity := buildinfo.Current()
 	if *showVersion {
-		fmt.Println(Version)
+		fmt.Println(identity.Version)
+		os.Exit(0)
+	}
+	if *showBuildInfo {
+		if err := json.NewEncoder(os.Stdout).Encode(identity); err != nil {
+			log.Fatalf("encode build identity: %v", err)
+		}
+		os.Exit(0)
+	}
+	if *requireBuild != "" {
+		if err := identity.Verify(*requireBuild); err != nil {
+			log.Fatalf("build qualification failed: %v", err)
+		}
+		fmt.Printf("verified agentd %s@%s\n", identity.Version, identity.Commit)
 		os.Exit(0)
 	}
 
-	log.Printf("agentd %s starting", Version)
+	log.Printf("agentd %s (%s) starting", identity.Version, identity.Commit)
 	log.Printf("data dir: %s", *dataDir)
 	authToken, err := api.LoadOrCreateAuthToken(*dataDir)
 	if err != nil {
@@ -89,7 +104,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load observer config: %v", err)
 	}
-	traceObservers, err := observer.NewManager(*dataDir, durableStore, pluginConfig, Version, eventstream.SchemaVersion)
+	traceObservers, err := observer.NewManager(*dataDir, durableStore, pluginConfig, identity.Version, eventstream.SchemaVersion)
 	if err != nil {
 		log.Fatalf("failed to initialize observers: %v", err)
 	}
@@ -201,7 +216,8 @@ func main() {
 	// Start HTTP server.
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{
-		Version:         Version,
+		Version:         identity.Version,
+		CommitHash:      identity.Commit,
 		AuthToken:       authToken,
 		ListenerScope:   listenerScope,
 		DataDir:         *dataDir,
