@@ -22,6 +22,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/client"
 )
 
 var attachHTTPClient = &http.Client{Timeout: 15 * time.Second}
@@ -90,7 +91,11 @@ func attach(sessionID string, port int, since int64, noReplay bool, stdinOverrid
 	wsURL := fmt.Sprintf("ws://localhost:%d/api/v1/ws/sessions/%s/events?%s", port, url.PathEscape(sessionID), q.Encode())
 
 	// Connect to WebSocket
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	headers, err := client.LocalWebSocketHeaders()
+	if err != nil {
+		return fmt.Errorf("load local AgentD authentication: %w", err)
+	}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", wsURL, err)
 	}
@@ -280,6 +285,9 @@ func sendAttachControl(port int, sessionID, operation, kind, text string) error 
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if err := client.AuthorizeLocalRequest(request); err != nil {
+		return fmt.Errorf("load local AgentD authentication: %w", err)
+	}
 	response, err := attachHTTPClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("send %s: %w", operation, err)
@@ -299,6 +307,9 @@ func currentSessionSequence(port int, sessionID string) (int64, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return 0, fmt.Errorf("inspect session: %w", err)
+	}
+	if err := client.AuthorizeLocalRequest(request); err != nil {
+		return 0, fmt.Errorf("load local AgentD authentication: %w", err)
 	}
 	response, err := attachHTTPClient.Do(request)
 	if err != nil {

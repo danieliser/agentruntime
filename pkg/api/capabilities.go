@@ -16,17 +16,24 @@ type replayCapabilities struct {
 	RestartPersistence bool `json:"restart_persistence"`
 }
 
+type authenticationCapabilities struct {
+	Mode      string `json:"mode"`
+	Transport string `json:"transport"`
+}
+
 type v1Capabilities struct {
-	AgentDVersion        string                  `json:"agentd_version"`
-	APIVersions          []string                `json:"api_versions"`
-	EventSchemaVersions  []string                `json:"event_schema_versions"`
-	NativeProviders      []string                `json:"native_providers"`
-	Runtimes             []string                `json:"runtimes"`
-	LifecycleControls    []string                `json:"lifecycle_controls"`
-	Replay               replayCapabilities      `json:"replay"`
-	DockerReconstruction bool                    `json:"docker_reconstruction"`
-	PluginAPIVersions    []string                `json:"plugin_api_versions"`
-	Plugins              []observer.PluginStatus `json:"plugins"`
+	AgentDVersion        string                     `json:"agentd_version"`
+	APIVersions          []string                   `json:"api_versions"`
+	EventSchemaVersions  []string                   `json:"event_schema_versions"`
+	NativeProviders      []string                   `json:"native_providers"`
+	Runtimes             []string                   `json:"runtimes"`
+	LifecycleControls    []string                   `json:"lifecycle_controls"`
+	Replay               replayCapabilities         `json:"replay"`
+	DockerReconstruction bool                       `json:"docker_reconstruction"`
+	PluginAPIVersions    []string                   `json:"plugin_api_versions"`
+	Plugins              []observer.PluginStatus    `json:"plugins"`
+	ListenerScope        string                     `json:"listener_scope"`
+	Authentication       authenticationCapabilities `json:"authentication"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -50,6 +57,10 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	if s.observers != nil {
 		plugins = s.observers.Status()
 	}
+	authentication := authenticationCapabilities{Mode: "none", Transport: "none"}
+	if s.authEnabled {
+		authentication = authenticationCapabilities{Mode: "bearer_token_file", Transport: "authorization_header"}
+	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, APIVersions: []string{"v1"},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, NativeProviders: providers,
@@ -59,5 +70,6 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		},
 		DockerReconstruction: dockerReconstruction && durableReplay,
 		PluginAPIVersions:    []string{observer.APIVersion}, Plugins: plugins,
+		ListenerScope: s.listenerScope, Authentication: authentication,
 	}})
 }

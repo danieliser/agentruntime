@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/danieliser/agentruntime/pkg/api"
@@ -61,6 +62,24 @@ func TestClientDurableDispatchDerivesStableIdempotencyAndReadsEvents(t *testing.
 	page, err := client.GetEvents(context.Background(), first.SessionID, 0, 100)
 	if err != nil || len(page.Events) != 1 || string(page.Events[0].Raw) != `{"type":"stream_event"}` || page.Events[0].Sequence != 1 {
 		t.Fatalf("durable events = %+v err=%v", page, err)
+	}
+}
+
+func TestClientAddsBearerTokenToEveryPrivateRequest(t *testing.T) {
+	const token = "client-token-that-must-not-appear-in-the-request-url-1234"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Errorf("Authorization = %q", got)
+		}
+		if encoded := request.URL.String(); strings.Contains(encoded, token) {
+			t.Fatalf("credential leaked into URL %q", encoded)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": []any{}})
+	}))
+	defer server.Close()
+	client := NewAuthenticated(server.URL, token)
+	if _, err := client.ListDurableSessions(context.Background()); err != nil {
+		t.Fatalf("list durable sessions: %v", err)
 	}
 }
 

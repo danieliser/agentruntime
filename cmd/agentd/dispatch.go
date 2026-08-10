@@ -80,7 +80,10 @@ func runDispatch(configPath, serverURL string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cl := client.New(serverURL)
+	cl, err := client.NewLocal(serverURL)
+	if err != nil {
+		return fmt.Errorf("load local AgentD authentication: %w", err)
+	}
 	resp, err := cl.DispatchDurable(ctx, req)
 	if err != nil {
 		return fmt.Errorf("dispatch session: %w", err)

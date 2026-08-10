@@ -7,6 +7,7 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 	r.GET("/health", s.handleHealth)
 
 	v1 := r.Group("/api/v1")
+	v1.Use(s.requireAuth())
 	{
 		v1.GET("/capabilities", s.handleV1Capabilities)
 		v1.GET("/plugins", s.handleV1Plugins)
@@ -25,6 +26,7 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 	}
 
 	chats := r.Group("/chats")
+	chats.Use(s.requireAuth())
 	{
 		chats.POST("", s.handleCreateChat)
 		chats.GET("", s.handleListChats)

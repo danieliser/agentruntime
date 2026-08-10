@@ -24,10 +24,16 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		Version: "test-version", LogDir: filepath.Join(t.TempDir(), "logs"),
 		ExtraRuntimes: []runtime.Runtime{&recoveryTestRuntime{}},
 		DurableStore:  store, EventBroker: eventstream.New(store),
+		AuthToken: "test-capability-token-that-is-long-enough-123456", ListenerScope: "loopback",
 	})
 	httpServer := httptest.NewServer(server.router)
 	defer httpServer.Close()
-	response, err := http.Get(httpServer.URL + "/api/v1/capabilities")
+	request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/v1/capabilities", nil)
+	if err != nil {
+		t.Fatalf("new capabilities request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer test-capability-token-that-is-long-enough-123456")
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("get capabilities: %v", err)
 	}
@@ -47,6 +53,11 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 			} `json:"replay"`
 			DockerReconstruction bool     `json:"docker_reconstruction"`
 			PluginAPIVersions    []string `json:"plugin_api_versions"`
+			ListenerScope        string   `json:"listener_scope"`
+			Authentication       struct {
+				Mode      string `json:"mode"`
+				Transport string `json:"transport"`
+			} `json:"authentication"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
@@ -60,7 +71,9 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		!containsString(envelope.Data.Runtimes, "local") || !envelope.Data.Replay.SequenceCursor ||
 		!containsString(envelope.Data.LifecycleControls, "terminate") || !containsString(envelope.Data.LifecycleControls, "resume") ||
 		!envelope.Data.Replay.StoredThenLive || !envelope.Data.Replay.RestartPersistence ||
-		!envelope.Data.DockerReconstruction || !containsString(envelope.Data.PluginAPIVersions, "1.0") {
+		!envelope.Data.DockerReconstruction || !containsString(envelope.Data.PluginAPIVersions, "1.0") ||
+		envelope.Data.ListenerScope != "loopback" || envelope.Data.Authentication.Mode != "bearer_token_file" ||
+		envelope.Data.Authentication.Transport != "authorization_header" {
 		t.Fatalf("capability data = %+v", envelope.Data)
 	}
 }

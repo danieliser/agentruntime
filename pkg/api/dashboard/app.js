@@ -10,6 +10,7 @@ const state = {
     historyRefreshInterval: null,
     eventLogs: {}, // keyed by sessionId
     eventSequences: {}, // durable sequence pointer keyed by sessionId
+	 authToken: sessionStorage.getItem('agentd.dashboard.token') || '',
 };
 
 const terminalStates = new Set([
@@ -20,24 +21,51 @@ const terminalStates = new Set([
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     fetchHealth();
-    fetchSessions();
-    fetchHistory();
+	 initializeAuthenticatedDashboard();
 
     // Auto-refresh active sessions every 3 seconds
     state.refreshInterval = setInterval(() => {
         fetchHealth();
         if (state.currentTab === 'active') {
-            fetchSessions();
+			if (state.authToken) fetchSessions();
         }
     }, 3000);
 
     // Auto-refresh history every 10 seconds
     state.historyRefreshInterval = setInterval(() => {
         if (state.currentTab === 'history') {
-            fetchHistory();
+			if (state.authToken) fetchHistory();
         }
     }, 10000);
 });
+
+async function initializeAuthenticatedDashboard() {
+	while (!state.authToken) {
+		const entered = window.prompt('Enter the AgentD token from ~/.agentd/auth.token');
+		if (!entered) {
+			document.getElementById('sessions-body').innerHTML = '<tr><td colspan="8" class="empty-message">Authentication required</td></tr>';
+			return;
+		}
+		state.authToken = entered.trim();
+	}
+	try {
+		const response = await apiFetch('/api/v1/capabilities');
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		sessionStorage.setItem('agentd.dashboard.token', state.authToken);
+		await Promise.all([fetchSessions(), fetchHistory()]);
+	} catch (error) {
+		sessionStorage.removeItem('agentd.dashboard.token');
+		state.authToken = '';
+		console.error('Dashboard authentication failed');
+		initializeAuthenticatedDashboard();
+	}
+}
+
+function apiFetch(path, options = {}) {
+	const headers = new Headers(options.headers || {});
+	headers.set('Authorization', `Bearer ${state.authToken}`);
+	return fetch(path, {...options, headers});
+}
 
 // Setup event listeners
 function setupEventListeners() {
@@ -144,7 +172,7 @@ function updateHealthBadge(err) {
 // Fetch sessions list
 async function fetchSessions() {
     try {
-        const res = await fetch('/api/v1/sessions');
+		const res = await apiFetch('/api/v1/sessions');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const envelope = await res.json();
         const all = envelope.data || [];
@@ -210,7 +238,7 @@ function updateSessionsTable() {
 // Fetch session history
 async function fetchHistory() {
     try {
-        const res = await fetch('/api/v1/sessions');
+		const res = await apiFetch('/api/v1/sessions');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const envelope = await res.json();
         state.history = (envelope.data || [])
@@ -310,7 +338,7 @@ async function showDetailPanel(sessionId) {
 
     // Fetch session info
     try {
-        const res = await fetch(`/api/v1/sessions/${sessionId}`);
+		const res = await apiFetch(`/api/v1/sessions/${sessionId}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const envelope = await res.json();
         const info = envelope.data;
@@ -403,7 +431,10 @@ function renderDetailPanel(info) {
 function connectWebSocket(sessionId) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const afterSequence = state.eventSequences[sessionId] || 0;
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/ws/sessions/${sessionId}/events?after_sequence=${afterSequence}`);
+	const ws = new WebSocket(
+		`${protocol}//${window.location.host}/api/v1/ws/sessions/${sessionId}/events?after_sequence=${afterSequence}`,
+		['agentd.v1', `agentd.auth.${state.authToken}`],
+	);
 
     ws.onopen = () => {
         addEventLogEntry('system', 'Connected to session');
@@ -514,7 +545,7 @@ async function deleteSession(sessionId) {
     }
 
     try {
-        const res = await fetch(`/api/v1/sessions/${sessionId}/cancel`, {
+		const res = await apiFetch(`/api/v1/sessions/${sessionId}/cancel`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ idempotency_key: `dashboard-cancel:${sessionId}` }),

@@ -468,7 +468,7 @@ func (m *model) reconnectAndSend(message string) tea.Cmd {
 			return reconnectedMsg{err: err}
 		}
 		wsURL := eventStreamURL(m.port, sid, 0)
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, err := dialEventStream(wsURL)
 		if err != nil {
 			return reconnectedMsg{err: err}
 		}

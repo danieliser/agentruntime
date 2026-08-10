@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/client"
 )
 
 func runChatCommand(args []string) int {
@@ -501,7 +502,15 @@ func chatPost(port int, path string, body interface{}) (*http.Response, error) {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	url := fmt.Sprintf("http://localhost:%d%s", port, path)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data)) //nolint:noctx
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data)) //nolint:noctx
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := client.AuthorizeLocalRequest(req); err != nil {
+		return nil, fmt.Errorf("load local AgentD authentication: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("POST %s: %w", path, err)
 	}
@@ -511,7 +520,14 @@ func chatPost(port int, path string, body interface{}) (*http.Response, error) {
 // chatGet sends a GET request to the daemon.
 func chatGet(port int, path string) (*http.Response, error) {
 	url := fmt.Sprintf("http://localhost:%d%s", port, path)
-	resp, err := http.Get(url) //nolint:noctx
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
+	if err != nil {
+		return nil, err
+	}
+	if err := client.AuthorizeLocalRequest(req); err != nil {
+		return nil, fmt.Errorf("load local AgentD authentication: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", path, err)
 	}
@@ -524,6 +540,9 @@ func chatDelete(port int, path string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	if err := client.AuthorizeLocalRequest(req); err != nil {
+		return nil, fmt.Errorf("load local AgentD authentication: %w", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -90,6 +90,12 @@ func TestDefaultDataDirUsesAgentDHome(t *testing.T) {
 	}
 }
 
+func TestDefaultListenHostIsLiteralLoopback(t *testing.T) {
+	if got := defaultListenHost(); got != "127.0.0.1" {
+		t.Fatalf("default listen host = %q, want literal loopback", got)
+	}
+}
+
 func TestDefaultDataDirHonorsExplicitOverride(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "agentd-state")
 	t.Setenv("AGENTRUNTIME_DATA_DIR", want)

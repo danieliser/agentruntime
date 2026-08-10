@@ -52,6 +52,32 @@ func TestEmbeddedDashboardUsesDurableV1SessionSurfaces(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDashboardAuthenticatesWithoutPersistingOrLeakingToken(t *testing.T) {
+	app, err := dashboardFS.ReadFile("dashboard/app.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard: %v", err)
+	}
+	for _, required := range [][]byte{
+		[]byte("sessionStorage"),
+		[]byte("Authorization"),
+		[]byte("Bearer "),
+		[]byte("agentd.auth."),
+	} {
+		if !bytes.Contains(app, required) {
+			t.Fatalf("dashboard authentication missing %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("localStorage"),
+		[]byte("access_token="),
+		[]byte("auth_token="),
+	} {
+		if bytes.Contains(app, forbidden) {
+			t.Fatalf("dashboard leaks credential through %q", forbidden)
+		}
+	}
+}
+
 func TestAPIPrioritizesOverDashboard(t *testing.T) {
 	ts, _ := newTestServer(t)
 

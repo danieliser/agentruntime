@@ -7,15 +7,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/api"
 	"github.com/danieliser/agentruntime/pkg/chat"
+	projectconfig "github.com/danieliser/agentruntime/pkg/config"
 	"github.com/danieliser/agentruntime/pkg/credentials"
 	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
@@ -39,6 +42,7 @@ func main() {
 	}
 
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	host := flag.String("host", defaultListenHost(), "HTTP server bind address")
 	port := flag.Int("port", 8090, "HTTP server port")
 	rtName := flag.String("runtime", "local", "Execution runtime (local, docker)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "Data root for database, chat history, logs, credentials, and backups")
@@ -55,6 +59,14 @@ func main() {
 
 	log.Printf("agentd %s starting", Version)
 	log.Printf("data dir: %s", *dataDir)
+	authToken, err := api.LoadOrCreateAuthToken(*dataDir)
+	if err != nil {
+		log.Fatalf("failed to initialize API authentication: %v", err)
+	}
+	listenerScope, err := classifyListenHost(*host)
+	if err != nil {
+		log.Fatalf("invalid HTTP bind address: %v", err)
+	}
 	logDir := filepath.Join(*dataDir, "logs")
 	durableStore, err := openDurableStore(*dataDir)
 	if err != nil {
@@ -187,9 +199,11 @@ func main() {
 	agents := agent.DefaultRegistry()
 
 	// Start HTTP server.
-	addr := fmt.Sprintf(":%d", *port)
+	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	srv := api.NewServer(sessions, rt, agents, api.ServerConfig{
 		Version:         Version,
+		AuthToken:       authToken,
+		ListenerScope:   listenerScope,
 		DataDir:         *dataDir,
 		LogDir:          logDir,
 		ExtraRuntimes:   extraRuntimes,
@@ -226,14 +240,29 @@ func main() {
 	log.Println("agentd stopped")
 }
 
+func defaultListenHost() string { return "127.0.0.1" }
+
+func classifyListenHost(host string) (string, error) {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("host must be a literal IP address")
+	}
+	switch {
+	case ip.IsLoopback():
+		return "loopback", nil
+	case ip.IsUnspecified():
+		return "all_interfaces", nil
+	case ip.IsPrivate():
+		return "private", nil
+	default:
+		return "public", nil
+	}
+}
+
 // defaultDataDir returns AgentD's private user-state root. An explicit
 // AGENTRUNTIME_DATA_DIR relocates the complete database/history/log layout.
 func defaultDataDir() string {
-	if dir := os.Getenv("AGENTRUNTIME_DATA_DIR"); dir != "" {
-		return dir
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agentd")
+	return projectconfig.DataDir()
 }
 
 func defaultPluginConfigPath(dataDir string) string {

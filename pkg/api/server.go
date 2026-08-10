@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"log"
 	"net/http"
@@ -23,23 +24,26 @@ import (
 
 // Server holds the HTTP server and its dependencies.
 type Server struct {
-	router       *gin.Engine
-	sessions     *session.Manager
-	runtimes     map[string]runtime.Runtime // keyed by name ("local", "docker")
-	runtime      runtime.Runtime            // default runtime (first registered or "local")
-	agents       *agent.Registry
-	version      string
-	dataDir      string
-	logDir       string // directory for persistent session NDJSON logs
-	durableStore durable.Store
-	eventBroker  *eventstream.Broker
-	observers    ObserverService
-	srv          *http.Server
-	resumeMu     sync.Mutex
-	admissionMu  sync.RWMutex
-	draining     bool
-	nativeMu     sync.RWMutex
-	native       map[string]*activeNativeSession
+	router        *gin.Engine
+	sessions      *session.Manager
+	runtimes      map[string]runtime.Runtime // keyed by name ("local", "docker")
+	runtime       runtime.Runtime            // default runtime (first registered or "local")
+	agents        *agent.Registry
+	version       string
+	listenerScope string
+	authEnabled   bool
+	authTokenHash [sha256.Size]byte
+	dataDir       string
+	logDir        string // directory for persistent session NDJSON logs
+	durableStore  durable.Store
+	eventBroker   *eventstream.Broker
+	observers     ObserverService
+	srv           *http.Server
+	resumeMu      sync.Mutex
+	admissionMu   sync.RWMutex
+	draining      bool
+	nativeMu      sync.RWMutex
+	native        map[string]*activeNativeSession
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -76,6 +80,14 @@ func (s *Server) RuntimeFor(name string) runtime.Runtime {
 type ServerConfig struct {
 	// Version is the agentd build version string (e.g., "0.7.1").
 	Version string
+
+	// AuthToken enables bearer authentication for every private HTTP and
+	// WebSocket surface. Production AgentD always supplies the token loaded
+	// from its private data root; empty is reserved for isolated tests.
+	AuthToken string
+
+	// ListenerScope is the resolved bind classification advertised to callers.
+	ListenerScope string
 
 	// DataDir stores agent session state, credentials, and logs.
 	// Defaults to the parent of LogDir, or "." if LogDir is also empty.
@@ -156,6 +168,11 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		native:   make(map[string]*activeNativeSession),
 	}
 	if len(cfgs) > 0 {
+		s.listenerScope = cfgs[0].ListenerScope
+		if cfgs[0].AuthToken != "" {
+			s.authEnabled = true
+			s.authTokenHash = sha256.Sum256([]byte(cfgs[0].AuthToken))
+		}
 		s.chatRegistry = cfgs[0].ChatRegistry
 		s.chatManager = cfgs[0].ChatManager
 		s.durableStore = cfgs[0].DurableStore
@@ -170,10 +187,14 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 // Start begins listening on the given address. Blocks until the server is stopped.
 func (s *Server) Start(addr string) error {
 	s.srv = &http.Server{
-		Addr:         addr,
-		Handler:      s.router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:              addr,
+		Handler:           s.router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Streaming and WebSocket responses own their write deadlines.
+		WriteTimeout:   0,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 16 << 10,
 	}
 	names := make([]string, 0, len(s.runtimes))
 	for name := range s.runtimes {

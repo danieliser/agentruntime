@@ -13,12 +13,21 @@ import (
 )
 
 type Client struct {
-	BaseURL    string
-	HTTPClient *http.Client
+	BaseURL     string
+	HTTPClient  *http.Client
+	bearerToken string
 }
 
 func New(baseURL string) *Client {
 	return &Client{BaseURL: strings.TrimRight(baseURL, "/")}
+}
+
+// NewAuthenticated creates a v1 client that authenticates private AgentD
+// requests with an in-memory bearer token. The token is never added to URLs.
+func NewAuthenticated(baseURL, bearerToken string) *Client {
+	client := New(baseURL)
+	client.bearerToken = bearerToken
+	return client
 }
 
 func (c *Client) Health(ctx context.Context) (*api.HealthResponse, error) {
@@ -62,6 +71,9 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+	}
 	return req, nil
 }
 

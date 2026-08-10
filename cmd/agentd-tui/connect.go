@@ -11,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+
+	"github.com/danieliser/agentruntime/pkg/client"
 )
 
 // chatMeta holds metadata about the connected chat/session.
@@ -96,7 +98,7 @@ func connect(target string, port int, noReplay bool, opts connectOpts) (*websock
 	}
 	wsURL := eventStreamURL(port, meta.SessionID, afterSequence)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, err := dialEventStream(wsURL)
 	if err != nil {
 		return nil, meta, fmt.Errorf("connect WS: %w", err)
 	}
@@ -112,7 +114,7 @@ type durableSessionResponse struct {
 }
 
 func inspectDurableSession(port int, sessionID string) (durableSessionResponse, error) {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s", port, url.PathEscape(sessionID)))
+	resp, err := localHTTP(http.MethodGet, fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s", port, url.PathEscape(sessionID)), "", nil)
 	if err != nil {
 		return durableSessionResponse{}, err
 	}
@@ -152,7 +154,7 @@ func postDurableControl(port int, sessionID, operation string, body any) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(
+	resp, err := localHTTP(http.MethodPost,
 		fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s/%s", port, url.PathEscape(sessionID), operation),
 		"application/json", bytes.NewReader(encoded),
 	)
@@ -179,7 +181,7 @@ type chatAPIResponse struct {
 }
 
 func getChat(port int, name string) (*chatAPIResponse, error) {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/chats/%s", port, url.PathEscape(name)))
+	resp, err := localHTTP(http.MethodGet, fmt.Sprintf("http://localhost:%d/chats/%s", port, url.PathEscape(name)), "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +202,7 @@ func getChat(port int, name string) (*chatAPIResponse, error) {
 
 func createChat(port int, name, agent, idleTimeout string) error {
 	body := fmt.Sprintf(`{"name":%q,"config":{"agent":%q,"idle_timeout":%q}}`, name, agent, idleTimeout)
-	resp, err := http.Post(
+	resp, err := localHTTP(http.MethodPost,
 		fmt.Sprintf("http://localhost:%d/chats", port),
 		"application/json",
 		strings.NewReader(body),
@@ -269,7 +271,7 @@ func loadChatHistory(port int, chain []string, currentSessionID string) ([]chatM
 		for {
 			path := fmt.Sprintf("http://localhost:%d/api/v1/sessions/%s/events?after_sequence=%d&limit=1000",
 				port, url.PathEscape(sessionID), cursor)
-			resp, err := http.Get(path)
+			resp, err := localHTTP(http.MethodGet, path, "", nil)
 			if err != nil {
 				break
 			}
@@ -324,7 +326,7 @@ func containsString(values []string, target string) bool {
 // attachChat calls POST /chats/:name/attach to spawn (or reuse) an interactive
 // session through the chat manager. Tracks lifecycle and resume.
 func attachChat(port int, name string) (string, error) {
-	resp, err := http.Post(
+	resp, err := localHTTP(http.MethodPost,
 		fmt.Sprintf("http://localhost:%d/chats/%s/attach", port, url.PathEscape(name)),
 		"application/json",
 		strings.NewReader("{}"),
@@ -347,4 +349,27 @@ func attachChat(port int, name string) (string, error) {
 		return "", fmt.Errorf("no session_id in response")
 	}
 	return result.SessionID, nil
+}
+
+func localHTTP(method, endpoint, contentType string, body io.Reader) (*http.Response, error) {
+	request, err := http.NewRequest(method, endpoint, body) //nolint:noctx
+	if err != nil {
+		return nil, err
+	}
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	if err := client.AuthorizeLocalRequest(request); err != nil {
+		return nil, fmt.Errorf("load local AgentD authentication: %w", err)
+	}
+	return http.DefaultClient.Do(request)
+}
+
+func dialEventStream(endpoint string) (*websocket.Conn, error) {
+	headers, err := client.LocalWebSocketHeaders()
+	if err != nil {
+		return nil, fmt.Errorf("load local AgentD authentication: %w", err)
+	}
+	connection, _, err := websocket.DefaultDialer.Dial(endpoint, headers)
+	return connection, err
 }
