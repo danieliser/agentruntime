@@ -252,6 +252,37 @@ func TestMaterialize_CodexWritesConfigAndInstructions(t *testing.T) {
 	}
 }
 
+func TestMaterialize_CodexAppliesRequestedModelControlsWithoutHighDefault(t *testing.T) {
+	request := &api.SessionRequest{
+		Model: "gpt-5.6-sol", Effort: "ultra", Fast: true,
+		Codex: &api.CodexConfig{ConfigTOML: map[string]any{"quiet": true}},
+	}
+	result := mustMaterializeWithDataDir(t, request, "session-controls", t.TempDir())
+	defer result.CleanupFn()
+
+	mount := findMount(t, result.Mounts, "/home/agent/.codex")
+	configData, err := os.ReadFile(filepath.Join(mount.Host, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	config := string(configData)
+	for _, expected := range []string{
+		`model = "gpt-5.6-sol"`,
+		`model_reasoning_effort = "ultra"`,
+		`service_tier = "priority"`,
+	} {
+		if !strings.Contains(config, expected) {
+			t.Errorf("requested Codex config missing %q: %s", expected, config)
+		}
+	}
+	if strings.Contains(config, `model_reasoning_effort = "high"`) {
+		t.Fatalf("materializer widened requested effort: %s", config)
+	}
+	if len(request.Codex.ConfigTOML) != 1 || request.Codex.ConfigTOML["quiet"] != true {
+		t.Fatalf("materializer mutated caller config: %+v", request.Codex.ConfigTOML)
+	}
+}
+
 func TestMaterialize_NilAgentConfig(t *testing.T) {
 	result := mustMaterializeWithDataDir(t, &api.SessionRequest{}, "session-12345678", t.TempDir())
 	defer result.CleanupFn()

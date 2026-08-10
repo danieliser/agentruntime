@@ -154,25 +154,32 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		return
 	}
 
-	// Build the command.
-	agCfg := agent.AgentConfig{
-		WorkDir:         workDir,
-		Env:             req.Env,
-		Interactive:     req.Interactive,
-		NativeStream:    nativeV1Agent(req.Agent),
-		ResumeSessionID: resumeSessionID,
-	}
-	prompt := req.Prompt
-	if req.Interactive {
-		prompt = ""
-	}
-	cmd, err := ag.BuildCmd(prompt, agCfg)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if _, nativeCodex := ag.(*agent.CodexAgent); nativeCodex {
-		cmd = []string{"codex", "app-server", "--listen", "stdio://"}
+	// ACT-1001: native HTTP admission uses the same resolver as internal
+	// admission and generation resume. Provider controls must not be rebuilt
+	// independently in this handler.
+	var cmd []string
+	if nativeV1Agent(req.Agent) {
+		resolved, resolveErr := resolveNativeExecution(req, ag, workDir, resumeSessionID)
+		if resolveErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": resolveErr.Error()})
+			return
+		}
+		cmd = resolved.Command
+	} else {
+		agCfg := agent.AgentConfig{
+			Model: req.Model, WorkDir: workDir, Env: req.Env,
+			Interactive: req.Interactive, ResumeSessionID: resumeSessionID,
+			Effort: req.Effort, Fast: req.Fast,
+		}
+		prompt := req.Prompt
+		if req.Interactive {
+			prompt = ""
+		}
+		cmd, err = ag.BuildCmd(prompt, agCfg)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	spawnCmd := runtimeSpawnCommand(cmd, rt.Name(), req.Agent)

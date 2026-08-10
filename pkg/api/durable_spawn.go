@@ -70,21 +70,11 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if err != nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider session", err)
 	}
-	agentConfig := agent.AgentConfig{
-		Model: req.Model, WorkDir: workDir, Env: req.Env, Interactive: req.Interactive,
-		NativeStream: true, ResumeSessionID: providerID, Effort: req.Effort, Fast: req.Fast,
-	}
-	if req.Claude != nil {
-		agentConfig.MaxTokens = req.Claude.MaxTurns
-		agentConfig.AllowedTools = append([]string(nil), req.Claude.AllowedTools...)
-	}
-	command, err := ag.BuildCmd("", agentConfig)
+	resolved, err := resolveNativeExecution(req, ag, workDir, providerID)
 	if err != nil {
-		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "build native command", err)
+		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve native execution", err)
 	}
-	if _, codex := ag.(*agent.CodexAgent); codex {
-		command = []string{"codex", "app-server", "--listen", "stdio://"}
-	}
+	command := resolved.Command
 
 	admission, err := s.admitV1Session(ctx, req, rt.Name())
 	if err != nil {

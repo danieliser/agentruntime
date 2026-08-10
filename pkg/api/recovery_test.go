@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -345,8 +346,10 @@ func TestV1ResumeLostSessionCreatesOneNextGeneration(t *testing.T) {
 	}
 	select {
 	case config := <-resumeAgent.configs:
-		if config.ResumeSessionID != "provider-missing" {
-			t.Fatalf("provider resume ID = %q", config.ResumeSessionID)
+		if config.ResumeSessionID != "provider-missing" || config.Model != "claude-opus-5" ||
+			config.Effort != "max" || !config.Fast || config.MaxTokens != 1 ||
+			!slices.Equal(config.AllowedTools, []string{"WebSearch"}) {
+			t.Fatalf("resolved provider resume config = %+v", config)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("resume agent was not built")
@@ -397,7 +400,7 @@ func runningRecoveryStore(t *testing.T) (durable.Store, string) {
 	createdAt := time.Unix(2_000, 0).UTC()
 	created, err := store.CreateSession(ctx, durable.CreateSessionParams{
 		SessionID: "missing-session", IdempotencyKey: "missing-job", RequestHash: "sha256:missing",
-		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","timeout":"1000000h"}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
+		RequestManifest: []byte(`{"agent":"claude","runtime":"docker","model":"claude-opus-5","effort":"max","fast":true,"timeout":"1000000h","claude":{"max_turns":1,"allowed_tools":["WebSearch"]}}`), Agent: "claude", Runtime: "docker", CreatedAt: createdAt,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)

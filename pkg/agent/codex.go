@@ -13,7 +13,7 @@ type CodexAgent struct{}
 func (a *CodexAgent) Name() string { return "codex" }
 
 func (a *CodexAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error) {
-	if !cfg.Interactive && prompt == "" {
+	if !cfg.Interactive && !cfg.NativeStream && prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
 

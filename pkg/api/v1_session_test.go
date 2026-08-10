@@ -217,17 +217,29 @@ func TestSpawnSessionUsesDurableNativePipelineForChat(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	registry := agent.NewRegistry()
-	registry.Register(&resumeClaudeAgent{configs: make(chan agent.AgentConfig, 1)})
+	internalAgent := &resumeClaudeAgent{configs: make(chan agent.AgentConfig, 1)}
+	registry.Register(internalAgent)
 	manager := session.NewManager()
 	server := NewServer(manager, runtime.NewLocalRuntime(), registry, ServerConfig{
 		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
 	})
 	sess, err := server.SpawnSession(context.Background(), SessionRequest{
 		Agent: "claude", Runtime: "local", Prompt: "chat follow-up", Interactive: true,
-		Tags: map[string]string{"chat_name": "durable-chat"},
+		Model: "claude-opus-5", Effort: "max", Fast: true,
+		Claude: &ClaudeConfig{MaxTurns: 1, AllowedTools: []string{"WebSearch"}},
+		Tags:   map[string]string{"chat_name": "durable-chat"},
 	})
 	if err != nil {
 		t.Fatalf("spawn chat session: %v", err)
+	}
+	select {
+	case config := <-internalAgent.configs:
+		if config.Model != "claude-opus-5" || config.Effort != "max" || !config.Fast ||
+			config.MaxTokens != 1 || !slices.Equal(config.AllowedTools, []string{"WebSearch"}) {
+			t.Fatalf("internal spawn resolved config = %+v", config)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("internal spawn did not resolve the provider command")
 	}
 	stored, err := store.GetSession(context.Background(), sess.ID)
 	if err != nil || stored.IdempotencyKey == "" || stored.State != durable.StateRunning || stored.ActiveGeneration != 1 {

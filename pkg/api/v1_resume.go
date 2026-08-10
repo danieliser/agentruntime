@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
@@ -92,17 +91,13 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	}
 	mounts := request.EffectiveMounts()
 	workDir := effectiveWorkDir(request.WorkDir, mounts)
-	command, err := ag.BuildCmd(request.Prompt, agent.AgentConfig{
-		WorkDir: workDir, Env: request.Env, Interactive: request.Interactive,
-		NativeStream: true, SessionID: stored.ID, ResumeSessionID: previous.ProviderID,
-	})
+	request.SessionID = stored.ID
+	resolved, err := resolveNativeExecution(request, ag, workDir, previous.ProviderID)
 	if err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "build provider resume command", err))
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider resume command", err))
 		return
 	}
-	if _, codex := ag.(*agent.CodexAgent); codex {
-		command = []string{"codex", "app-server", "--listen", "stdio://"}
-	}
+	command := resolved.Command
 	command = runtimeSpawnCommand(command, rt.Name(), stored.Agent)
 	if existing := s.sessions.Get(stored.ID); existing != nil {
 		if existing.Snapshot().State == session.StateRunning {

@@ -172,7 +172,7 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 		"projects": map[string]any{
 			"/workspace": map[string]any{
 				"hasTrustDialogAccepted":        true,
-				"hasCompletedProjectOnboarding":  true,
+				"hasCompletedProjectOnboarding": true,
 				"hasTrustDialogHooksAccepted":   true,
 				"allowedTools":                  []any{},
 			},
@@ -247,7 +247,7 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 	}
 
 	// Merge config.toml: discovered as base, explicit wins
-	config := req.Codex.ConfigTOML
+	config := cloneMap(req.Codex.ConfigTOML)
 	if discovered != nil && discoverOpts.ConfigTOML && len(discovered.ConfigTOML) > 0 {
 		if config == nil {
 			config = discovered.ConfigTOML
@@ -259,6 +259,17 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 	if config == nil {
 		config = map[string]any{}
 	}
+	// ACT-1001: the top-level resolved controls are the canonical provider
+	// values. Materialization must never replace them with a wider default.
+	if req.Model != "" {
+		config["model"] = req.Model
+	}
+	if req.Effort != "" {
+		config["model_reasoning_effort"] = req.Effort
+	}
+	if req.Fast {
+		config["service_tier"] = "priority"
+	}
 
 	// Merge AGENTS.md: discovered first, then explicit
 	agentsMD := req.Codex.Instructions
@@ -269,12 +280,8 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 	if err != nil {
 		return "", err
 	}
-	// Append workspace trust and sensible defaults that the flat TOML
-	// marshaler can't represent (nested table sections).
+	// Append workspace trust that the flat TOML marshaler cannot represent.
 	tomlData = append(tomlData, []byte("\n"+
-		"# agentruntime defaults\n"+
-		"model_reasoning_effort = \"high\"\n"+
-		"\n"+
 		"[projects.\"/workspace\"]\n"+
 		"trust_level = \"trusted\"\n",
 	)...)
