@@ -73,11 +73,13 @@ func TestNetworkManager_IdempotentProxy(t *testing.T) {
 	logFile := filepath.Join(tempDir, "docker.log")
 	networkState := filepath.Join(tempDir, "network")
 	proxyState := filepath.Join(tempDir, "proxy.running")
-	installFakeDocker(t, `#!/bin/sh
+	proxyReadyAttempt := filepath.Join(tempDir, "proxy.ready-attempt")
+	installFakeDockerWithReadinessControl(t, `#!/bin/sh
 set -eu
 LOG_FILE="`+logFile+`"
 NETWORK_STATE="`+networkState+`"
 PROXY_STATE="`+proxyState+`"
+PROXY_READY_ATTEMPT="`+proxyReadyAttempt+`"
 printf '%s\n' "$*" >> "$LOG_FILE"
 case "$1 $2" in
   "network inspect")
@@ -110,6 +112,13 @@ case "$1 $2" in
     printf 'proxy-container\n'
     exit 0
     ;;
+  "exec agentruntime-proxy")
+    if [ -f "$PROXY_READY_ATTEMPT" ]; then
+      exit 0
+    fi
+    : > "$PROXY_READY_ATTEMPT"
+    exit 1
+    ;;
 esac
 echo "unexpected docker command: $*" >&2
 exit 2
@@ -133,5 +142,8 @@ exit 2
 	if !strings.Contains(string(data), "network create --driver bridge --internal "+defaultDockerPolicyNetworkName) ||
 		!strings.Contains(string(data), "network connect --alias agentruntime-proxy "+defaultDockerPolicyNetworkName+" agentruntime-proxy") {
 		t.Fatalf("expected internal policy network and dual-homed proxy, got log %q", string(data))
+	}
+	if count := strings.Count(string(data), "exec agentruntime-proxy sh -c "+dockerProxyReadinessProbe+"\n"); count != 2 {
+		t.Fatalf("expected readiness retry before admission, got %d attempts in log %q", count, string(data))
 	}
 }

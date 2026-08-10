@@ -48,23 +48,34 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 	}
 
 	logsCmd := nativeDockerCommand(host, "logs", "--follow", "--since=0", containerID)
-	stdout, err := logsCmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		stopDockerCLI(attachCmd)
 		return nil, fmt.Errorf("Docker logs stdout pipe: %w", err)
 	}
-	stderr, err := logsCmd.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		stopDockerCLI(attachCmd)
 		return nil, fmt.Errorf("Docker logs stderr pipe: %w", err)
 	}
+	logsCmd.Stdout = stdoutWriter
+	logsCmd.Stderr = stderrWriter
 	if err := logsCmd.Start(); err != nil {
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		stopDockerCLI(attachCmd)
 		return nil, fmt.Errorf("start logs: %w", err)
 	}
+	// The child owns duplicated writer descriptors after Start. Closing the
+	// parent copies lets readers observe EOF while keeping them independent of
+	// exec.Cmd.Wait, which closes StdoutPipe readers before a delayed consumer
+	// can drain fast-exiting log commands.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 
 	var waitStdout bytes.Buffer
 	var waitStderr bytes.Buffer
@@ -73,6 +84,8 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 	waitCmd.Stderr = &waitStderr
 	if err := waitCmd.Start(); err != nil {
 		stopDockerCLI(logsCmd)
+		_ = stdout.Close()
+		_ = stderr.Close()
 		stopDockerCLI(attachCmd)
 		return nil, fmt.Errorf("start wait: %w", err)
 	}

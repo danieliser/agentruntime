@@ -266,27 +266,30 @@ esac
 	if err := handle.Stdin().Close(); err != nil {
 		t.Fatalf("close native stdin: %v", err)
 	}
+	inputPath := filepath.Join(stateDir, "stdin")
+	deadline := time.Now().Add(2 * time.Second)
+	var input []byte
+	for time.Now().Before(deadline) {
+		input, err = os.ReadFile(inputPath)
+		if err == nil && string(input) == "hello native\n" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if string(input) != "hello native\n" {
+		t.Fatalf("captured stdin = %q, err=%v", input, err)
+	}
 
-	stdout, err := io.ReadAll(handle.Stdout())
-	if err != nil {
-		t.Fatalf("read native stdout: %v", err)
-	}
-	if got, want := string(stdout), "{\"type\":\"system\",\"session_id\":\"provider-1\"}\n"; got != want {
-		t.Fatalf("native stdout = %q, want %q", got, want)
-	}
 	result := <-handle.Wait()
 	if result.Err != nil || result.Code != 7 {
 		t.Fatalf("native wait = %+v, want code 7", result)
 	}
-	if err := waitForFile(filepath.Join(stateDir, "stdin"), 2*time.Second); err != nil {
-		t.Fatalf("native attach did not receive stdin: %v", err)
-	}
-	input, err := os.ReadFile(filepath.Join(stateDir, "stdin"))
+	stdout, err := io.ReadAll(handle.Stdout())
 	if err != nil {
-		t.Fatalf("read captured stdin: %v", err)
+		t.Fatalf("read native stdout after wait: %v", err)
 	}
-	if string(input) != "hello native\n" {
-		t.Fatalf("captured stdin = %q", input)
+	if got, want := string(stdout), "{\"type\":\"system\",\"session_id\":\"provider-1\"}\n"; got != want {
+		t.Fatalf("native stdout = %q, want %q", got, want)
 	}
 	if handle.RuntimeID() != "container-native" || !handle.NativeStdio() {
 		t.Fatalf("native handle identity = %q, native=%v", handle.RuntimeID(), handle.NativeStdio())

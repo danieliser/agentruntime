@@ -525,6 +525,19 @@ exit 2
 
 func installFakeDocker(t *testing.T, script string) string {
 	t.Helper()
+	const shebang = "#!/bin/sh\n"
+	if !strings.HasPrefix(script, shebang) {
+		t.Fatal("fake Docker script must start with #!/bin/sh")
+	}
+	readiness := `if [ "${1-}" = "exec" ] && [ "${2-}" = "agentruntime-proxy" ]; then
+  exit 0
+fi
+`
+	return installFakeDockerWithReadinessControl(t, shebang+readiness+strings.TrimPrefix(script, shebang))
+}
+
+func installFakeDockerWithReadinessControl(t *testing.T, script string) string {
+	t.Helper()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "docker")

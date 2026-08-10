@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	defaultDockerProxyImage        = "agentruntime-proxy:latest"
 	dockerProxyContainerName       = "agentruntime-proxy"
 	dockerProxyPort                = "3128"
+	dockerProxyReadinessProbe      = "if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 3128; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/3128'; else exit 127; fi"
 	dockerBridgeName               = "br-agentruntime"
 	defaultAgentRuntimePort        = "8090"
 )
@@ -151,7 +153,7 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	state, err := dockerInspectRunningHost(ctx, host, dockerProxyContainerName)
 	if err == nil {
 		if state {
-			return m.connectProxyToPolicyNetwork(ctx)
+			return m.prepareRunningProxy(ctx)
 		}
 		if err := dockerRemoveContainerHost(ctx, host, dockerProxyContainerName); err != nil {
 			return err
@@ -171,11 +173,18 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	); err != nil {
 		// Race: proxy already started by another process.
 		if strings.Contains(err.Error(), "already in use") {
-			return nil
+			return m.prepareRunningProxy(ctx)
 		}
 		return fmt.Errorf("start docker proxy %q: %w", dockerProxyContainerName, err)
 	}
-	return m.connectProxyToPolicyNetwork(ctx)
+	return m.prepareRunningProxy(ctx)
+}
+
+func (m *NetworkManager) prepareRunningProxy(ctx context.Context) error {
+	if err := m.connectProxyToPolicyNetwork(ctx); err != nil {
+		return err
+	}
+	return m.waitForProxyReady(ctx)
 }
 
 func (m *NetworkManager) connectProxyToPolicyNetwork(ctx context.Context) error {
@@ -184,6 +193,30 @@ func (m *NetworkManager) connectProxyToPolicyNetwork(ctx context.Context) error 
 		return fmt.Errorf("connect proxy to internal policy network: %w", err)
 	}
 	return nil
+}
+
+func (m *NetworkManager) waitForProxyReady(ctx context.Context) error {
+	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		_, lastErr = dockerOutputHost(
+			readyCtx,
+			m.dockerHost(),
+			"exec", dockerProxyContainerName,
+			"sh", "-c", dockerProxyReadinessProbe,
+		)
+		if lastErr == nil {
+			return nil
+		}
+		select {
+		case <-readyCtx.Done():
+			return fmt.Errorf("docker proxy did not become ready: %w", lastErr)
+		case <-ticker.C:
+		}
+	}
 }
 
 // ProxyEnv returns the egress proxy variables for agent containers.

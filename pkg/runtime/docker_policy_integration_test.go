@@ -94,6 +94,11 @@ printf '%s\n' '{"qualified":true}'`
 			err   error
 		}{bytes: bytes, err: err}
 	}()
+	errorResult := make(chan []byte, 1)
+	go func() {
+		bytes, _ := io.ReadAll(handle.Stderr())
+		errorResult <- bytes
+	}()
 	result := <-handle.Wait()
 	if err := runtime.ReleaseSession(ctx, sessionID); err != nil {
 		t.Fatalf("release qualified session: %v", err)
@@ -107,7 +112,7 @@ printf '%s\n' '{"qualified":true}'`
 		t.Fatal("Docker log follower did not close after terminal-retention cleanup")
 	}
 	if readErr != nil || result.Err != nil || result.Code != 0 || !strings.Contains(string(output), `{"qualified":true}`) {
-		t.Fatalf("restricted qualification output=%q read_err=%v exit=%+v", output, readErr, result)
+		t.Fatalf("restricted qualification output=%q stderr=%q read_err=%v exit=%+v", output, <-errorResult, readErr, result)
 	}
 	for _, root := range []string{"claude-sessions", "codex-sessions"} {
 		if _, err := os.Stat(filepath.Join(dataDir, root, sessionID)); !os.IsNotExist(err) {
