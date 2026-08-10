@@ -1,6 +1,6 @@
 # AgentD Durable Native Streaming — Task Sheet
 
-Status: **G0 + G1 + G2 + G3 + G4 + G5 APPROVED / PHASE 9 COMPLETE / v2.0.0 RELEASED**
+Status: **G0 + G1 + G2 + G3 + G4 + G5 APPROVED / PHASE 10 IN PROGRESS / v2.0.0 RELEASED**
 
 Last updated: 2026-08-10
 
@@ -315,6 +315,21 @@ retirement of non-native methods after this parity checkpoint.
 | REL-901 | DONE | Qualify and publish the breaking durable-native release as `v2.0.0`. | Local race, vet, build, real-Docker, real-OpenTraces, cross-build, and wheel checks pass; GitHub CI passes on Go 1.24.2 and 1.26.x; annotated tag, GitHub release, and four platform wheels are published. | M |
 | REL-902 | DONE | Activate local-only OpenTraces and run the published AgentD against the persistent user data root. | Global `agentd --version` reports `2.0.0`; the live capability handshake reports OpenTraces `0.4.13` healthy with zero unacknowledged events; AgentD uses `~/.agentd`; remote sync remains unconfigured. | S |
 
+### Phase 10 — Trading Floor admission and execution-policy qualification
+
+| ID | Status | Task | Acceptance evidence | Size |
+|---|---|---|---|---|
+| ACT-1001 | IN PROGRESS | Replace divergent HTTP, internal, resume, and reconstruction command assembly with one canonical request-to-runtime resolver. | Resolver contract tests prove exact model, effort, fast mode, timeout, Claude turns/tools, Codex provider configuration, request manifest, and resumed generation are identical across every admission path. | L |
+| ACT-1002 | TODO | Add a loopback-safe listener and authenticated v1 API boundary. | `--host` defaults to `127.0.0.1`; private token file lives below the data root with `0600` mode; protected HTTP and WebSocket routes require constant-time bearer authentication; health reveals no private state; server/body/header limits and capability evidence pass. | L |
+| ACT-1003 | TODO | Define and resolve a versioned caller execution policy without silent widening. | Unsupported workspace/filesystem/network/approval/tool/MCP/mount policy fails before admission; the canonical resolved policy and SHA-256 are immutable in the durable request manifest and returned on create/inspect. No migration is written unless a reviewed additive schema plan proves the manifest is insufficient. | L |
+| ACT-1004 | TODO | Enforce the resolved policy consistently in Claude and Codex native transports. | Provider contract tests prove the exact tool allowlist, approval/sandbox mode, model, effort, turn limit, no dynamic MCP/plugin grants, and no resume widening. `dangerFullAccess` and unconditional permission bypass are absent from restricted sessions. | L |
+| ACT-1005 | TODO | Add a bounded caller-provided JSON Schema output contract and terminal result proof. | Admission stores a canonical schema hash; supported providers receive the native constraint; unsupported enforcement returns `structured_output_unsupported`; exact final bytes are size-bounded, schema-validated, durably addressable, and hash-linked to the immutable receipt. | L |
+| ACT-1006 | TODO | Add an AgentD-created empty ephemeral Docker workspace with explicit retention and read-only support. | Real-Docker tests prove no host repository, credentials, AutoMem/MCP configuration, or ambient files are visible; the workspace is reconstructable during the generation and removed only under the declared retention policy. | L |
+| ACT-1007 | TODO | Expand capability and package identity proof. | Capabilities report build version, commit hash, API/event/plugin/execution-policy versions, listener scope, authentication contract, supported structured-output modes, and workspace profiles. An installed-artifact qualification command rejects checkout/binary drift. | M |
+| ACT-1008 | TODO | Run the real Trading Floor public Source Scout acceptance canary. | Literal loopback authenticated dispatch proves requested model/effort, empty workspace, public-search-only tools, schema-valid result, restart replay, one paid idempotent session, idempotent cancel, duplicate-safe OpenTraces replay, and independent deterministic collectors; commit/package/artifact evidence is retained. | L |
+
+**Gate G6 — APPROVED 2026-08-10:** the user supplied the Trading Floor activation audit and authorized implementation. The locked boundary is authenticated loopback admission plus an enforceable, inspectable, non-widening execution policy. Existing durable/replay/OpenTraces ownership does not change.
+
 ## 7. Qualification tests
 
 These are release blockers, not optional follow-ups.
@@ -343,6 +358,16 @@ These are release blockers, not optional follow-ups.
 - [x] `Q-22` Send a forged/mismatched acknowledgement or corrupt/future checkpoint; AgentD refuses advancement and replays safely or reports the ledger gap.
 - [x] `Q-23` Prove a plugin cannot invoke lifecycle controls, inherit ambient credentials, dynamically install itself, or trigger OpenTraces remote synchronization.
 - [x] `Q-24` Upgrade/replace the external OpenTraces adapter while AgentD retains its event ledger and resumes delivery from a compatible checkpoint.
+- [ ] `Q-25` Every create/resume/reconstruction path resolves and applies identical model, effort, timeout, provider, and tool controls.
+- [ ] `Q-26` Default listener is literal loopback; every private v1 HTTP/WebSocket route rejects missing, malformed, and incorrect authentication without leaking the token.
+- [ ] `Q-27` Restart preserves private token-file identity and authenticated clients reconnect without putting credentials in URLs, argv, logs, events, manifests, or traces.
+- [ ] `Q-28` Unsupported or widened execution/tool policy fails before a provider process starts; resume cannot add tools, mounts, MCP servers, network, or permissions.
+- [ ] `Q-29` Restricted Claude and Codex sessions expose only the resolved tool grant and do not use unrestricted host/provider permission modes.
+- [ ] `Q-30` Caller JSON Schema produces exact bounded schema-valid bytes and an immutable receipt-linked result hash; unsupported, invalid, and oversized output fail visibly.
+- [ ] `Q-31` Empty ephemeral workspace cannot read the host project, credentials, AutoMem, ambient MCP configuration, or undeclared secret grants.
+- [ ] `Q-32` Installed package identity and capabilities prove version, commit, listener, auth, policy, structured-output, workspace, replay, runtime, and plugin compatibility.
+- [ ] `Q-33` Trading Floor public Source Scout acceptance canary passes end to end without granting product authority to AgentD or OpenTraces.
+- [ ] `Q-34` Stopping AgentD leaves Trading Floor deterministic collectors healthy and produces no hidden fallback execution.
 
 ## 8. Definition of done
 
@@ -359,6 +384,10 @@ This effort is done only when:
 9. Full `go test ./...` is green and durable/restart test evidence is retained.
 10. External observers consume immutable events through a versioned, replay-safe protocol without gaining execution authority.
 11. The OpenTraces adapter can be absent or independently upgraded without AgentD owning OpenTraces data/schema lifecycle.
+12. Every public admission path applies one canonical resolved runtime configuration and proves it in the durable manifest.
+13. Sensitive v1 routes are authenticated and the daemon binds literal loopback by default.
+14. Caller execution/tool/output/workspace policy is fail-closed, immutable, inspectable, and cannot widen on resume.
+15. The real Trading Floor public canary and installed-artifact qualification pass with retained evidence.
 
 ## 9. Execution order
 
@@ -387,6 +416,7 @@ Do not parallelize work across a gate whose contract has not been approved.
 - 2026-08-09 — User authorized the external OpenTraces adapter and global machine setup. Global personal Claude/Codex/git capture is in scope; Hugging Face authentication/remote sync and automatic AgentD/Trading Floor enablement remain opt-in and are not implied.
 - 2026-08-10 — User explicitly activated the OpenTraces observer for AgentD, retained local/privately controlled storage only, and left direct/internal Trading Floor use to that product.
 - 2026-08-10 — User authorized a release after qualification; the breaking provider-native and durable-session contract is released as `v2.0.0`.
+- 2026-08-10 — Trading Floor returned an activation audit identifying dropped native model controls, all-interface unauthenticated HTTP, unproven/widened provider permissions, missing unified tool restrictions, structured result proof, and empty ephemeral workspace. The user authorized implementation; these requirements are locked as Phase 10 and Gate G6 without broadening OpenTraces authority.
 
 ## 11. Progress log
 
@@ -437,3 +467,4 @@ Append dated entries; do not rewrite history.
 - 2026-08-09 — Completed Phase 8. OpenTraces is globally installed from the independently maintained checkout through editable pipx, with `agentd`, Claude, Codex, and Pi capabilities. The AgentD adapter durably stores exact frames under a private local root, validates identities/hashes/sequences, recovers concurrent/partial/replayed delivery, normalizes runtime evidence through the registered OpenTraces ingest/security path, and auto-flushes terminal traces after acknowledgement. A real AgentD process-boundary qualification proves the trace is queryable and restart replay is duplicate-safe. Remote synchronization is unconfigured; AgentD and Trading Floor activation remain opt-in.
 - 2026-08-10 — Activated the external OpenTraces adapter through private `~/.agentd/plugins.json`. A live AgentD 2.0 capability handshake reports the adapter healthy with zero ledger lag; capture remains local-only and Trading Floor is not coupled to OpenTraces.
 - 2026-08-10 — Released `v2.0.0` from commit `8870212` after local and GitHub qualification. CI-only races in the malicious-prompt helper and fast Docker log draining were reproduced and fixed before the release tag. Six wheel build jobs and trusted PyPI publication passed; the GitHub release and four supported platform wheels are public. The globally installed daemon now reports `2.0.0` and runs against `~/.agentd`.
+- 2026-08-10 — Opened Phase 10 after Gate G6 approval. Work begins with ACT-1001 because canonical runtime resolution is the dependency for honest policy hashing, provider enforcement, resume non-widening, and capability proof. Listener/auth follows before any real Trading Floor dispatch; structured output and ephemeral workspace remain release blockers rather than deferred claims.
