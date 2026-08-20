@@ -27,6 +27,7 @@ Thumbs.db
 # Build
 /bin/
 /dist/
+/.artifacts/
 
 # PAOP agent logs
 .paop/

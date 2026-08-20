@@ -6,365 +6,411 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/danieliser/agentruntime/pkg/api"
+	agentclient "github.com/danieliser/agentruntime/pkg/client"
 )
 
-// TestConcurrency_30Sessions launches agentd in Docker mode and creates 30
-// concurrent sessions: 15 Claude (7 interactive + 8 prompt) and 15 Codex
-// (7 interactive + 8 prompt). Each prompt-mode session gets a minimal prompt
-// ("print 1 through 10, one per line"). Each interactive session gets the
-// same prompt sent via WebSocket after connection.
+const concurrencySessionCount = 30
+
+type concurrencyOutcome struct {
+	Index        int           `json:"index"`
+	SessionID    string        `json:"session_id,omitempty"`
+	State        string        `json:"state,omitempty"`
+	ReceiptState string        `json:"receipt_state,omitempty"`
+	LastSequence int64         `json:"last_sequence,omitempty"`
+	Latency      time.Duration `json:"latency_ns"`
+	Error        string        `json:"error,omitempty"`
+}
+
+type processSample struct {
+	At          time.Time `json:"at"`
+	RSSKiB      int64     `json:"rss_kib,omitempty"`
+	VSZKiB      int64     `json:"vsz_kib,omitempty"`
+	OpenFiles   int       `json:"open_files,omitempty"`
+	ProcessTree int       `json:"process_tree,omitempty"`
+	Error       string    `json:"error,omitempty"`
+}
+
+type concurrencyResults struct {
+	StartedAt        time.Time            `json:"started_at"`
+	EndedAt          time.Time            `json:"ended_at"`
+	Requested        int                  `json:"requested"`
+	Completed        int                  `json:"completed"`
+	LatencyP50       time.Duration        `json:"latency_p50_ns"`
+	LatencyP95       time.Duration        `json:"latency_p95_ns"`
+	LatencyMaximum   time.Duration        `json:"latency_maximum_ns"`
+	MaximumRSSKiB    int64                `json:"maximum_rss_kib"`
+	MaximumVSZKiB    int64                `json:"maximum_vsz_kib"`
+	MaximumOpenFiles int                  `json:"maximum_open_files"`
+	MaximumProcesses int                  `json:"maximum_process_tree"`
+	Sessions         []concurrencyOutcome `json:"sessions"`
+	Samples          []processSample      `json:"samples"`
+}
+
+// TestConcurrency_30Sessions is an opt-in, deterministic process-boundary
+// scenario. It dispatches 30 provider-native sessions through AgentD's current
+// authenticated v1 API and requires 30 immutable completed receipts. The
+// fixture emulates Claude's native stream protocol without paid model calls.
 //
-// Validates:
-// - All 30 sessions created successfully
-// - All 30 WebSocket connections open and maintained
-// - All 30 sessions produce normalized output events
-// - All 30 sessions reach exit/result state
+// Artifacts are retained in AGENTRUNTIME_CONCURRENCY_ARTIFACT_DIR, or in a
+// private OS temporary directory printed by the test when the variable is
+// omitted.
 //
-// Requires: Docker running, agentruntime-agent:latest built, Claude + Codex authenticated.
-//
-// Run: go test -tags='e2e concurrency' -timeout=300s -run TestConcurrency ./pkg/e2e/ -v
+// Run: go test -tags='e2e concurrency' -timeout=300s ./pkg/e2e -run TestConcurrency_30Sessions -count=1 -v
 func TestConcurrency_30Sessions(t *testing.T) {
-	// Verify Docker is available
-	if err := exec.Command("docker", "info").Run(); err != nil {
-		t.Skip("Docker not available")
-	}
-	// Verify image exists
-	out, err := exec.Command("docker", "image", "inspect", "agentruntime-agent:latest", "--format", "{{.Id}}").Output()
-	if err != nil || len(out) == 0 {
-		t.Skip("agentruntime-agent:latest not built")
-	}
+	repo := concurrencyRepoRoot(t)
+	artifactDir := concurrencyArtifactDir(t, repo)
+	t.Logf("concurrency artifacts: %s", artifactDir)
 
-	// Start agentd in Docker mode
-	daemonPort := mustFreePort(t)
-	daemonBin := buildDaemonBinary(t)
+	fixtureDir := t.TempDir()
+	installClaudeConcurrencyFixture(t, fixtureDir)
+	daemonBin := buildConcurrencyDaemon(t, repo)
 	dataDir := t.TempDir()
-
+	port := concurrencyFreePort(t)
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	daemon := exec.Command(daemonBin,
-		"--port", fmt.Sprintf("%d", daemonPort),
-		"--runtime", "docker",
+		"--host", "127.0.0.1", "--port", strconv.Itoa(port),
+		"--runtime", "local", "--data-dir", dataDir,
 	)
-	daemon.Env = append(os.Environ(),
-		"AGENTRUNTIME_DATA_DIR="+dataDir,
-	)
+	daemon.Env = append(os.Environ(), "PATH="+fixtureDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var daemonLogs bytes.Buffer
 	daemon.Stdout = &daemonLogs
 	daemon.Stderr = &daemonLogs
-
 	if err := daemon.Start(); err != nil {
-		t.Fatalf("start daemon: %v", err)
+		t.Fatalf("start AgentD: %v", err)
+	}
+	var stopOnce sync.Once
+	stopDaemon := func() {
+		stopOnce.Do(func() {
+			if daemon.Process != nil {
+				_ = daemon.Process.Signal(syscall.SIGTERM)
+				_ = daemon.Wait()
+			}
+		})
 	}
 	t.Cleanup(func() {
-		if daemon.Process != nil {
-			_ = daemon.Process.Signal(syscall.SIGTERM)
-			_ = daemon.Wait()
-		}
-		if t.Failed() {
-			t.Logf("daemon logs:\n%s", daemonLogs.String())
-		}
+		stopDaemon()
+		writePrivateArtifact(t, filepath.Join(artifactDir, "daemon.log"), daemonLogs.Bytes())
 	})
 
-	// Wait for daemon health
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", daemonPort)
-	if !waitForDaemonHealth(t, baseURL, 20*time.Second) {
-		t.Fatalf("daemon failed to start\n%s", daemonLogs.String())
+	token := waitForConcurrencyDaemon(t, baseURL, dataDir, 30*time.Second)
+	client := agentclient.NewAuthenticated(baseURL, token)
+	capabilities, err := client.GetCapabilities(context.Background())
+	if err != nil {
+		t.Fatalf("read capabilities: %v", err)
 	}
-	t.Logf("daemon healthy on port %d", daemonPort)
+	writePrivateJSON(t, filepath.Join(artifactDir, "environment.json"), map[string]any{
+		"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH,
+		"logical_cpus": runtime.NumCPU(), "agentd_version": capabilities.AgentDVersion,
+		"agentd_commit": capabilities.CommitHash, "session_count": concurrencySessionCount,
+		"runtime": "local", "provider": "claude-native-fixture", "repository": repo,
+	})
 
-	// Define 30 session configs: 15 Claude (7i + 8p) + 15 Codex (7i + 8p)
-	type sessionSpec struct {
-		agent       string
-		interactive bool
-		label       string
-	}
+	startedAt := time.Now().UTC()
+	sampleCtx, cancelSamples := context.WithCancel(context.Background())
+	samplesDone := make(chan []processSample, 1)
+	go sampleConcurrencyProcess(sampleCtx, daemon.Process.Pid, samplesDone)
 
-	var specs []sessionSpec
-	for i := 0; i < 7; i++ {
-		specs = append(specs, sessionSpec{"claude", true, fmt.Sprintf("claude-interactive-%d", i)})
-	}
-	for i := 0; i < 8; i++ {
-		specs = append(specs, sessionSpec{"claude", false, fmt.Sprintf("claude-prompt-%d", i)})
-	}
-	for i := 0; i < 7; i++ {
-		specs = append(specs, sessionSpec{"codex", true, fmt.Sprintf("codex-interactive-%d", i)})
-	}
-	for i := 0; i < 8; i++ {
-		specs = append(specs, sessionSpec{"codex", false, fmt.Sprintf("codex-prompt-%d", i)})
-	}
-
-	if len(specs) != 30 {
-		t.Fatalf("expected 30 specs, got %d", len(specs))
-	}
-
-	prompt := "Print the numbers 1 through 10, each on its own line. No other text."
-	workDir := repoRoot(t)
-
-	// Phase 1: Create all 30 sessions concurrently
-	t.Log("creating 30 sessions...")
-	type sessionResult struct {
-		idx       int
-		sessionID string
-		wsURL     string
-		err       error
-	}
-
-	resultCh := make(chan sessionResult, 30)
-	for i, spec := range specs {
-		go func(idx int, s sessionSpec) {
-			body := map[string]any{
-				"agent":       s.agent,
-				"interactive": s.interactive,
-				"work_dir":    workDir,
-				"task_id":     s.label,
-				"name":        s.label,
-			}
-			if !s.interactive {
-				body["prompt"] = prompt
-			}
-
-			data, _ := json.Marshal(body)
-			resp, err := http.Post(baseURL+"/sessions", "application/json", bytes.NewReader(data))
-			if err != nil {
-				resultCh <- sessionResult{idx: idx, err: err}
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-				respBody, _ := io.ReadAll(resp.Body)
-				resultCh <- sessionResult{idx: idx, err: fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))}
-				return
-			}
-
-			var sessResp struct {
-				SessionID string `json:"session_id"`
-				WSURL     string `json:"ws_url"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&sessResp); err != nil {
-				resultCh <- sessionResult{idx: idx, err: err}
-				return
-			}
-			resultCh <- sessionResult{idx: idx, sessionID: sessResp.SessionID, wsURL: sessResp.WSURL}
-		}(i, spec)
-	}
-
-	sessions := make([]sessionResult, 30)
-	for i := 0; i < 30; i++ {
-		r := <-resultCh
-		sessions[r.idx] = r
-	}
-
-	// Check for creation failures
-	var createFails int
-	for i, s := range sessions {
-		if s.err != nil {
-			t.Errorf("session %d (%s): create failed: %v", i, specs[i].label, s.err)
-			createFails++
-		}
-	}
-	if createFails > 0 {
-		t.Fatalf("%d/%d sessions failed to create", createFails, 30)
-	}
-	t.Log("all 30 sessions created")
-
-	// Phase 2: Connect all 30 WebSockets
-	t.Log("connecting 30 websockets...")
-	conns := make([]*websocket.Conn, 30)
-	for i, s := range sessions {
-		wsURL := fmt.Sprintf("ws://127.0.0.1:%d/ws/sessions/%s?since=0", daemonPort, s.sessionID)
-		dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-		conn, _, err := dialer.Dial(wsURL, nil)
-		if err != nil {
-			t.Fatalf("dial session %d (%s): %v", i, specs[i].label, err)
-		}
-		conns[i] = conn
-		t.Cleanup(func() { _ = conn.Close() })
-	}
-	t.Log("all 30 websockets connected")
-
-	// Phase 3: Send prompts to interactive sessions
-	t.Log("sending prompts to 14 interactive sessions...")
-	for i, spec := range specs {
-		if spec.interactive {
-			err := conns[i].WriteJSON(map[string]any{
-				"type": "stdin",
-				"data": prompt + "\n",
+	start := make(chan struct{})
+	outcomeCh := make(chan concurrencyOutcome, concurrencySessionCount)
+	for index := 0; index < concurrencySessionCount; index++ {
+		go func(index int) {
+			<-start
+			began := time.Now()
+			outcome := concurrencyOutcome{Index: index}
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			session, err := client.DispatchDurable(ctx, api.SessionRequest{
+				IdempotencyKey: fmt.Sprintf("concurrency-30-%02d", index),
+				Agent:          "claude", Runtime: "local", Prompt: fmt.Sprintf("fixture session %02d", index),
 			})
 			if err != nil {
-				t.Errorf("send prompt to session %d (%s): %v", i, spec.label, err)
+				outcome.Error = err.Error()
+				outcome.Latency = time.Since(began)
+				outcomeCh <- outcome
+				return
 			}
-		}
-	}
-
-	// Phase 4: Read from all 30, track which reach completion
-	t.Log("reading output from all 30 sessions (up to 120s)...")
-	var readWg sync.WaitGroup
-	var completed atomic.Int32
-	var gotOutput atomic.Int32
-	completionStatus := make([]string, 30)
-
-	for i, conn := range conns {
-		readWg.Add(1)
-		go func(idx int, c *websocket.Conn, label string) {
-			defer readWg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					// gorilla/websocket panics on repeated read after failure
-				}
-			}()
-
-			deadline := time.Now().Add(120 * time.Second)
-			hasOutput := false
-			finished := false
-			readFailed := false
-
-			for time.Now().Before(deadline) && !finished && !readFailed {
-				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-				_, msg, err := c.ReadMessage()
+			outcome.SessionID = session.SessionID
+			for {
+				current, err := client.GetDurableSession(ctx, session.SessionID)
 				if err != nil {
-					var netErr net.Error
-					if errors.As(err, &netErr) && netErr.Timeout() {
-						continue // keep waiting
-					}
-					// WS closed or fatal read error
-					finished = true
-					readFailed = true
+					outcome.Error = err.Error()
 					break
 				}
-
-				// Parse the frame
-				var frame map[string]any
-				if err := json.Unmarshal(msg, &frame); err != nil {
+				outcome.State = current.State
+				outcome.LastSequence = current.LastSequence
+				if current.State == "completed" {
+					receipt, err := client.GetTerminalReceipt(ctx, session.SessionID)
+					if err != nil {
+						outcome.Error = err.Error()
+					} else {
+						outcome.ReceiptState = receipt.State
+					}
+					break
+				}
+				if current.State == "failed" || current.State == "crashed" || current.State == "cancelled" || current.State == "timed_out" || current.State == "indeterminate" {
+					outcome.Error = "unexpected terminal state: " + current.State
+					break
+				}
+				select {
+				case <-ctx.Done():
+					outcome.Error = ctx.Err().Error()
+					break
+				case <-time.After(20 * time.Millisecond):
 					continue
 				}
-
-				frameType, _ := frame["type"].(string)
-				switch frameType {
-				case "stdout", "replay":
-					hasOutput = true
-				case "exit":
-					finished = true
-				case "error":
-					// Note but don't stop
-					hasOutput = true
-				}
+				break
 			}
-
-			if hasOutput {
-				gotOutput.Add(1)
-			}
-			if finished {
-				completed.Add(1)
-				completionStatus[idx] = "completed"
-			} else if hasOutput {
-				completionStatus[idx] = "output-but-no-exit"
-			} else {
-				completionStatus[idx] = "no-output"
-			}
-		}(i, conn, specs[i].label)
+			outcome.Latency = time.Since(began)
+			outcomeCh <- outcome
+		}(index)
 	}
+	close(start)
+	outcomes := make([]concurrencyOutcome, 0, concurrencySessionCount)
+	for range concurrencySessionCount {
+		outcomes = append(outcomes, <-outcomeCh)
+	}
+	cancelSamples()
+	samples := <-samplesDone
+	endedAt := time.Now().UTC()
+	sort.Slice(outcomes, func(i, j int) bool { return outcomes[i].Index < outcomes[j].Index })
+	results := summarizeConcurrencyResults(startedAt, endedAt, outcomes, samples)
+	writePrivateJSON(t, filepath.Join(artifactDir, "results.json"), results)
+	stopDaemon()
 
-	readWg.Wait()
-
-	// Report results
-	t.Logf("Results: %d/%d completed, %d/%d got output", completed.Load(), 30, gotOutput.Load(), 30)
-
-	claudeInteractive, claudePrompt := 0, 0
-	codexInteractive, codexPrompt := 0, 0
-	for i, spec := range specs {
-		status := completionStatus[i]
-		if status != "completed" {
-			t.Logf("  %s: %s", spec.label, status)
-		}
-		if status == "completed" || status == "output-but-no-exit" {
-			switch {
-			case spec.agent == "claude" && spec.interactive:
-				claudeInteractive++
-			case spec.agent == "claude" && !spec.interactive:
-				claudePrompt++
-			case spec.agent == "codex" && spec.interactive:
-				codexInteractive++
-			case spec.agent == "codex" && !spec.interactive:
-				codexPrompt++
+	t.Logf("completed=%d/%d latency p50=%s p95=%s max=%s max_rss=%dKiB max_fds=%d max_processes=%d",
+		results.Completed, results.Requested, results.LatencyP50, results.LatencyP95,
+		results.LatencyMaximum, results.MaximumRSSKiB, results.MaximumOpenFiles, results.MaximumProcesses)
+	if results.Completed != concurrencySessionCount {
+		for _, outcome := range outcomes {
+			if outcome.ReceiptState != "completed" || outcome.Error != "" {
+				t.Logf("session[%d] id=%s state=%s receipt=%s err=%s", outcome.Index, outcome.SessionID, outcome.State, outcome.ReceiptState, outcome.Error)
 			}
 		}
+		t.Fatalf("completed=%d, want exactly %d", results.Completed, concurrencySessionCount)
 	}
+}
 
-	t.Logf("Breakdown: Claude interactive=%d/7, Claude prompt=%d/8, Codex interactive=%d/7, Codex prompt=%d/8",
-		claudeInteractive, claudePrompt, codexInteractive, codexPrompt)
-
-	// At minimum, all sessions should have produced some output
-	if gotOutput.Load() < 30 {
-		t.Errorf("only %d/30 sessions produced output", gotOutput.Load())
+func summarizeConcurrencyResults(startedAt, endedAt time.Time, outcomes []concurrencyOutcome, samples []processSample) concurrencyResults {
+	results := concurrencyResults{StartedAt: startedAt, EndedAt: endedAt, Requested: len(outcomes), Sessions: outcomes, Samples: samples}
+	latencies := make([]time.Duration, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.Error == "" && outcome.State == "completed" && outcome.ReceiptState == "completed" {
+			results.Completed++
+		}
+		latencies = append(latencies, outcome.Latency)
 	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	if len(latencies) > 0 {
+		results.LatencyP50 = latencies[(len(latencies)-1)*50/100]
+		results.LatencyP95 = latencies[(len(latencies)-1)*95/100]
+		results.LatencyMaximum = latencies[len(latencies)-1]
+	}
+	for _, sample := range samples {
+		if sample.RSSKiB > results.MaximumRSSKiB {
+			results.MaximumRSSKiB = sample.RSSKiB
+		}
+		if sample.VSZKiB > results.MaximumVSZKiB {
+			results.MaximumVSZKiB = sample.VSZKiB
+		}
+		if sample.OpenFiles > results.MaximumOpenFiles {
+			results.MaximumOpenFiles = sample.OpenFiles
+		}
+		if sample.ProcessTree > results.MaximumProcesses {
+			results.MaximumProcesses = sample.ProcessTree
+		}
+	}
+	return results
+}
 
-	// Clean up: kill all sessions
-	t.Log("cleaning up sessions...")
-	for _, s := range sessions {
-		if s.sessionID != "" {
-			req, _ := http.NewRequest(http.MethodDelete, baseURL+"/sessions/"+s.sessionID, nil)
-			http.DefaultClient.Do(req)
+func sampleConcurrencyProcess(ctx context.Context, pid int, done chan<- []processSample) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var samples []processSample
+	for {
+		samples = append(samples, readConcurrencyProcessSample(pid))
+		select {
+		case <-ctx.Done():
+			done <- samples
+			return
+		case <-ticker.C:
 		}
 	}
 }
 
-func buildDaemonBinary(t *testing.T) string {
+func readConcurrencyProcessSample(pid int) processSample {
+	sample := processSample{At: time.Now().UTC()}
+	output, err := exec.Command("ps", "-o", "rss=,vsz=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		sample.Error = err.Error()
+		return sample
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) >= 2 {
+		sample.RSSKiB, _ = strconv.ParseInt(fields[0], 10, 64)
+		sample.VSZKiB, _ = strconv.ParseInt(fields[1], 10, 64)
+	}
+	if output, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-Fn").Output(); err == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.HasPrefix(line, "f") {
+				sample.OpenFiles++
+			}
+		}
+	}
+	if output, err := exec.Command("ps", "-axo", "pid=,ppid=").Output(); err == nil {
+		children := make(map[int][]int)
+		for _, line := range strings.Split(string(output), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				continue
+			}
+			child, childErr := strconv.Atoi(fields[0])
+			parent, parentErr := strconv.Atoi(fields[1])
+			if childErr == nil && parentErr == nil {
+				children[parent] = append(children[parent], child)
+			}
+		}
+		queue := []int{pid}
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			sample.ProcessTree++
+			queue = append(queue, children[current]...)
+		}
+	}
+	return sample
+}
+
+func installClaudeConcurrencyFixture(t *testing.T, dir string) {
 	t.Helper()
+	script := `#!/bin/sh
+set -eu
+IFS= read -r prompt
+sleep 1
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"concurrency-fixture"}'
+printf '%s\n' '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"fixture-complete"}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"fixture-complete"}'
+`
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write Claude concurrency fixture: %v", err)
+	}
+}
 
-	outDir := t.TempDir()
-	binary := outDir + "/agentd"
-
-	cmd := exec.Command("go", "build", "-o", binary, "./cmd/agentd")
-	cmd.Dir = repoRoot(t)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("build agentd: %v\n%s", err, output.String())
+func buildConcurrencyDaemon(t *testing.T, repo string) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "agentd")
+	command := exec.Command("go", "build", "-o", binary, "./cmd/agentd")
+	command.Dir = repo
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build AgentD: %v\n%s", err, output)
 	}
 	return binary
 }
 
-func waitForDaemonHealth(t *testing.T, baseURL string, timeout time.Duration) bool {
+func waitForConcurrencyDaemon(t *testing.T, baseURL, dataDir string, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
-		resp, err := http.DefaultClient.Do(req)
-		cancel()
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				return true
-			}
+		token, tokenErr := api.ReadAuthToken(dataDir)
+		request, _ := http.NewRequest(http.MethodGet, baseURL+"/health", nil)
+		response, healthErr := http.DefaultClient.Do(request)
+		if healthErr == nil {
+			_ = response.Body.Close()
 		}
-		time.Sleep(200 * time.Millisecond)
+		if tokenErr == nil && healthErr == nil && response.StatusCode == http.StatusOK {
+			return token
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return false
+	t.Fatalf("AgentD did not become ready within %s", timeout)
+	return ""
 }
 
-func mustFreePort(t *testing.T) int {
+func concurrencyArtifactDir(t *testing.T, repo string) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	dir := os.Getenv("AGENTRUNTIME_CONCURRENCY_ARTIFACT_DIR")
+	if dir == "" {
+		root := filepath.Join(repo, ".artifacts")
+		concurrencyRoot := filepath.Join(root, "concurrency")
+		dir = filepath.Join(concurrencyRoot, fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102T150405Z"), os.Getpid()))
+		for _, privateDir := range []string{root, concurrencyRoot, dir} {
+			if err := os.MkdirAll(privateDir, 0o700); err != nil {
+				t.Fatalf("create concurrency artifact directory: %v", err)
+			}
+			if err := os.Chmod(privateDir, 0o700); err != nil {
+				t.Fatalf("secure concurrency artifact directory: %v", err)
+			}
+		}
+	}
+	if os.Getenv("AGENTRUNTIME_CONCURRENCY_ARTIFACT_DIR") != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("create concurrency artifact directory: %v", err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("secure concurrency artifact directory: %v", err)
+		}
+	}
+	return dir
+}
+
+func writePrivateJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("encode artifact %s: %v", path, err)
+	}
+	writePrivateArtifact(t, path, append(raw, '\n'))
+}
+
+func writePrivateArtifact(t *testing.T, path string, raw []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write artifact %s: %v", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("secure artifact %s: %v", path, err)
+	}
+}
+
+func concurrencyRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("repository root not found")
+		}
+		dir = parent
+	}
+}
+
+func concurrencyFreePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("find free port: %v", err)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	return port
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
 }

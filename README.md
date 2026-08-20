@@ -241,7 +241,7 @@ During startup AgentD:
 5. marks confirmed missing generations `lost`; and
 6. reconstructs a pre-commit container only when every durable admission label matches.
 
-`docker wait` must agree with inspected container state before terminal proof is trusted. Proven OOM kills are recorded as `crashed` with exit 137 and `SIGKILL`. Ambiguous recovery is explicit `indeterminate`—AgentD does not silently restart paid work.
+`docker wait` must agree with inspected container state before terminal proof is trusted. Proven policy-limited OOM kills are recorded as typed `resource_limit_exceeded` failures with exit 137 and `SIGKILL`. Ambiguous recovery is explicit `indeterminate`—AgentD does not silently restart paid work.
 
 Controlled shutdown closes admission first, drains bounded local work, and preserves active Docker generations for the next daemon to reconstruct.
 
@@ -249,9 +249,22 @@ Controlled shutdown closes admission first, drains bounded local work, and prese
 
 ```sh
 go test ./...
-go test -race ./pkg/api ./pkg/eventstream ./pkg/runtime
+go test -race ./...
 go vet ./...
 ```
+
+Run the deterministic 30-session process-boundary scenario:
+
+```sh
+go test -tags='e2e concurrency' -timeout=300s ./pkg/e2e \
+  -run TestConcurrency_30Sessions -count=1 -v
+```
+
+The scenario requires exactly 30 completed durable receipts and retains a
+private `0700` run directory under `.artifacts/concurrency/` containing the
+redacted environment, per-session results, process/FD/RSS/latency samples, and
+`0600` daemon log. Set `AGENTRUNTIME_CONCURRENCY_ARTIFACT_DIR` to choose a
+different private artifact directory.
 
 Prove that the installed artifact is the exact release under qualification:
 

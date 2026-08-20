@@ -2,6 +2,18 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.2.2] — 2026-08-20
+
+- Replaced the stale, non-compiling unversioned concurrency test with an opt-in
+  authenticated v1 process-boundary scenario using deterministic native
+  provider fixtures and no paid model calls.
+- The scenario now requires exactly 30 `completed` durable sessions and 30
+  immutable `completed` receipts. Output or a closed socket cannot satisfy the
+  gate.
+- Each run preserves a redacted environment, exact per-session results,
+  process-tree/RSS/virtual-memory/open-FD samples, latency percentiles, and
+  daemon logs in private `0700` directories and `0600` files.
+
 ## [2.2.1] — 2026-08-20
 
 - Added execution policy `2.1`, retaining policy `2.0` for compatibility.

@@ -134,7 +134,8 @@
 
 ### 5. Per-session resource ceilings
 
-- Implementation complete; release `v2.2.1` is being qualified.
+- Complete: commit/release `b4deea2a700f7d997ee94d8d050f961a3bd3965e`
+  (`v2.2.1`). Hosted CI and PyPI publishing passed.
 - Added compatible execution policy `2.1`; policy `2.0` remains accepted with
   its original implicit fixed limits. Policy `2.1` canonicalizes memory, CPU,
   PID, and open-file ceilings into `effective_policy_sha256`; changing a limit
@@ -154,6 +155,27 @@
   are kernel refusals visible to the provider; AgentD does not infer a terminal
   cause from provider output. This preserves truthful classification rather
   than guessing from an exit code.
+
+### 6. Thirty-session concurrency proof
+
+- Implementation complete; release `v2.2.2` is being qualified.
+- Replaced the obsolete scenario, which no longer compiled and used removed
+  unversioned HTTP/WebSocket routes. The new opt-in process-boundary scenario
+  uses bearer-authenticated v1 durable dispatch and receipt APIs with a
+  deterministic Claude native-protocol fixture (no model calls).
+- The gate now asserts `completed == 30` from both durable session state and
+  immutable receipt state. A nonempty output frame, error frame, or socket
+  closure cannot count as completion.
+- Run command: `go test -tags='e2e concurrency' -timeout=300s ./pkg/e2e -run
+  TestConcurrency_30Sessions -count=1 -v`: PASS twice at 30/30.
+- Preserved evidence: `.artifacts/concurrency/20260820T084224Z-99552/` with
+  private `0700` directories and `0600` `environment.json`, `results.json`, and
+  `daemon.log`. The environment artifact contains no ambient environment or
+  credentials.
+- Second recorded run: latency p50 1.236 s, p95 1.247 s, max 1.249 s; peak
+  AgentD RSS 50,048 KiB; peak virtual memory 411,382,832 KiB (macOS virtual
+  address-space accounting); peak AgentD open descriptors 136; peak AgentD
+  process tree 61 (daemon plus 30 providers and transient descendants).
 
 ## Phase 3
 
