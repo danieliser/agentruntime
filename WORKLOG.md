@@ -180,8 +180,8 @@
 
 ### 7. Diagnostic log hygiene
 
-- Implementation complete in commit `d537d2b`; release `v2.2.3` is blocked and
-  was not tagged or pushed.
+- Complete in source commit `d537d2b`; released with items 8-9 as `v2.2.3` at
+  `117064b887d3292f582c56d14761addf2e12c9f8`.
 - Session diagnostic directories and files are created/tightened to
   `0700`/`0600`, including pre-existing retained logs. Installer/reinstaller
   now pre-create the launchd log directory/file with the same modes before
@@ -205,16 +205,15 @@
   ./...`, `go vet ./...`, shell syntax, and `git diff --check`. The opt-in
   30-session scenario also passed 30/30 after the change, and the real Docker
   no-plugin process inspection passed.
-- Release qualification blocker: building the exact `v2.2.3` Docker images
-  exhausted the host data volume. OrbStack stopped and cannot restart because
-  the host reports `no space left on device` (231-345 MiB free during later
-  checks). Only this repository is writable for this run, so I did not delete
-  user caches or OrbStack data outside it. No `v2.2.3` tag, GitHub release, or
-  remote source push was created; `origin/main` remains at `v2.2.2`.
+- Release qualification was temporarily blocked when the host data volume
+  filled and OrbStack could not restart. I did not delete user caches or
+  OrbStack data outside this repository. Standard reachable-object `git gc`
+  inside this repository preserved all refs/worktree files and released enough
+  APFS space for exact source, Docker, and release gates to finish.
 
 ### 8. Audit-gap verification
 
-- Complete in source (commit containing this entry). The 2026-08-07 audit was
+- Complete in commit `393858a`. The 2026-08-07 audit was
   checked against the current v2 API rather than assuming its v0.8 paths still
   applied.
 - Added a focused two-subscriber broker test: closing one viewer's independent
@@ -250,8 +249,9 @@
 
 ### 9. Non-Docker restart recovery
 
-- Complete in source (commit containing this entry) by choosing the explicit
-  unsupported path; no local-process recovery semantics were invented.
+- Complete in commit/release `117064b887d3292f582c56d14761addf2e12c9f8`
+  (`v2.2.3`) by choosing the explicit unsupported path; no local-process
+  recovery semantics were invented.
 - Added additive, versioned recovery capability `1.0`. When and only when the
   durable store, event broker, and Docker runtime are present, it reports
   `daemon_restart: docker_only`, `supported_runtimes: [docker]`, and lists
@@ -264,7 +264,33 @@
 - Focused server/client tests cover both docker-only and fail-closed unsupported
   advertisements. Local runtime's existing test continues to prove `Recover`
   returns no handles after a daemon restart.
+- The exact stamped v2.2.3 agent/proxy images have byte-identical root
+  filesystem layer lists to the qualified v2.2.2 images because items 7-9 are
+  daemon-only. A fresh unpinned provider-image rebuild was killed with exit 137
+  during package installation, so reusing the already-qualified filesystem
+  avoided silently pulling different vendor CLIs. Only the OCI version/revision
+  config changed, and `verify-release.sh` proved both exact stamps.
+- Real Docker egress/default-deny/direct-bypass, resource/OOM, image-readiness,
+  and no-plugin process tests passed against the stamped images. The final
+  30-session run completed 30/30 with p50 1.294 s, p95 1.308 s, max 1.315 s,
+  peak RSS 48,736 KiB, 136 FDs, and 61 processes; artifacts are under
+  `.artifacts/concurrency/20260820T092931Z-29901/`.
+- GitHub CI passed on Go 1.24.2 and 1.26.x. All platform wheels built and the
+  trusted PyPI publish completed successfully.
 
 ## Phase 3
 
-- Pending; design only after Phases 1 and 2 complete.
+- Complete as design only in root `DESIGN_NOTES.md`; no adapter or private-work
+  code was implemented.
+- Provider migration notes keep `nativeprotocol.Transport` as the sole seam,
+  require deterministic canonical-record compatibility, put validate/retry
+  behind a new hash-covered policy version, and preserve explicit resume and
+  indeterminate crash semantics.
+- Private admission notes define a consumer-neutral signed caller proof,
+  versioned private endpoint/capability, atomic nonce/idempotency checks,
+  separate AgentD-signed acceptance, private payload rules, threat model,
+  review paths, and negative qualification gates. Trading Floor is only the
+  initial caller assumption; no trading-domain authority enters AgentD.
+- Owner review is explicitly required before implementation. Open decisions
+  are caller OS identity, encrypted-versus-unpersisted private bodies, and
+  first-version key rotation/multi-caller scope.
