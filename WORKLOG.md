@@ -1,5 +1,42 @@
 # AgentD overnight qualification worklog
 
+## Final summary
+
+- **Canary pin:** Trading Floor should review and pin exact release `v2.2.3`
+  at commit `117064b887d3292f582c56d14761addf2e12c9f8`. Repository `main` is
+  intentionally newer only because design-only commit `4490198` adds
+  `DESIGN_NOTES.md`; it is not the executable canary pin.
+- **Phase 1 complete:** policy egress `f14f88c`, truthful image readiness
+  `95f2b5a`, no-plugin process proof `1610aa7`, and release `v2.2.0` at
+  `530bad2b5dab578589bf422c4573d6f3182f2389`.
+- **Phase 2 complete:** resource ceilings/release `v2.2.1` at `b4deea2`,
+  30-session proof/release `v2.2.2` at `5dca0fc`, diagnostic hygiene
+  `d537d2b`, retained-audit closure `393858a`, and explicit Docker-only
+  recovery/release `v2.2.3` at `117064b887d3292f582c56d14761addf2e12c9f8`.
+- **Phase 3 complete as design only:** `4490198` documents the provider
+  headless/SDK migration and authenticated private-work surface, including the
+  threat model and owner decisions required before code.
+- **Qualification:** every commit was gated by green `go test ./...` and
+  `go test -race ./...`; final vet/diff checks passed. v2.2.3 GitHub CI passed
+  on Go 1.24.2/1.26.x and all wheels published successfully to PyPI. Exact
+  stamped-image verification and real Docker egress, readiness, no-plugin,
+  resource-ceiling, and OOM tests passed.
+- **Final concurrency measurement:** completed 30/30; latency p50 1.294 s,
+  p95 1.308 s, max 1.315 s; peak AgentD RSS 48,736 KiB, 136 open FDs, and 61
+  processes. Private artifacts:
+  `.artifacts/concurrency/20260820T092931Z-29901/`.
+- **Skipped by design:** local-process restart recovery was not invented; the
+  versioned capability explicitly reports it unsupported. Phase 3 contains no
+  implementation. A live Trading Floor Source Scout was not dispatched and
+  its exact pin was not edited because Trading Floor was read-only; its fresh
+  candidate-only canary is the next consumer action.
+- **Build exception:** a fresh unpinned runtime-image rebuild was killed with
+  exit 137 during package installation. Since items 7-9 do not change runtime
+  image contents, v2.2.3 uses the already-qualified v2.2.2 root filesystem
+  layers byte-for-byte with new exact v2.2.3 OCI version/revision metadata.
+  This avoided an unreviewed vendor-CLI drift; layer equality and stamps were
+  verified before release.
+
 ## Running status
 
 - Started: 2026-08-20 (America/New_York)
