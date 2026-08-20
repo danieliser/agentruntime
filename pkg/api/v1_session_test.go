@@ -155,12 +155,40 @@ func TestV1CreateSessionChecksRuntimeBeforeDurableAdmission(t *testing.T) {
 		"idempotency_key": "job-runtime-unavailable", "agent": "sleep-test", "runtime": "test", "prompt": "never admit",
 	})
 	defer response.Body.Close()
+	var failure struct {
+		Error apiErrorEnvelope `json:"error"`
+	}
+	decodeJSON(t, response.Body, &failure)
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("unavailable runtime status=%d, want 503", response.StatusCode)
+	}
+	if failure.Error.Code != durable.CodeRuntimeUnavailable {
+		t.Fatalf("unavailable runtime error=%+v, want %s", failure.Error, durable.CodeRuntimeUnavailable)
 	}
 	sessions, err := store.ListSessions(context.Background())
 	if err != nil || len(sessions) != 0 {
 		t.Fatalf("unavailable runtime durably admitted sessions=%+v err=%v", sessions, err)
+	}
+}
+
+func TestHealthFailsWhenRegisteredRuntimeIsNotReady(t *testing.T) {
+	runtimeUnavailable := &admissionTestRuntime{admissionErr: fmt.Errorf("configured image is absent")}
+	server := NewServer(session.NewManager(), runtimeUnavailable, agent.DefaultRegistry())
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+
+	response, err := http.Get(httpServer.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var health struct {
+		Status   string            `json:"status"`
+		Runtimes map[string]string `json:"runtime_status"`
+	}
+	decodeJSON(t, response.Body, &health)
+	if response.StatusCode != http.StatusServiceUnavailable || health.Status != "error" || health.Runtimes["test"] != "unavailable" {
+		t.Fatalf("unready health status=%d body=%+v", response.StatusCode, health)
 	}
 }
 

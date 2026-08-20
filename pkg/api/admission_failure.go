@@ -37,7 +37,7 @@ func (s *Server) checkRuntimeAdmission(ctx context.Context, request SessionReque
 		return nil
 	}
 	if err := checker.CheckAdmission(ctx); err != nil {
-		return durable.NewError(durable.CodeIndeterminate, "check_runtime_admission", "execution runtime is unavailable", err)
+		return durable.NewError(durable.CodeRuntimeUnavailable, "check_runtime_admission", "execution runtime is unavailable", err)
 	}
 	return nil
 }

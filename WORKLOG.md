@@ -32,7 +32,7 @@
 
 ### 1. Policy-controlled egress
 
-- Complete in working tree; commit recorded below after qualification.
+- Complete: commit `f14f88c` (`feat(ACT-1013): enforce exact-host policy egress`).
 - Added execution policy `2.0` with a caller-visible, canonical
   `egress_allowlist`. Exact lowercase DNS hosts only; wildcards, suffix rules,
   schemes, ports, IP literals, duplicates, and endpoints outside AgentD's
@@ -62,7 +62,25 @@
 
 ### 2. Readiness truthfulness
 
-- Pending.
+- Complete in working tree; commit recorded below after qualification.
+- `DockerRuntime.CheckAdmission` now verifies both Docker daemon reachability and
+  the configured runtime image before admission.
+- A new stable `runtime_unavailable` error is returned as HTTP 503 before the
+  durable session row or container is created. Idempotent inspection of an
+  already-admitted session remains available during later runtime outages.
+- `/health` now runs bounded readiness checks for registered runtimes, exposes
+  per-runtime `ready|unavailable` state, and returns HTTP 503/status `error` if
+  any advertised runtime cannot admit work.
+- `install.sh` now refuses installation when Docker or the required
+  `agentruntime-agent:latest` image is absent instead of installing a daemon
+  that would advertise unusable Docker admission.
+- Real Docker qualification (`AGENTRUNTIME_DOCKER_INTEGRATION=1 go test
+  ./pkg/api -run TestDockerImageRemovalMakesReadinessAndAdmissionFailClosed
+  -count=1 -v`): PASS. The test creates a temporary tag for the runtime image,
+  proves readiness green, removes that tag, then proves readiness 503 and typed
+  admission refusal with zero durable sessions and no container creation.
+- Verification before commit: `go test ./...` PASS; `go test -race ./...` PASS;
+  `bash -n install.sh` PASS; `git diff --check` PASS.
 
 ### 3. No ambient plugin processes
 

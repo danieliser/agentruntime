@@ -28,6 +28,10 @@ printf '%s\n' "$*" >> "`+logFile+`"
 if [ "$*" = "ps -q --no-trunc" ]; then
   exit 0
 fi
+if [ "$*" = "image inspect agentruntime-agent:latest" ]; then
+  printf '%s\n' 'image-present'
+  exit 0
+fi
 echo "unexpected docker command: $*" >&2
 exit 2
 `)
@@ -36,8 +40,33 @@ exit 2
 		t.Fatalf("Docker admission check failed: %v", err)
 	}
 	data, err := os.ReadFile(logFile)
-	if err != nil || string(data) != "ps -q --no-trunc\n" {
+	if err != nil || string(data) != "ps -q --no-trunc\nimage inspect agentruntime-agent:latest\n" {
 		t.Fatalf("Docker admission proof log=%q err=%v", data, err)
+	}
+}
+
+func TestDockerRuntimeAdmissionCheckFailsWhenConfiguredImageIsAbsent(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "docker.log")
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "`+logFile+`"
+if [ "$*" = "ps -q --no-trunc" ]; then
+  exit 0
+fi
+if [ "$*" = "image inspect agentruntime-agent:missing" ]; then
+  echo "Error response from daemon: No such image: agentruntime-agent:missing" >&2
+  exit 1
+fi
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	runtime := NewDockerRuntime(DockerConfig{Image: "agentruntime-agent:missing"})
+	if err := runtime.CheckAdmission(context.Background()); err == nil || !strings.Contains(err.Error(), "configured image") {
+		t.Fatalf("Docker missing-image admission error=%v", err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil || strings.Contains(string(data), "run ") {
+		t.Fatalf("missing-image admission created a container: log=%q err=%v", data, err)
 	}
 }
 

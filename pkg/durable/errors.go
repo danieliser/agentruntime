@@ -19,6 +19,7 @@ const (
 	CodeBackpressure                ErrorCode = "backpressure"
 	CodeIndeterminate               ErrorCode = "indeterminate"
 	CodeStoreClosed                 ErrorCode = "store_closed"
+	CodeRuntimeUnavailable          ErrorCode = "runtime_unavailable"
 	CodeExecutionPolicyUnsupported  ErrorCode = "execution_policy_unsupported"
 	CodeStructuredOutputUnsupported ErrorCode = "structured_output_unsupported"
 	CodeStructuredOutputInvalid     ErrorCode = "structured_output_invalid"

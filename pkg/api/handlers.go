@@ -23,15 +23,34 @@ import (
 
 func (s *Server) handleHealth(c *gin.Context) {
 	available := make([]string, 0, len(s.runtimes))
+	runtimeStatus := make(map[string]string, len(s.runtimes))
+	ready := true
 	for name := range s.runtimes {
 		available = append(available, name)
+		runtimeStatus[name] = "ready"
+		if checker, ok := s.runtimes[name].(runtime.AdmissionChecker); ok {
+			checkCtx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+			err := checker.CheckAdmission(checkCtx)
+			cancel()
+			if err != nil {
+				ready = false
+				runtimeStatus[name] = "unavailable"
+			}
+		}
 	}
 	sort.Strings(available)
-	c.JSON(http.StatusOK, gin.H{
-		"status":          "ok",
+	statusCode := http.StatusOK
+	status := "ok"
+	if !ready {
+		statusCode = http.StatusServiceUnavailable
+		status = "error"
+	}
+	c.JSON(statusCode, gin.H{
+		"status":          status,
 		"version":         s.version,
 		"default_runtime": s.runtime.Name(),
 		"runtimes":        available,
+		"runtime_status":  runtimeStatus,
 	})
 }
 

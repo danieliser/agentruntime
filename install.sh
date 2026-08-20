@@ -104,6 +104,17 @@ if ! command -v go &> /dev/null; then
     exit 1
 fi
 
+# The installed daemon always advertises Docker admission to qualified callers.
+# Refuse an installation that would report ready without its runtime image.
+if ! command -v docker &> /dev/null; then
+    echo "error: Docker is required for the stamped AgentD runtime image"
+    exit 1
+fi
+if ! docker image inspect agentruntime-agent:latest &> /dev/null; then
+    echo "error: required runtime image agentruntime-agent:latest is absent; run ./docker/build.sh agent first"
+    exit 1
+fi
+
 GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
 echo "using Go $GO_VERSION"
 

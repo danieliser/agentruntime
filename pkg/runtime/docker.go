@@ -106,6 +106,9 @@ func (r *DockerRuntime) CheckAdmission(ctx context.Context) error {
 	if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "ps", "-q", "--no-trunc"); err != nil {
 		return fmt.Errorf("Docker runtime unavailable: %w", err)
 	}
+	if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "image", "inspect", r.cfg.Image); err != nil {
+		return fmt.Errorf("Docker configured image %q is unavailable: %w", r.cfg.Image, err)
+	}
 	return nil
 }
 
