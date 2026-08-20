@@ -386,7 +386,7 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
-		"", !manifest.Interactive,
+		"", diagnosticRedactions(manifest), !manifest.Interactive,
 		true, nativePolicy(manifest), manifest.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()

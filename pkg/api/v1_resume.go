@@ -176,7 +176,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, previous.ProviderID, request.Prompt,
-		!request.Interactive, false, nativePolicy(request), request.StructuredOutput, s.eventBroker,
+		diagnosticRedactions(request), !request.Interactive, false, nativePolicy(request), request.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

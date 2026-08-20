@@ -18,6 +18,9 @@ cp agentd agentd-tui ~/.local/bin/
 xattr -cr ~/.local/bin/agentd ~/.local/bin/agentd-tui 2>/dev/null || true
 
 echo "Restarting agentd..."
+install -d -m 700 "$HOME/Library/Logs/agentruntime"
+touch "$HOME/Library/Logs/agentruntime/agentd.log"
+chmod 600 "$HOME/Library/Logs/agentruntime/agentd.log"
 launchctl kickstart -k "gui/$(id -u)/com.agentruntime.agentd" 2>/dev/null || true
 
 sleep 1

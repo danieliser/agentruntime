@@ -158,7 +158,8 @@
 
 ### 6. Thirty-session concurrency proof
 
-- Implementation complete; release `v2.2.2` is being qualified.
+- Complete: commit/release `5dca0fc736ec2523b9f680a99d036ba3bdee5b7c`
+  (`v2.2.2`).
 - Replaced the obsolete scenario, which no longer compiled and used removed
   unversioned HTTP/WebSocket routes. The new opt-in process-boundary scenario
   uses bearer-authenticated v1 durable dispatch and receipt APIs with a
@@ -176,6 +177,29 @@
   AgentD RSS 50,048 KiB; peak virtual memory 411,382,832 KiB (macOS virtual
   address-space accounting); peak AgentD open descriptors 136; peak AgentD
   process tree 61 (daemon plus 30 providers and transient descendants).
+
+### 7. Diagnostic log hygiene
+
+- Implementation complete; release `v2.2.3` is being qualified.
+- Session diagnostic directories and files are created/tightened to
+  `0700`/`0600`, including pre-existing retained logs. Installer/reinstaller
+  now pre-create the launchd log directory/file with the same modes before
+  service start.
+- Added streaming diagnostic redaction for exact prompts and lines, declared
+  secrets, credential-shaped environment values, nested JSON credential
+  strings, JSON/base64 encodings, and credential-shaped JSON/env fields.
+  Oversize records are replaced rather than persisted uninspected.
+- Redaction is diagnostic-only: a focused test proves the canonical replay
+  retains the exact original bytes while the mirror contains only a redaction
+  marker. The public event/result/receipt/replay schema is unchanged.
+- Added `--diagnostic-logs`, `--diagnostic-log-retention`,
+  `AGENTD_DIAGNOSTIC_LOGS`, and `AGENTD_DIAGNOSTIC_LOG_RETENTION`. Environment
+  overrides win; invalid values fail startup. Defaults are enabled/seven days;
+  zero retention means keep indefinitely.
+- Startup mode-hardens retained logs and removes only expired regular
+  `.ndjson`/`.jsonl` files without following symlinks. An end-to-end native v1
+  test proves disabled diagnostics create no log directory/file while the
+  immutable terminal receipt remains available.
 
 ## Phase 3
 

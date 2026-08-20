@@ -26,6 +26,7 @@ func AttachNativeSessionIO(
 	generation int64,
 	providerID string,
 	initialPrompt string,
+	diagnosticValues []string,
 	stopOnTurnCompletion bool,
 	reconnect bool,
 	policy nativeprotocol.InputPolicy,
@@ -98,7 +99,7 @@ func AttachNativeSessionIO(
 		onAttach(transport)
 	}
 
-	logWriter, err := session.NewLogWriter(logDir, sess.ID)
+	logWriter, err := session.NewLogWriter(logDir, sess.ID, session.WithDiagnosticRedactions(diagnosticValues...))
 	if err != nil {
 		log.Printf("[session %s] warning: native log file creation failed: %v", sess.ID, err)
 	}

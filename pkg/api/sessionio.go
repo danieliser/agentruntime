@@ -13,12 +13,12 @@ import (
 
 // AttachSessionIO starts stdout/stderr drain goroutines and an exit watcher for
 // a session handle, mirroring the normal create-session lifecycle.
-func AttachSessionIO(sess *session.Session, logDir string, onExit ...func(runtime.ExitResult)) {
+func AttachSessionIO(sess *session.Session, logDir string, diagnosticValues []string, onExit ...func(runtime.ExitResult)) {
 	if sess == nil || sess.Handle == nil {
 		return
 	}
 
-	logw, err := session.NewLogWriter(logDir, sess.ID)
+	logw, err := session.NewLogWriter(logDir, sess.ID, session.WithDiagnosticRedactions(diagnosticValues...))
 	if err != nil {
 		log.Printf("[session %s] warning: log file creation failed: %v", sess.ID, err)
 	}

@@ -266,6 +266,22 @@ redacted environment, per-session results, process/FD/RSS/latency samples, and
 `0600` daemon log. Set `AGENTRUNTIME_CONCURRENCY_ARTIFACT_DIR` to choose a
 different private artifact directory.
 
+Session diagnostic logs are non-canonical mirrors: canonical events and replay
+remain byte-exact. Diagnostics default to enabled with seven-day retention,
+owner-only `0700` directories / `0600` files, and prompt/credential redaction.
+Configure once at startup with either CLI flags or higher-priority environment
+variables:
+
+```sh
+agentd --diagnostic-logs=false
+agentd --diagnostic-log-retention=24h
+AGENTD_DIAGNOSTIC_LOGS=true AGENTD_DIAGNOSTIC_LOG_RETENTION=168h agentd
+```
+
+A retention of `0` keeps diagnostic files indefinitely. Disabling diagnostics
+creates no session log directory or file. The durable event ledger, results,
+receipts, and replay contract are unaffected.
+
 Prove that the installed artifact is the exact release under qualification:
 
 ```sh

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -101,6 +102,10 @@ type ServerConfig struct {
 	// Defaults to "./logs" if empty.
 	LogDir string
 
+	// DiagnosticLogs controls the non-canonical session NDJSON mirror. Nil
+	// preserves the secure default: enabled with seven-day retention.
+	DiagnosticLogs *DiagnosticLogConfig
+
 	// ExtraRuntimes are additional runtimes beyond the primary one.
 	// Each is registered by its Name() and selectable via req.Runtime.
 	ExtraRuntimes []runtime.Runtime
@@ -124,6 +129,14 @@ type ServerConfig struct {
 	ObserverService ObserverService
 }
 
+// DiagnosticLogConfig controls private, redacted, non-canonical session logs.
+type DiagnosticLogConfig struct {
+	Enabled   bool
+	Retention time.Duration
+}
+
+const DefaultDiagnosticLogRetention = 7 * 24 * time.Hour
+
 type ObserverService interface {
 	Status() []observer.PluginStatus
 	TraceLink(pluginName, sessionID string) (observer.TraceLink, bool)
@@ -145,6 +158,25 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 	dataDir := filepath.Dir(logDir)
 	if len(cfgs) > 0 && cfgs[0].DataDir != "" {
 		dataDir = cfgs[0].DataDir
+	}
+	diagnosticLogs := DiagnosticLogConfig{Enabled: true, Retention: DefaultDiagnosticLogRetention}
+	if len(cfgs) > 0 && cfgs[0].DiagnosticLogs != nil {
+		diagnosticLogs = *cfgs[0].DiagnosticLogs
+	}
+	if !diagnosticLogs.Enabled {
+		logDir = ""
+	} else if len(cfgs) > 0 && cfgs[0].LogDir != "" {
+		if err := os.MkdirAll(logDir, 0o700); err != nil {
+			log.Printf("warning: create diagnostic log directory: %v", err)
+		} else if err := os.Chmod(logDir, 0o700); err != nil {
+			log.Printf("warning: secure diagnostic log directory: %v", err)
+		} else if err := session.SecureDiagnosticLogs(logDir); err != nil {
+			log.Printf("warning: secure retained diagnostic logs: %v", err)
+		} else if removed, err := session.PruneDiagnosticLogs(logDir, diagnosticLogs.Retention, time.Now()); err != nil {
+			log.Printf("warning: prune diagnostic logs: %v", err)
+		} else if removed > 0 {
+			log.Printf("pruned %d expired diagnostic logs", removed)
+		}
 	}
 
 	runtimes := map[string]runtime.Runtime{rt.Name(): rt}

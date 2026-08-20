@@ -354,7 +354,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		var active activeNativeSessionRef
 		if err := AttachNativeSessionIO(
 			sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
-			"", req.Prompt, !req.Interactive,
+			"", req.Prompt, diagnosticRedactions(req), !req.Interactive,
 			false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 			func() string {
 				current := active.Load()
@@ -387,7 +387,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 			return
 		}
 	} else {
-		AttachSessionIO(sess, s.logDir, func(result runtime.ExitResult) {
+		AttachSessionIO(sess, s.logDir, diagnosticRedactions(req), func(result runtime.ExitResult) {
 			s.finalizeV1Session(sess.ID, result)
 		})
 	}
@@ -524,7 +524,7 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 		handle.Stdin().Close()
 	}
 
-	AttachSessionIO(sess, s.logDir)
+	AttachSessionIO(sess, s.logDir, diagnosticRedactions(req))
 	return sess, nil
 }
 

@@ -225,6 +225,12 @@ EOF
 
     echo "✓ created launchd plist: $SERVICE_PLIST"
 
+    # launchd opens these paths itself. Pre-create them privately so neither
+    # directory nor file ever inherits a broader default mode.
+    install -d -m 700 "$HOME/Library/Logs/agentruntime"
+    touch "$HOME/Library/Logs/agentruntime/agentd.log"
+    chmod 600 "$HOME/Library/Logs/agentruntime/agentd.log"
+
     # Load the service
     if [ "$SYSTEM_INSTALL" = true ]; then
         sudo launchctl load "$SERVICE_PLIST"
@@ -273,12 +279,6 @@ EOF
         systemctl --user start agentruntime.service
         echo "✓ enabled and started user service"
     fi
-fi
-
-# Create logs directory
-if [[ "$OS" == "macos" ]]; then
-    mkdir -p "$HOME/Library/Logs/agentruntime"
-    echo "✓ created logs directory: $HOME/Library/Logs/agentruntime"
 fi
 
 echo ""

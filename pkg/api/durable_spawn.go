@@ -182,7 +182,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, nativeprotocol.Provider(req.Agent), generation.Number, providerID,
-		req.Prompt, !req.Interactive, false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
+		req.Prompt, diagnosticRedactions(req), !req.Interactive, false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {

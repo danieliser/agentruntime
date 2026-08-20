@@ -63,6 +63,8 @@ func main() {
 	credSync := flag.Bool("credential-sync", false, "Enable background credential sync from Keychain")
 	maxSessions := flag.Int("max-sessions", 0, "Maximum concurrent sessions (0 = unlimited)")
 	dockerHost := flag.String("docker-host", "", "Remote Docker daemon (e.g., ssh://deploy@host, tcp://host:2376)")
+	diagnosticLogs := flag.Bool("diagnostic-logs", true, "Write private redacted session diagnostic logs")
+	diagnosticLogRetention := flag.Duration("diagnostic-log-retention", api.DefaultDiagnosticLogRetention, "Diagnostic log retention (0 keeps indefinitely)")
 	flag.Parse()
 
 	identity := buildinfo.Current()
@@ -82,6 +84,10 @@ func main() {
 		}
 		fmt.Printf("verified agentd %s@%s\n", identity.Version, identity.Commit)
 		os.Exit(0)
+	}
+	diagnosticLogConfig, err := configuredDiagnosticLogs(*diagnosticLogs, *diagnosticLogRetention)
+	if err != nil {
+		log.Fatalf("invalid diagnostic log configuration: %v", err)
 	}
 
 	log.Printf("agentd %s (%s) starting", identity.Version, identity.Commit)
@@ -233,6 +239,7 @@ func main() {
 		ListenerScope:   listenerScope,
 		DataDir:         *dataDir,
 		LogDir:          logDir,
+		DiagnosticLogs:  &diagnosticLogConfig,
 		ExtraRuntimes:   extraRuntimes,
 		ChatRegistry:    chatRegistry,
 		ChatManager:     chatManager,
@@ -265,6 +272,27 @@ func main() {
 		}
 	}
 	log.Println("agentd stopped")
+}
+
+func configuredDiagnosticLogs(enabled bool, retention time.Duration) (api.DiagnosticLogConfig, error) {
+	if raw := os.Getenv("AGENTD_DIAGNOSTIC_LOGS"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return api.DiagnosticLogConfig{}, fmt.Errorf("AGENTD_DIAGNOSTIC_LOGS must be a boolean")
+		}
+		enabled = parsed
+	}
+	if raw := os.Getenv("AGENTD_DIAGNOSTIC_LOG_RETENTION"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return api.DiagnosticLogConfig{}, fmt.Errorf("AGENTD_DIAGNOSTIC_LOG_RETENTION must be a duration")
+		}
+		retention = parsed
+	}
+	if retention < 0 {
+		return api.DiagnosticLogConfig{}, fmt.Errorf("diagnostic log retention must be nonnegative")
+	}
+	return api.DiagnosticLogConfig{Enabled: enabled, Retention: retention}, nil
 }
 
 func defaultListenHost() string { return "127.0.0.1" }

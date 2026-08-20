@@ -2,6 +2,22 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.2.3] — 2026-08-20
+
+- Session diagnostic directories/files are now always tightened to
+  owner-only `0700`/`0600`, including retained files and launchd service logs
+  created by install/reinstall flows.
+- Diagnostic mirrors redact exact prompts, prompt lines, secret-grant and
+  credential-shaped environment values, nested JSON credential strings,
+  encoded variants, and credential-shaped JSON/env fields. Oversize records
+  are replaced with a redacted marker. Canonical events/replay remain exact.
+- Added startup-configured `--diagnostic-logs` and
+  `--diagnostic-log-retention` controls with higher-priority
+  `AGENTD_DIAGNOSTIC_LOGS` and `AGENTD_DIAGNOSTIC_LOG_RETENTION` overrides.
+  Defaults are enabled/seven days; retention `0` keeps indefinitely.
+- Startup prunes only expired regular `.ndjson`/`.jsonl` diagnostic files,
+  never follows symlinks, and the disable path creates no session log path.
+
 ## [2.2.2] — 2026-08-20
 
 - Replaced the stale, non-compiling unversioned concurrency test with an opt-in

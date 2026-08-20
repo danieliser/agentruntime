@@ -192,6 +192,34 @@ func TestOpenDurableStoreUsesDataRoot(t *testing.T) {
 	}
 }
 
+func TestConfiguredDiagnosticLogsEnvironmentOverridesFlags(t *testing.T) {
+	t.Setenv("AGENTD_DIAGNOSTIC_LOGS", "false")
+	t.Setenv("AGENTD_DIAGNOSTIC_LOG_RETENTION", "24h")
+	config, err := configuredDiagnosticLogs(true, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Enabled || config.Retention != 24*time.Hour {
+		t.Fatalf("diagnostic log config = %+v", config)
+	}
+}
+
+func TestConfiguredDiagnosticLogsRejectsInvalidEnvironment(t *testing.T) {
+	for name, value := range map[string]string{
+		"AGENTD_DIAGNOSTIC_LOGS":          "sometimes",
+		"AGENTD_DIAGNOSTIC_LOG_RETENTION": "forever",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("AGENTD_DIAGNOSTIC_LOGS", "")
+			t.Setenv("AGENTD_DIAGNOSTIC_LOG_RETENTION", "")
+			t.Setenv(name, value)
+			if _, err := configuredDiagnosticLogs(true, 7*24*time.Hour); err == nil {
+				t.Fatalf("invalid %s=%q was accepted", name, value)
+			}
+		})
+	}
+}
+
 func TestLocalRuntimeIsNativeAndLegacyAliasIsRetired(t *testing.T) {
 	rt, err := newRuntime("local", t.TempDir(), "", buildinfo.Identity{Version: "dev", Commit: "unknown"})
 	if err != nil {
