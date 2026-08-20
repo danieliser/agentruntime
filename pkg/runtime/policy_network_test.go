@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +91,7 @@ func TestRenderPolicyProxyConfigDiagnosticsContainOnlyTimestampAndConnectHost(t 
 	}
 	for _, want := range []string{
 		"logformat agentd_egress %ts.%03tu\\t%>rd",
-		"access_log stdio:/dev/stdout agentd_egress",
+		"access_log stdio:/var/log/squid/agentd-egress.log agentd_egress",
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("diagnostic proxy config missing %q:\n%s", want, config)
@@ -140,6 +142,54 @@ func TestWritePolicyEgressDiagnosticsFiltersAndSecuresRecords(t *testing.T) {
 	}
 	if strings.Contains(string(data), "payload.invalid") || strings.Contains(string(data), "startup") {
 		t.Fatalf("diagnostic file retained non-CONNECT data: %s", data)
+	}
+}
+
+func TestPolicyEgressPreflightFailsFastWithNamedHost(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+case "$1 $2" in
+  "run --rm")
+    case "$*" in
+      *"https://chatgpt.com/") exit 28 ;;
+      *) exit 0 ;;
+    esac
+    ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	manager := &NetworkManager{}
+	spec := PolicyNetworkSpec{
+		PolicyHash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		SessionID:  "preflight-session", AllowedHosts: []string{"api.openai.com", "chatgpt.com"},
+	}
+	err := manager.preflightPolicyEgress(context.Background(), spec, "agent:test")
+	var egressErr *EgressError
+	if !errors.As(err, &egressErr) || egressErr.Code != EgressPreflightFailed || egressErr.Host != "chatgpt.com" {
+		t.Fatalf("preflight error = %#v, want named %s", err, EgressPreflightFailed)
+	}
+}
+
+func TestInspectPolicyEgressFailureNamesDeniedHost(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1 $2" = "exec agentruntime-proxy-01234567-denied-s" ] && [ "$3 $4" = "sh -c" ]; then
+  printf '%b\n' '1787221724.812\tchatgpt.com' '1787221725.001\tauth.openai.com'
+  exit 0
+fi
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	manager := &NetworkManager{}
+	spec := PolicyNetworkSpec{
+		PolicyHash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		SessionID:  "denied-session", AllowedHosts: []string{"chatgpt.com"}, Diagnostics: true,
+	}
+	err := manager.inspectPolicyEgressFailure(context.Background(), spec)
+	var egressErr *EgressError
+	if !errors.As(err, &egressErr) || egressErr.Code != EgressDenied || egressErr.Host != "auth.openai.com" {
+		t.Fatalf("inspect error = %#v, want named %s", err, EgressDenied)
 	}
 }
 

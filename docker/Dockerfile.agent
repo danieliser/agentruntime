@@ -32,6 +32,14 @@ RUN apt-get update \
     && mv /root/.local/bin/uv /usr/local/bin/uv \
     && chmod 755 /usr/local/bin/uv
 
+# Codex checks PATH for bubblewrap before app-server initialization. Without
+# the package it spends tens of seconds falling back to its bundled binary,
+# exceeding AgentD's bounded native bootstrap deadline before any CONNECT.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN if getent group "${HOST_GID}" > /dev/null; then \
       EXISTING_GROUP="$(getent group "${HOST_GID}" | cut -d: -f1)"; \
       if [ "${EXISTING_GROUP}" != "agent" ]; then \

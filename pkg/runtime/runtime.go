@@ -45,6 +45,12 @@ type EphemeralSessionReleaser interface {
 	ReleaseSession(ctx context.Context, sessionID string) error
 }
 
+// EgressFailureInspector attributes a provider bootstrap failure to a denied
+// CONNECT host when policy-scoped diagnostics were enabled.
+type EgressFailureInspector interface {
+	InspectEgressFailure(ctx context.Context, cfg SpawnConfig) error
+}
+
 // SpawnConfig holds the parameters for spawning an agent process.
 type SpawnConfig struct {
 	// SessionID identifies the owning session and is used for container naming/labels.

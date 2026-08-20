@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -69,7 +68,20 @@ func (s PolicyNetworkSpec) Validate() error {
 }
 
 func canonicalEgressHost(host string) bool {
-	return host != "" && host == strings.ToLower(host) && !strings.ContainsAny(host, "*:/") && !strings.HasPrefix(host, ".") && net.ParseIP(host) == nil
+	if host == "" || len(host) > 253 || host != strings.ToLower(host) || strings.ContainsAny(host, "*:/") || net.ParseIP(host) != nil {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (s PolicyNetworkSpec) suffix() string {
@@ -127,7 +139,7 @@ func RenderPolicyProxyConfig(hosts []string, diagnosticMode ...bool) (string, er
 	builder.WriteString("http_port 3128\n")
 	if len(diagnosticMode) > 0 && diagnosticMode[0] {
 		builder.WriteString("logformat agentd_egress %ts.%03tu\\t%>rd\n")
-		builder.WriteString("access_log stdio:/dev/stdout agentd_egress\n")
+		builder.WriteString("access_log stdio:/var/log/squid/agentd-egress.log agentd_egress\n")
 	} else {
 		builder.WriteString("access_log none\n")
 	}
@@ -223,18 +235,14 @@ func (m *NetworkManager) ensurePolicyProxyOnce(ctx context.Context, spec PolicyN
 	} else if !dockerObjectMissing(inspectErr) {
 		return fmt.Errorf("inspect policy proxy %q: %w", proxyName, inspectErr)
 	}
-	logDriver := "none"
-	if spec.Diagnostics && m.DiagnosticDir != "" {
-		logDriver = "json-file"
-	}
 	if _, err := dockerOutputHost(ctx, m.dockerHost(),
 		"run", "-d", "--name", proxyName,
 		"--network", m.networkName(),
 		"--read-only",
 		"--tmpfs", "/run:rw,nosuid,nodev,size=1m",
-		"--tmpfs", "/var/log/squid:rw,nosuid,nodev,size=1m",
+		"--tmpfs", "/var/log/squid:rw,nosuid,nodev,size=1m,mode=1777",
 		"--tmpfs", "/var/spool/squid:rw,nosuid,nodev,size=8m",
-		"--log-driver", logDriver,
+		"--log-driver", "none",
 		"--label", policySessionLabelKey+"="+spec.SessionID,
 		"--label", policyHashLabelKey+"="+spec.PolicyHash,
 		"--label", policyDiagnosticsLabelKey+"="+strconv.FormatBool(spec.Diagnostics && m.DiagnosticDir != ""),
@@ -279,7 +287,7 @@ func (m *NetworkManager) cleanupPolicyNetworks(ctx context.Context, sessionID st
 				if inspectErr != nil && !dockerObjectMissing(inspectErr) {
 					errs = append(errs, fmt.Errorf("inspect policy proxy diagnostics %q: %w", containerID, inspectErr))
 				} else if strings.TrimSpace(diagnostic) == "true" {
-					logs, logsErr := dockerOutputHost(ctx, m.dockerHost(), "logs", containerID)
+					logs, logsErr := m.policyProxyLogs(ctx, containerID)
 					if logsErr != nil {
 						errs = append(errs, fmt.Errorf("read policy proxy diagnostics %q: %w", containerID, logsErr))
 					} else if _, writeErr := m.writePolicyEgressDiagnostics(sessionID, logs); writeErr != nil {
@@ -342,22 +350,8 @@ func (m *NetworkManager) writePolicyEgressDiagnostics(sessionID, raw string) (st
 		return "", fmt.Errorf("harden policy diagnostic file: %w", err)
 	}
 	encoder := json.NewEncoder(temporary)
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	for scanner.Scan() {
-		fields := strings.Split(scanner.Text(), "\t")
-		if len(fields) != 2 || !canonicalEgressHost(fields[1]) {
-			continue
-		}
-		timestamp, ok := parseSquidDiagnosticTimestamp(fields[0])
-		if !ok {
-			continue
-		}
-		if err := encoder.Encode(policyEgressDiagnosticRecord{Timestamp: timestamp, ConnectHost: fields[1]}); err != nil {
-			return "", fmt.Errorf("encode policy diagnostic record: %w", err)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("scan policy diagnostic records: %w", err)
+	if err := encodePolicyEgressDiagnosticRecords(encoder, parsePolicyEgressDiagnosticRecords(raw)); err != nil {
+		return "", fmt.Errorf("encode policy diagnostic record: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		return "", fmt.Errorf("sync policy diagnostic file: %w", err)

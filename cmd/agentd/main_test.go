@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -41,6 +42,16 @@ func TestQualifiedBuildUsesExactStampedDockerImages(t *testing.T) {
 	dev := dockerConfigForBuild(t.TempDir(), "", buildinfo.Identity{Version: "dev", Commit: "unknown"})
 	if dev.Image != runtime.DefaultDockerImage || dev.ProxyImage != "agentruntime-proxy:latest" || dev.ExpectedVersion != "" || dev.ExpectedCommit != "" {
 		t.Fatalf("development Docker config = %+v", dev)
+	}
+}
+
+func TestDockerAgentImageProvidesBubblewrapOnPath(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "Dockerfile.agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(dockerfile, []byte("bubblewrap")) {
+		t.Fatal("runtime image does not install provider-required bubblewrap")
 	}
 }
 

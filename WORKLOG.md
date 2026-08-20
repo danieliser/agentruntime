@@ -22,6 +22,44 @@
   methods, URLs, payloads, and headers; parsed records use the existing private
   diagnostic directory and retention lifecycle. Focused tests, `go test ./...`,
   `go test -race ./...`, and `git diff --check` pass.
+- Reproduction Red: the opt-in real-Docker gate ran the actual Codex CLI 0.148.0
+  app-server with the canary's exact `api.openai.com` + `chatgpt.com` allowlist,
+  2 GiB/2 CPU/256 PID/1,024-FD ceilings, explicit one-session auth, and a
+  minimal structured-output turn. It failed after 19.19 seconds with an empty
+  CONNECT diagnostic file: the provider attempted no proxy connection before
+  AgentD's 15-second native bootstrap context expired.
+- **Root cause (verbatim):** `Codex could not find bubblewrap on PATH. Install
+  bubblewrap with your OS package manager. See the sandbox prerequisites:
+  https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex
+  will use the bundled bubblewrap in the meantime.` In an unrestricted
+  container, the same actual app-server took approximately 40 seconds before
+  returning its `initialize` response and that warning. AgentD killed it at 15
+  seconds and persisted only `context deadline exceeded`. Missing allowlist
+  hosts, proxy-environment non-compliance, and a direct-DNS attempt were not the
+  first failure; there were zero CONNECT attempts.
+- Provider-path finding (verbatim): `Codex's model request honored the injected
+  HTTP(S) proxy, but its ChatGPT token-refresh client made no proxy CONNECT
+  until AgentD launched app-server with the provider-native setting
+  features.respect_system_proxy=true. With that setting enabled, the same
+  near-expiry credential attempted CONNECT auth.openai.com and the exact-host
+  proxy denied it.` The Codex provider endpoint menu therefore requires both
+  `auth.openai.com` (OAuth refresh) and `chatgpt.com` (turn transport);
+  `api.openai.com` remains the separately advertised `web_search` endpoint.
+- Fix Green in progress: the agent image installs system `bubblewrap`; native
+  startup remains bounded at 60 seconds; restricted Codex launch forces its
+  native proxy-resolution feature; every allowlisted host receives a bounded,
+  retry-once CONNECT preflight before provider launch; and durable launch
+  activation receives a fresh timeout after preflight rather than inheriting
+  an already-consumed 10-second database context. Failures classify as
+  `egress_preflight_failed`, `egress_denied`, or `provider_startup_failed`.
+- Qualification Red/Green: the new opt-in paid Docker gate first reproduced
+  the empty-output deadline. Its positive case now completes an actual Codex
+  app-server turn with strict JSON output and a durable artifact/receipt under
+  the exact three-host policy. Its negative case uses an isolated near-expiry
+  copy of the credential, removes only `auth.openai.com`, and now commits a
+  named `egress_denied` failure plus timestamp/host-only CONNECT evidence; the
+  denied request never reaches the auth service and cannot rotate the retained
+  refresh token.
 
 ## Final summary
 

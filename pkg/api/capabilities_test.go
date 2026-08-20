@@ -148,6 +148,7 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		!envelope.Data.EgressPolicy.ExactHostsOnly || !envelope.Data.EgressPolicy.ProxyRequired ||
 		envelope.Data.EgressPolicy.DirectDNSIPEgress || envelope.Data.EgressPolicy.EnvironmentProxyBypass ||
 		!containsString(envelope.Data.EgressPolicy.ProviderEndpoints["codex"], "chatgpt.com") ||
+		!containsString(envelope.Data.EgressPolicy.ProviderEndpoints["codex"], "auth.openai.com") ||
 		!containsString(envelope.Data.EgressPolicy.ToolEndpoints["web_search"], "api.openai.com") {
 		t.Fatalf("egress policy capabilities = %+v", envelope.Data.EgressPolicy)
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -491,6 +492,41 @@ func TestV1CreateSessionRejectsUndeclaredOrMalformedCodexAuthGrant(t *testing.T)
 	if response.StatusCode != http.StatusBadRequest || counter.Load() != 0 {
 		t.Fatalf("malformed Codex auth status=%d spawn=%d", response.StatusCode, counter.Load())
 	}
+}
+
+func TestClassifyRuntimeFailurePreservesStableEgressCodeAndNamesHost(t *testing.T) {
+	err := classifyRuntimeFailure(&runtime.EgressError{
+		Code: runtime.EgressPreflightFailed, Host: "chatgpt.com", Err: context.DeadlineExceeded,
+	})
+	if !durable.IsCode(err, durable.CodeEgressPreflightFailed) || !strings.Contains(err.Error(), "chatgpt.com") {
+		t.Fatalf("classified runtime failure = %v", err)
+	}
+}
+
+func TestClassifyNativeBootstrapDeadlineIsTyped(t *testing.T) {
+	err := classifyNativeBootstrapFailure(nil, runtime.SpawnConfig{}, context.DeadlineExceeded)
+	if !durable.IsCode(err, durable.CodeProviderStartupFailed) || strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("classified bootstrap failure = %v", err)
+	}
+}
+
+func TestClassifyNativeBootstrapDiagnosticReadFailureDoesNotMaskProviderCause(t *testing.T) {
+	rt := &egressInspectTestRuntime{inspectErr: context.DeadlineExceeded}
+	err := classifyNativeBootstrapFailure(rt, runtime.SpawnConfig{Request: &SessionRequest{
+		ExecutionPolicy: &ExecutionPolicy{EgressDiagnostics: true},
+	}}, io.EOF)
+	if !durable.IsCode(err, durable.CodeProviderStartupFailed) || strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("classified bootstrap failure = %v", err)
+	}
+}
+
+type egressInspectTestRuntime struct {
+	runtime.Runtime
+	inspectErr error
+}
+
+func (rt *egressInspectTestRuntime) InspectEgressFailure(context.Context, runtime.SpawnConfig) error {
+	return rt.inspectErr
 }
 
 func TestDurableManifestRetainsOnlyExplicitCodexAuthGrantName(t *testing.T) {

@@ -128,15 +128,15 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		sess.VolumeName = volumeName
 	}
 	lifecycleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	stored, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
 		SessionID: stored.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
 	})
+	cancel()
 	if err != nil {
 		return failAdmission(err)
 	}
 	generationNumber := stored.ActiveGeneration + 1
-	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
+	spawnConfig := runtime.SpawnConfig{
 		SessionID: sess.ID, Generation: generationNumber, IdempotencyKey: stored.IdempotencyKey,
 		RequestHash: stored.RequestHash, AgentName: req.Agent,
 		ExecutionPolicyHash: resolvedPolicy.Hash,
@@ -144,11 +144,14 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		Env: req.Env, WorkDir: workDir, TaskID: req.TaskID, Request: &req,
 		SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: req.PTY,
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, req),
-	})
+	}
+	handle, err := rt.Spawn(ctx, spawnConfig)
 	if err != nil {
-		return failAdmission(durable.NewError(durable.CodeIndeterminate, op, "spawn native runtime", err))
+		return failAdmission(classifyRuntimeFailure(err))
 	}
 	sess.SetRunning(handle)
+	lifecycleCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	runtimeID := runtimeGenerationIdentity(handle, rt.Name(), sess.ID, generationNumber)
 	if runtimeID == "" {
 		_ = handle.Kill()
@@ -206,9 +209,10 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 			}
 			s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
 		},
+		classifyNativeExitFailure(rt, spawnConfig),
 	); err != nil {
 		_ = handle.Kill()
-		return failAdmission(durable.NewError(durable.CodeIndeterminate, op, "attach native transport", err))
+		return failAdmission(classifyNativeBootstrapFailure(rt, spawnConfig, err))
 	}
 	log.Printf("[session %s] spawned durable internal session: agent=%s runtime=%s generation=%d", sess.ID, req.Agent, rt.Name(), generation.Number)
 	return sess, stored, nil

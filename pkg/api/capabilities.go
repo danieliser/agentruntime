@@ -176,7 +176,7 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			DiagnosticsDefault: false, DiagnosticRecordFields: []string{"timestamp", "connect_host"},
 			DefaultDeny: true, ExactHostsOnly: true, ProxyRequired: true,
 			DirectDNSIPEgress: false, EnvironmentProxyBypass: false,
-			ProviderEndpoints: map[string][]string{"claude": {"api.anthropic.com"}, "codex": {"chatgpt.com"}},
+			ProviderEndpoints: map[string][]string{"claude": {"api.anthropic.com"}, "codex": {"auth.openai.com", "chatgpt.com"}},
 			ToolEndpoints:     map[string][]string{"web_search": {"api.openai.com"}},
 		},
 		ResourceLimits: resourceLimitCapabilities{

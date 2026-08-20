@@ -16,6 +16,8 @@ import (
 	"github.com/danieliser/agentruntime/pkg/session"
 )
 
+const nativeBootstrapTimeout = 60 * time.Second
+
 // AttachNativeSessionIO makes provider-native JSON the sole durable output
 // authority for a v1 session. The NDJSON file is a diagnostic mirror and is
 // never used as the durable replay cursor.
@@ -35,6 +37,7 @@ func AttachNativeSessionIO(
 	terminalReason func() string,
 	onAttach func(nativeprotocol.Transport),
 	onExit func(runtime.ExitResult, error),
+	failureClassifiers ...func(runtime.ExitResult) error,
 ) error {
 	const op = "attach_native_session_io"
 	if sess == nil || sess.Handle == nil || generation < 1 || broker == nil {
@@ -80,7 +83,7 @@ func AttachNativeSessionIO(
 	if err := transport.Start(context.Background()); err != nil {
 		return err
 	}
-	bootstrapCtx, cancelBootstrap := context.WithTimeout(context.Background(), 15*time.Second)
+	bootstrapCtx, cancelBootstrap := context.WithTimeout(context.Background(), nativeBootstrapTimeout)
 	defer cancelBootstrap()
 	if err := transport.Bootstrap(bootstrapCtx, nativeprotocol.BootstrapRequest{
 		ProviderID: providerID, ClientName: "agentruntime", ClientVersion: "v1", Reconnect: reconnect, Policy: policy,
@@ -180,6 +183,18 @@ func AttachNativeSessionIO(
 				} else {
 					artifactHash = outputEvent.RawSHA256
 				}
+			}
+		}
+		if len(failureClassifiers) > 0 && failureClassifiers[0] != nil {
+			classified := failureClassifiers[0](runtime.ExitResult{
+				Code: nativeExit.Code, Signal: nativeExit.Signal, OOMKilled: nativeExit.OOMKilled,
+				ErrorDetail: nativeExit.ErrorDetail, StartedAt: nativeExit.StartedAt, EndedAt: nativeExit.EndedAt, Err: nativeExit.Err,
+			})
+			if classified != nil {
+				nativeExit.Code = 1
+				nativeExit.ErrorDetail = classified.Error()
+				reason = "failed"
+				failureReason = "failed"
 			}
 		}
 		if streamErr == nil {

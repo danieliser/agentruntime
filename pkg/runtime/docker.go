@@ -227,12 +227,17 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	}
 	restricted := cfg.Request != nil && cfg.Request.ExecutionPolicy != nil
 	if restricted {
+		policyCtx, cancelPolicy := context.WithTimeout(ctx, 60*time.Second)
+		defer cancelPolicy()
 		policyNetwork, err := policyNetworkSpec(cfg)
 		if err != nil {
 			return nil, &SpawnError{Reason: "egress policy", Err: err}
 		}
-		if err := r.manager().EnsurePolicyProxy(ctx, policyNetwork); err != nil {
-			return nil, &SpawnError{Reason: "policy proxy", Err: err}
+		if err := r.manager().EnsurePolicyProxy(policyCtx, policyNetwork); err != nil {
+			return nil, &SpawnError{Reason: "policy proxy", Err: &EgressError{Code: EgressPreflightFailed, Stage: "policy proxy unavailable", Err: err}}
+		}
+		if err := r.manager().preflightPolicyEgress(policyCtx, policyNetwork, resolvedDockerImage(r.cfg.Image, cfg)); err != nil {
+			return nil, &SpawnError{Reason: "egress preflight", Err: err}
 		}
 	} else {
 		if err := r.manager().EnsureNetwork(ctx); err != nil {
@@ -305,6 +310,14 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	// Materialized files remain in place for restart reconstruction. A later
 	// session-retention pass owns their eventual removal.
 	return handle, nil
+}
+
+func (r *DockerRuntime) InspectEgressFailure(ctx context.Context, cfg SpawnConfig) error {
+	spec, err := policyNetworkSpec(cfg)
+	if err != nil {
+		return err
+	}
+	return r.manager().inspectPolicyEgressFailure(ctx, spec)
 }
 
 func (r *DockerRuntime) imageReferenceDigest(ctx context.Context, imageReference string) (string, error) {

@@ -67,6 +67,7 @@ func resolveNativeExecution(
 				"-c", `approval_policy="never"`,
 				"-c", "sandbox_mode="+strconv.Quote(filesystemMode),
 				"-c", "tools.web_search="+strconv.FormatBool(hasCanonicalTool(request.ExecutionPolicy.AllowedTools, "web_search")),
+				"-c", "features.respect_system_proxy=true",
 			)
 			for _, feature := range []string{
 				"shell_tool", "unified_exec", "js_repl", "image_generation", "view_image",

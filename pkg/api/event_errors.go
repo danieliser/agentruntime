@@ -28,7 +28,8 @@ func writeDurableError(c *gin.Context, err error) {
 		status = http.StatusNotFound
 	case durable.CodeBackpressure:
 		status = http.StatusTooManyRequests
-	case durable.CodeIndeterminate, durable.CodeStoreClosed, durable.CodeRuntimeUnavailable:
+	case durable.CodeIndeterminate, durable.CodeStoreClosed, durable.CodeRuntimeUnavailable,
+		durable.CodeEgressPreflightFailed, durable.CodeEgressDenied, durable.CodeProviderStartupFailed:
 		status = http.StatusServiceUnavailable
 	}
 	c.JSON(status, gin.H{"error": apiErrorEnvelope{Code: storeErr.Code, Message: storeErr.Message}})

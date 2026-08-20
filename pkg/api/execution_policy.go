@@ -28,7 +28,8 @@ var (
 
 var executionPolicyEgressHosts = map[string]map[string]struct{}{
 	"codex": {
-		"chatgpt.com": {},
+		"auth.openai.com": {},
+		"chatgpt.com":     {},
 	},
 	"claude": {
 		"api.anthropic.com": {},

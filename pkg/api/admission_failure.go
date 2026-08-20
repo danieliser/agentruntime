@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,6 +18,50 @@ import (
 )
 
 const unstartedRuntimeIdentityPrefix = "agentd-unstarted:"
+
+func classifyRuntimeFailure(cause error) error {
+	var egressErr *runtime.EgressError
+	if !errors.As(cause, &egressErr) {
+		return cause
+	}
+	code := durable.CodeEgressPreflightFailed
+	if egressErr.Code == runtime.EgressDenied {
+		code = durable.CodeEgressDenied
+	}
+	return durable.NewError(code, "restricted_egress", egressErr.Error(), cause)
+}
+
+func classifyNativeBootstrapFailure(rt runtime.Runtime, cfg runtime.SpawnConfig, cause error) error {
+	if egressFailure := inspectNativeEgressFailure(rt, cfg); egressFailure != nil {
+		return egressFailure
+	}
+	message := "provider failed before completing bounded native startup"
+	if errors.Is(cause, context.DeadlineExceeded) {
+		message = "provider did not complete bounded native startup"
+	}
+	return durable.NewError(durable.CodeProviderStartupFailed, "bootstrap_native_provider", message, cause)
+}
+
+func classifyNativeExitFailure(rt runtime.Runtime, cfg runtime.SpawnConfig) func(runtime.ExitResult) error {
+	return func(runtime.ExitResult) error {
+		return inspectNativeEgressFailure(rt, cfg)
+	}
+}
+
+func inspectNativeEgressFailure(rt runtime.Runtime, cfg runtime.SpawnConfig) error {
+	inspector, ok := rt.(runtime.EgressFailureInspector)
+	if !ok || cfg.Request == nil || cfg.Request.ExecutionPolicy == nil || !cfg.Request.ExecutionPolicy.EgressDiagnostics {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	egressCause := inspector.InspectEgressFailure(ctx, cfg)
+	var typedEgress *runtime.EgressError
+	if !errors.As(egressCause, &typedEgress) {
+		return nil
+	}
+	return classifyRuntimeFailure(typedEgress)
+}
 
 func (s *Server) checkRuntimeAdmission(ctx context.Context, request SessionRequest, rt runtime.Runtime) error {
 	if request.IdempotencyKey == "" {

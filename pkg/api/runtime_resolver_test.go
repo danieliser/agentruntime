@@ -82,6 +82,7 @@ func TestResolveNativeExecutionEnforcesCodexPublicResearchPolicy(t *testing.T) {
 	joined := strings.Join(resolved.Command, " ")
 	for _, required := range []string{
 		`approval_policy="never"`, `sandbox_mode="read-only"`, "tools.web_search=true",
+		"features.respect_system_proxy=true",
 		"--disable shell_tool", "--disable unified_exec", "--disable plugins", "--disable enable_mcp_apps",
 	} {
 		if !strings.Contains(joined, required) {

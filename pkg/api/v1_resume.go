@@ -131,16 +131,17 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		volumeName = "agentruntime-vol-" + stored.ID
 		sess.VolumeName = volumeName
 	}
-	handle, err := rt.Spawn(context.Background(), runtime.SpawnConfig{
+	spawnConfig := runtime.SpawnConfig{
 		SessionID: stored.ID, Generation: nextGeneration, IdempotencyKey: stored.IdempotencyKey,
 		RequestHash: stored.RequestHash, ExecutionPolicyHash: manifestPolicyHash(stored.RequestManifest), AgentName: stored.Agent, Cmd: command, Prompt: request.Prompt,
 		Model: request.Model, Env: request.Env, WorkDir: workDir, TaskID: request.TaskID,
 		Request: &request, SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: request.PTY,
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, request),
-	})
+	}
+	handle, err := rt.Spawn(context.Background(), spawnConfig)
 	if err != nil {
 		s.sessions.Remove(stored.ID)
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "spawn resumed generation", err))
+		writeDurableError(c, classifyRuntimeFailure(err))
 		return
 	}
 	sess.SetRunning(handle)
@@ -200,11 +201,13 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 			}
 			s.finalizeV1SessionClassified(stored.ID, result, override, reason, streamErr)
 		},
+		classifyNativeExitFailure(rt, spawnConfig),
 	); err != nil {
 		_ = handle.Kill()
 		s.sessions.Remove(stored.ID)
-		s.finalizeV1Session(stored.ID, runtime.ExitResult{Code: -1, Err: err}, err)
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "attach resumed native transport", err))
+		classified := classifyNativeBootstrapFailure(rt, spawnConfig, err)
+		s.finalizeV1Session(stored.ID, runtime.ExitResult{Code: -1, ErrorDetail: classified.Error(), Err: classified}, classified)
+		writeDurableError(c, classified)
 		return
 	}
 	resumed, err := s.durableStore.GetSession(c.Request.Context(), stored.ID)

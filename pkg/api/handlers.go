@@ -261,17 +261,17 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	// Spawn the process.
 	generationNumber := admitted.ActiveGeneration + 1
 	lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer lifecycleCancel()
 	admitted, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
 		SessionID: admitted.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
 	})
+	lifecycleCancel()
 	if err != nil {
 		s.sessions.Remove(sess.ID)
 		s.writeAdmittedFailure(c, admitted.ID, err)
 		return
 	}
 	ctx := context.Background()
-	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
+	spawnConfig := runtime.SpawnConfig{
 		SessionID:           sess.ID,
 		Generation:          generationNumber,
 		IdempotencyKey:      admitted.IdempotencyKey,
@@ -289,14 +289,17 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		VolumeName:          volumeNameForSpawn,
 		PTY:                 req.PTY,
 		SandboxProfile:      requestSandboxProfile(rt.Name(), nativeV1Agent(req.Agent), req),
-	})
+	}
+	handle, err := rt.Spawn(ctx, spawnConfig)
 	if err != nil {
 		s.sessions.Remove(sess.ID)
-		s.writeAdmittedFailure(c, admitted.ID, err)
+		s.writeAdmittedFailure(c, admitted.ID, classifyRuntimeFailure(err))
 		return
 	}
 
 	sess.SetRunning(handle)
+	lifecycleCtx, lifecycleCancel = context.WithTimeout(context.Background(), 10*time.Second)
+	defer lifecycleCancel()
 	runtimeID := runtimeGenerationIdentity(handle, rt.Name(), sess.ID, generationNumber)
 	if runtimeID == "" {
 		_ = handle.Kill()
@@ -379,11 +382,13 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 				}
 				s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
 			},
+			classifyNativeExitFailure(rt, spawnConfig),
 		); err != nil {
-			log.Printf("[session %s] attach native event transport failed: %v", sess.ID, err)
+			classified := classifyNativeBootstrapFailure(rt, spawnConfig, err)
+			log.Printf("[session %s] attach native event transport failed: %v", sess.ID, classified)
 			_ = handle.Kill()
 			s.sessions.Remove(sess.ID)
-			s.writeAdmittedFailure(c, admitted.ID, durable.NewError(durable.CodeIndeterminate, "attach_native_session", "attach native event transport", err))
+			s.writeAdmittedFailure(c, admitted.ID, classified)
 			return
 		}
 	} else {

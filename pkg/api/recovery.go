@@ -383,6 +383,11 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	}
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
+	rt := s.RuntimeFor(stored.Runtime)
+	spawnConfig := runtime.SpawnConfig{
+		SessionID: stored.ID, Generation: generation.Number, ExecutionPolicyHash: manifestPolicyHash(stored.RequestManifest),
+		AgentName: stored.Agent, Request: &manifest,
+	}
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
@@ -411,8 +416,9 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 			}
 			s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
 		},
+		classifyNativeExitFailure(rt, spawnConfig),
 	); err != nil {
-		return err
+		return classifyNativeBootstrapFailure(rt, spawnConfig, err)
 	}
 	log.Printf("[session %s] recovered native generation %d at durable sequence %d", sess.ID, generation.Number, stored.LastSequence)
 	return nil
