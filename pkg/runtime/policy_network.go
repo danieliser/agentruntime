@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,8 +13,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 )
@@ -24,8 +27,9 @@ const (
 )
 
 const (
-	policySessionLabelKey = "agentruntime.policy_session"
-	policyHashLabelKey    = "agentruntime.policy_hash"
+	policySessionLabelKey     = "agentruntime.policy_session"
+	policyHashLabelKey        = "agentruntime.policy_hash"
+	policyDiagnosticsLabelKey = "agentruntime.egress_diagnostics"
 )
 
 type policyEnsure struct {
@@ -41,6 +45,7 @@ type PolicyNetworkSpec struct {
 	PolicyHash   string
 	SessionID    string
 	AllowedHosts []string
+	Diagnostics  bool
 }
 
 func (s PolicyNetworkSpec) Validate() error {
@@ -52,7 +57,7 @@ func (s PolicyNetworkSpec) Validate() error {
 	}
 	previous := ""
 	for _, host := range s.AllowedHosts {
-		if host == "" || host != strings.ToLower(host) || strings.ContainsAny(host, "*:/") || strings.HasPrefix(host, ".") || net.ParseIP(host) != nil {
+		if !canonicalEgressHost(host) {
 			return fmt.Errorf("egress host %q is not an exact lowercase DNS host", host)
 		}
 		if previous != "" && host <= previous {
@@ -61,6 +66,10 @@ func (s PolicyNetworkSpec) Validate() error {
 		previous = host
 	}
 	return nil
+}
+
+func canonicalEgressHost(host string) bool {
+	return host != "" && host == strings.ToLower(host) && !strings.ContainsAny(host, "*:/") && !strings.HasPrefix(host, ".") && net.ParseIP(host) == nil
 }
 
 func (s PolicyNetworkSpec) suffix() string {
@@ -91,7 +100,10 @@ func policyNetworkSpec(cfg SpawnConfig) (PolicyNetworkSpec, error) {
 	}
 	hosts := append([]string(nil), cfg.Request.ExecutionPolicy.EgressAllowlist...)
 	sort.Strings(hosts)
-	spec := PolicyNetworkSpec{PolicyHash: hash, SessionID: cfg.SessionID, AllowedHosts: hosts}
+	spec := PolicyNetworkSpec{
+		PolicyHash: hash, SessionID: cfg.SessionID, AllowedHosts: hosts,
+		Diagnostics: cfg.Request.ExecutionPolicy.EgressDiagnostics,
+	}
 	if err := spec.Validate(); err != nil {
 		return PolicyNetworkSpec{}, err
 	}
@@ -100,7 +112,7 @@ func policyNetworkSpec(cfg SpawnConfig) (PolicyNetworkSpec, error) {
 
 // RenderPolicyProxyConfig builds a non-logging CONNECT-only Squid policy.
 // Exact host tokens deliberately omit Squid's leading-dot subdomain syntax.
-func RenderPolicyProxyConfig(hosts []string) (string, error) {
+func RenderPolicyProxyConfig(hosts []string, diagnosticMode ...bool) (string, error) {
 	canonical := append([]string(nil), hosts...)
 	sort.Strings(canonical)
 	spec := PolicyNetworkSpec{
@@ -113,7 +125,13 @@ func RenderPolicyProxyConfig(hosts []string) (string, error) {
 	}
 	var builder strings.Builder
 	builder.WriteString("http_port 3128\n")
-	builder.WriteString("access_log none\ncache_log /dev/null\ncache_store_log none\nlogfile_rotate 0\n")
+	if len(diagnosticMode) > 0 && diagnosticMode[0] {
+		builder.WriteString("logformat agentd_egress %ts.%03tu\\t%>rd\n")
+		builder.WriteString("access_log stdio:/dev/stdout agentd_egress\n")
+	} else {
+		builder.WriteString("access_log none\n")
+	}
+	builder.WriteString("cache_log /dev/null\ncache_store_log none\nlogfile_rotate 0\n")
 	builder.WriteString("cache deny all\ncache_dir null /tmp\n")
 	builder.WriteString("acl SSL_ports port 443\nacl CONNECT method CONNECT\n")
 	builder.WriteString("http_access deny !CONNECT\nhttp_access deny CONNECT !SSL_ports\n")
@@ -126,7 +144,7 @@ func RenderPolicyProxyConfig(hosts []string) (string, error) {
 }
 
 func (m *NetworkManager) writePolicyProxyConfig(spec PolicyNetworkSpec) (string, error) {
-	config, err := RenderPolicyProxyConfig(spec.AllowedHosts)
+	config, err := RenderPolicyProxyConfig(spec.AllowedHosts, spec.Diagnostics)
 	if err != nil {
 		return "", err
 	}
@@ -205,6 +223,10 @@ func (m *NetworkManager) ensurePolicyProxyOnce(ctx context.Context, spec PolicyN
 	} else if !dockerObjectMissing(inspectErr) {
 		return fmt.Errorf("inspect policy proxy %q: %w", proxyName, inspectErr)
 	}
+	logDriver := "none"
+	if spec.Diagnostics && m.DiagnosticDir != "" {
+		logDriver = "json-file"
+	}
 	if _, err := dockerOutputHost(ctx, m.dockerHost(),
 		"run", "-d", "--name", proxyName,
 		"--network", m.networkName(),
@@ -212,9 +234,10 @@ func (m *NetworkManager) ensurePolicyProxyOnce(ctx context.Context, spec PolicyN
 		"--tmpfs", "/run:rw,nosuid,nodev,size=1m",
 		"--tmpfs", "/var/log/squid:rw,nosuid,nodev,size=1m",
 		"--tmpfs", "/var/spool/squid:rw,nosuid,nodev,size=8m",
-		"--log-driver", "none",
+		"--log-driver", logDriver,
 		"--label", policySessionLabelKey+"="+spec.SessionID,
 		"--label", policyHashLabelKey+"="+spec.PolicyHash,
+		"--label", policyDiagnosticsLabelKey+"="+strconv.FormatBool(spec.Diagnostics && m.DiagnosticDir != ""),
 		"--volume", configPath+":"+"/etc/squid/squid.conf:ro",
 		m.proxyImage(),
 	); err != nil {
@@ -251,6 +274,19 @@ func (m *NetworkManager) cleanupPolicyNetworks(ctx context.Context, sessionID st
 		errs = append(errs, fmt.Errorf("list policy proxies: %w", err))
 	} else {
 		for _, containerID := range strings.Fields(containers) {
+			if sessionID != "" {
+				diagnostic, inspectErr := dockerOutputHost(ctx, m.dockerHost(), "inspect", "--format", "{{ index .Config.Labels \""+policyDiagnosticsLabelKey+"\" }}", containerID)
+				if inspectErr != nil && !dockerObjectMissing(inspectErr) {
+					errs = append(errs, fmt.Errorf("inspect policy proxy diagnostics %q: %w", containerID, inspectErr))
+				} else if strings.TrimSpace(diagnostic) == "true" {
+					logs, logsErr := dockerOutputHost(ctx, m.dockerHost(), "logs", containerID)
+					if logsErr != nil {
+						errs = append(errs, fmt.Errorf("read policy proxy diagnostics %q: %w", containerID, logsErr))
+					} else if _, writeErr := m.writePolicyEgressDiagnostics(sessionID, logs); writeErr != nil {
+						errs = append(errs, writeErr)
+					}
+				}
+			}
 			if _, removeErr := dockerOutputHost(ctx, m.dockerHost(), "rm", "-f", containerID); removeErr != nil && !dockerObjectMissing(removeErr) {
 				errs = append(errs, fmt.Errorf("remove policy proxy %q: %w", containerID, removeErr))
 			}
@@ -267,4 +303,87 @@ func (m *NetworkManager) cleanupPolicyNetworks(ctx context.Context, sessionID st
 		}
 	}
 	return errors.Join(errs...)
+}
+
+type policyEgressDiagnosticRecord struct {
+	Timestamp   string `json:"timestamp"`
+	ConnectHost string `json:"connect_host"`
+}
+
+// writePolicyEgressDiagnostics accepts only Squid's deliberately minimal
+// timestamp/CONNECT-host format and drops every other proxy/container line.
+func (m *NetworkManager) writePolicyEgressDiagnostics(sessionID, raw string) (string, error) {
+	if m == nil || m.DiagnosticDir == "" {
+		return "", nil
+	}
+	if !safeRuntimeSessionID(sessionID) {
+		return "", fmt.Errorf("write policy egress diagnostics: unsafe session ID")
+	}
+	if err := os.MkdirAll(m.DiagnosticDir, 0o700); err != nil {
+		return "", fmt.Errorf("create policy diagnostic directory: %w", err)
+	}
+	if err := os.Chmod(m.DiagnosticDir, 0o700); err != nil {
+		return "", fmt.Errorf("harden policy diagnostic directory: %w", err)
+	}
+	path := filepath.Join(m.DiagnosticDir, sessionID+".egress.ndjson")
+	temporary, err := os.CreateTemp(m.DiagnosticDir, ".egress-*")
+	if err != nil {
+		return "", fmt.Errorf("create policy diagnostic file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return "", fmt.Errorf("harden policy diagnostic file: %w", err)
+	}
+	encoder := json.NewEncoder(temporary)
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), "\t")
+		if len(fields) != 2 || !canonicalEgressHost(fields[1]) {
+			continue
+		}
+		timestamp, ok := parseSquidDiagnosticTimestamp(fields[0])
+		if !ok {
+			continue
+		}
+		if err := encoder.Encode(policyEgressDiagnosticRecord{Timestamp: timestamp, ConnectHost: fields[1]}); err != nil {
+			return "", fmt.Errorf("encode policy diagnostic record: %w", err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan policy diagnostic records: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return "", fmt.Errorf("sync policy diagnostic file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return "", fmt.Errorf("close policy diagnostic file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return "", fmt.Errorf("publish policy diagnostic file: %w", err)
+	}
+	committed = true
+	return path, nil
+}
+
+func parseSquidDiagnosticTimestamp(raw string) (string, bool) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 2 || len(parts[1]) != 3 {
+		return "", false
+	}
+	seconds, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return "", false
+	}
+	milliseconds, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || milliseconds < 0 || milliseconds > 999 {
+		return "", false
+	}
+	return time.Unix(seconds, milliseconds*int64(time.Millisecond)).UTC().Format(time.RFC3339Nano), true
 }

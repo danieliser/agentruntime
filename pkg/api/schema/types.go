@@ -131,9 +131,12 @@ type ExecutionPolicy struct {
 	Network            string   `json:"network" yaml:"network"`
 	AllowedTools       []string `json:"allowed_tools" yaml:"allowed_tools"`
 	EgressAllowlist    []string `json:"egress_allowlist" yaml:"egress_allowlist"`
-	MCPServers         []string `json:"mcp_servers" yaml:"mcp_servers"`
-	HostMounts         []string `json:"host_mounts" yaml:"host_mounts"`
-	ApprovalPolicy     string   `json:"approval_policy" yaml:"approval_policy"`
+	// EgressDiagnostics opts this session into timestamp/CONNECT-host-only
+	// proxy diagnostics. It defaults off and is covered by the policy hash.
+	EgressDiagnostics bool     `json:"egress_diagnostics,omitempty" yaml:"egress_diagnostics,omitempty"`
+	MCPServers        []string `json:"mcp_servers" yaml:"mcp_servers"`
+	HostMounts        []string `json:"host_mounts" yaml:"host_mounts"`
+	ApprovalPolicy    string   `json:"approval_policy" yaml:"approval_policy"`
 	// Resources is required and hash-covered by policy v2.1. A nil value is
 	// canonicalized to AgentD's documented default ceiling. Policy v2.0 keeps
 	// its original fixed, implicit resource profile for compatibility.

@@ -62,6 +62,9 @@ type credentialGrantCapabilities struct {
 
 type egressPolicyCapabilities struct {
 	PolicyField            string              `json:"policy_field"`
+	DiagnosticPolicyField  string              `json:"diagnostic_policy_field"`
+	DiagnosticsDefault     bool                `json:"diagnostics_default"`
+	DiagnosticRecordFields []string            `json:"diagnostic_record_fields"`
 	DefaultDeny            bool                `json:"default_deny"`
 	ExactHostsOnly         bool                `json:"exact_hosts_only"`
 	ProxyRequired          bool                `json:"proxy_required"`
@@ -169,7 +172,9 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			Materialization: "private_session_auth_file", Persistence: "name_only",
 		}},
 		EgressPolicy: egressPolicyCapabilities{
-			PolicyField: "egress_allowlist", DefaultDeny: true, ExactHostsOnly: true, ProxyRequired: true,
+			PolicyField: "egress_allowlist", DiagnosticPolicyField: "egress_diagnostics",
+			DiagnosticsDefault: false, DiagnosticRecordFields: []string{"timestamp", "connect_host"},
+			DefaultDeny: true, ExactHostsOnly: true, ProxyRequired: true,
 			DirectDNSIPEgress: false, EnvironmentProxyBypass: false,
 			ProviderEndpoints: map[string][]string{"claude": {"api.anthropic.com"}, "codex": {"chatgpt.com"}},
 			ToolEndpoints:     map[string][]string{"web_search": {"api.openai.com"}},

@@ -39,6 +39,9 @@ type DockerConfig struct {
 
 	// DataDir is the persistent agentruntime data directory for session homes.
 	DataDir string
+	// DiagnosticDir stores private policy-egress diagnostics. Empty disables
+	// the diagnostic sink even when a session requests it.
+	DiagnosticDir string
 
 	// Host is the Docker daemon address. When set, all docker CLI commands
 	// run with DOCKER_HOST=<value>. Supports ssh:// and tcp:// schemes.
@@ -72,10 +75,11 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 			return materialize.Materialize(req, sessionID, cfg.DataDir)
 		}),
 		networkManager: &NetworkManager{
-			NetworkName: cfg.Network,
-			ProxyImage:  cfg.ProxyImage,
-			DockerHost:  cfg.Host,
-			DataDir:     cfg.DataDir,
+			NetworkName:   cfg.Network,
+			ProxyImage:    cfg.ProxyImage,
+			DockerHost:    cfg.Host,
+			DataDir:       cfg.DataDir,
+			DiagnosticDir: cfg.DiagnosticDir,
 		},
 	}
 }
@@ -210,7 +214,7 @@ func safeRuntimeSessionID(value string) bool {
 
 func (r *DockerRuntime) manager() *NetworkManager {
 	if r.networkManager == nil {
-		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network, ProxyImage: r.cfg.ProxyImage, DockerHost: r.cfg.Host, DataDir: r.cfg.DataDir}
+		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network, ProxyImage: r.cfg.ProxyImage, DockerHost: r.cfg.Host, DataDir: r.cfg.DataDir, DiagnosticDir: r.cfg.DiagnosticDir}
 	}
 	return r.networkManager
 }

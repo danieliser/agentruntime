@@ -94,6 +94,9 @@ type CredentialGrantCapabilities struct {
 
 type EgressPolicyCapabilities struct {
 	PolicyField            string              `json:"policy_field"`
+	DiagnosticPolicyField  string              `json:"diagnostic_policy_field"`
+	DiagnosticsDefault     bool                `json:"diagnostics_default"`
+	DiagnosticRecordFields []string            `json:"diagnostic_record_fields"`
 	DefaultDeny            bool                `json:"default_deny"`
 	ExactHostsOnly         bool                `json:"exact_hosts_only"`
 	ProxyRequired          bool                `json:"proxy_required"`

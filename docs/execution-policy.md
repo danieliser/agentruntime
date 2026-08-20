@@ -12,6 +12,14 @@ the returned policy and hash with the request they approved before dispatch.
   canonicalizes it to the defaults below. A caller may request a tighter value
   within the advertised range but cannot widen AgentD's maximum.
 
+Both versions accept the additive, hash-covered `egress_diagnostics` boolean.
+It defaults to `false`. When a caller opts in and daemon diagnostics are
+enabled, AgentD retains only UTC timestamps and attempted HTTPS CONNECT host
+names in the private diagnostic directory; request payloads and headers never
+enter this record. The ordinary diagnostic retention/disable controls and
+`0700`/`0600` modes apply. The effective policy returned with the session shows
+whether the mode was enabled.
+
 ```json
 {
   "resources": {
@@ -45,4 +53,5 @@ provider process.
 
 The authenticated `/api/v1/capabilities` response is the source of truth for
 supported policy versions, defaults, minimums, maximums, and the stable breach
-code.
+code. Its egress section also advertises the diagnostic policy field, default,
+and retained record fields.

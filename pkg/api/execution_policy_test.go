@@ -87,6 +87,32 @@ func TestResolveExecutionPolicyEgressAllowlistIsCanonicalAndHashCovered(t *testi
 	}
 }
 
+func TestResolveExecutionPolicyEgressDiagnosticsIsOptInAndHashCovered(t *testing.T) {
+	request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
+		Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+		Network: "public_https", EgressAllowlist: []string{"chatgpt.com"}, ApprovalPolicy: "never",
+	}}
+	withoutDiagnostics, err := resolveExecutionPolicy(&request, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.ExecutionPolicy.EgressDiagnostics {
+		t.Fatal("egress diagnostics must default off")
+	}
+
+	changed := request
+	policyCopy := *request.ExecutionPolicy
+	policyCopy.EgressDiagnostics = true
+	changed.ExecutionPolicy = &policyCopy
+	withDiagnostics, err := resolveExecutionPolicy(&changed, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withDiagnostics.Hash == withoutDiagnostics.Hash {
+		t.Fatalf("policy hash did not change with egress diagnostics: %s", withoutDiagnostics.Hash)
+	}
+}
+
 func TestResolveExecutionPolicyResourceLimitsAreCanonicalAndHashCovered(t *testing.T) {
 	request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
 		Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",

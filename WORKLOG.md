@@ -1,5 +1,28 @@
 # AgentD overnight qualification worklog
 
+## v2.2.4 restricted-egress provider-turn qualification
+
+- Started: 2026-08-20 (America/New_York), from `main` at `07a5093` with a
+  clean worktree.
+- Required evidence read: this worklog, CHANGELOG v2.2.0-v2.2.3, and Trading
+  Floor Slice 038 including Dispositions. Retrieved retained session
+  `8bd10dc2-263d-4456-96ea-1cac64129de4` from `~/.agentd/agentd.sqlite`: exact
+  two-host policy/hash, sole sequence-1 `session.failed` event with
+  `context deadline exceeded`, matching failed receipt, exit -1, and the empty
+  SHA-256 output hash. The retained private Squid policy config contains only
+  `api.openai.com` and `chatgpt.com`; no provider-byte diagnostic existed.
+- Untouched baseline: `go test ./...` PASS and `go test -race ./...` PASS.
+- Diagnostics Red: focused tests failed because the execution policy had no
+  opt-in diagnostic field, capabilities did not advertise it, the Squid policy
+  renderer accepted no diagnostic mode, and no private CONNECT record writer
+  existed.
+- Diagnostics Green: added hash-covered, default-off
+  `egress_diagnostics`; capability metadata names the flag/default and the only
+  retained fields (`timestamp`, `connect_host`). The proxy format excludes
+  methods, URLs, payloads, and headers; parsed records use the existing private
+  diagnostic directory and retention lifecycle. Focused tests, `go test ./...`,
+  `go test -race ./...`, and `git diff --check` pass.
+
 ## Final summary
 
 - **Canary pin:** Trading Floor should review and pin exact release `v2.2.3`

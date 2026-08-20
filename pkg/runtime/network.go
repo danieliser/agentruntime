@@ -27,10 +27,11 @@ const (
 // NetworkManager owns the Docker bridge network and Squid proxy sidecar used
 // to isolate agent container egress.
 type NetworkManager struct {
-	NetworkName string
-	ProxyImage  string
-	DockerHost  string // DOCKER_HOST for remote Docker daemon
-	DataDir     string // owner-private root for generated proxy policies
+	NetworkName   string
+	ProxyImage    string
+	DockerHost    string // DOCKER_HOST for remote Docker daemon
+	DataDir       string // owner-private root for generated proxy policies
+	DiagnosticDir string // empty disables retained policy-egress diagnostics
 
 	ensureOnce    sync.Once
 	ensureErr     error

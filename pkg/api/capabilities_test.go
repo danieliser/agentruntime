@@ -90,6 +90,9 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 			} `json:"credential_grants"`
 			EgressPolicy struct {
 				PolicyField            string              `json:"policy_field"`
+				DiagnosticPolicyField  string              `json:"diagnostic_policy_field"`
+				DiagnosticsDefault     bool                `json:"diagnostics_default"`
+				DiagnosticRecordFields []string            `json:"diagnostic_record_fields"`
 				DefaultDeny            bool                `json:"default_deny"`
 				ExactHostsOnly         bool                `json:"exact_hosts_only"`
 				ProxyRequired          bool                `json:"proxy_required"`
@@ -139,6 +142,9 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		t.Fatalf("credential grant capabilities = %+v", envelope.Data.CredentialGrants)
 	}
 	if envelope.Data.EgressPolicy.PolicyField != "egress_allowlist" || !envelope.Data.EgressPolicy.DefaultDeny ||
+		envelope.Data.EgressPolicy.DiagnosticPolicyField != "egress_diagnostics" || envelope.Data.EgressPolicy.DiagnosticsDefault ||
+		!containsString(envelope.Data.EgressPolicy.DiagnosticRecordFields, "timestamp") ||
+		!containsString(envelope.Data.EgressPolicy.DiagnosticRecordFields, "connect_host") ||
 		!envelope.Data.EgressPolicy.ExactHostsOnly || !envelope.Data.EgressPolicy.ProxyRequired ||
 		envelope.Data.EgressPolicy.DirectDNSIPEgress || envelope.Data.EgressPolicy.EnvironmentProxyBypass ||
 		!containsString(envelope.Data.EgressPolicy.ProviderEndpoints["codex"], "chatgpt.com") ||

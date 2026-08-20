@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,67 @@ func TestRenderPolicyProxyConfigAllowsOnlyExactHostsAndDisablesLogs(t *testing.T
 	}
 	if !strings.Contains(config, "access_log none") || !strings.Contains(config, "http_access deny all") {
 		t.Fatalf("proxy config is not non-logging default-deny:\n%s", config)
+	}
+}
+
+func TestRenderPolicyProxyConfigDiagnosticsContainOnlyTimestampAndConnectHost(t *testing.T) {
+	config, err := RenderPolicyProxyConfig([]string{"chatgpt.com"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"logformat agentd_egress %ts.%03tu\\t%>rd",
+		"access_log stdio:/dev/stdout agentd_egress",
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("diagnostic proxy config missing %q:\n%s", want, config)
+		}
+	}
+	for _, forbidden := range []string{"%ru", "%rm", "%{User-Agent}", "%{Authorization}"} {
+		if strings.Contains(config, forbidden) {
+			t.Fatalf("diagnostic proxy config contains payload/header field %q:\n%s", forbidden, config)
+		}
+	}
+}
+
+func TestWritePolicyEgressDiagnosticsFiltersAndSecuresRecords(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	manager := &NetworkManager{DiagnosticDir: dir}
+	raw := strings.Join([]string{
+		"Squid startup noise",
+		"1787221724.812\tchatgpt.com",
+		"1787221725.001\tauth.openai.com",
+		"1787221726.000\thttps://payload.invalid/path",
+	}, "\n")
+	path, err := manager.writePolicyEgressDiagnostics("session-private", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("diagnostic dir mode=%v err=%v", info, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("diagnostic file mode=%v err=%v", info, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("diagnostic records = %q", data)
+	}
+	for index, line := range lines {
+		var record map[string]string
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if len(record) != 2 || record["timestamp"] == "" || record["connect_host"] == "" {
+			t.Fatalf("record %d = %#v", index, record)
+		}
+	}
+	if strings.Contains(string(data), "payload.invalid") || strings.Contains(string(data), "startup") {
+		t.Fatalf("diagnostic file retained non-CONNECT data: %s", data)
 	}
 }
 
