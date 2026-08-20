@@ -544,8 +544,8 @@ func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t 
 	spec, err := rt.prepareRun(SpawnConfig{
 		Cmd: []string{"echo", "ok"}, SessionID: "policy-container-1234",
 		Request: &apischema.SessionRequest{Agent: "codex", ExecutionPolicy: &apischema.ExecutionPolicy{
-			Version: "1.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
-			AllowedTools: []string{"web_search"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+			Version: "2.0", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+			AllowedTools: []string{"web_search"}, EgressAllowlist: []string{"api.openai.com", "chatgpt.com"}, MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
 		}},
 	})
 	if err != nil {
@@ -568,7 +568,7 @@ func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t 
 	if !hasContainerMount(spec.args, "/home/agent/.codex") {
 		t.Fatalf("restricted Codex request did not receive its isolated generated home: %v", spec.args)
 	}
-	if !hasFlagValue(spec.args, "--network", defaultDockerPolicyNetworkName) {
+	if network := flagValue(spec.args, "--network"); !strings.HasPrefix(network, policyNetworkPrefix) || network == defaultDockerPolicyNetworkName {
 		t.Fatalf("restricted Docker args do not use the internal policy network: %v", spec.args)
 	}
 	envFile := flagValue(spec.args, "--env-file")
@@ -882,8 +882,14 @@ func TestDockerReleaseEphemeralSessionRemovesContainerAndProviderState(t *testin
 	installFakeDocker(t, `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "`+logFile+`"
-if [ "$1" = "ps" ]; then
+if [ "$1" = "ps" ] && ! printf '%s' "$*" | grep -q '`+policySessionLabelKey+`'; then
   printf '%s\n' 'container-policy-session'
+  exit 0
+fi
+if [ "$1" = "ps" ]; then
+  exit 0
+fi
+if [ "$1" = "network" ] && [ "$2" = "ls" ]; then
   exit 0
 fi
 if [ "$1" = "rm" ] && [ "$2" = "-f" ]; then

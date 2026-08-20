@@ -82,6 +82,16 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 				Materialization string `json:"materialization"`
 				Persistence     string `json:"persistence"`
 			} `json:"credential_grants"`
+			EgressPolicy struct {
+				PolicyField            string              `json:"policy_field"`
+				DefaultDeny            bool                `json:"default_deny"`
+				ExactHostsOnly         bool                `json:"exact_hosts_only"`
+				ProxyRequired          bool                `json:"proxy_required"`
+				DirectDNSIPEgress      bool                `json:"direct_dns_ip_egress"`
+				EnvironmentProxyBypass bool                `json:"environment_proxy_bypass"`
+				ProviderEndpoints      map[string][]string `json:"provider_endpoints"`
+				ToolEndpoints          map[string][]string `json:"tool_endpoints"`
+			} `json:"egress_policy"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
@@ -111,6 +121,13 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		envelope.Data.CredentialGrants[0].Provider != "codex" || envelope.Data.CredentialGrants[0].RequestEnv != CodexAuthJSONEnv ||
 		envelope.Data.CredentialGrants[0].Materialization != "private_session_auth_file" || envelope.Data.CredentialGrants[0].Persistence != "name_only" {
 		t.Fatalf("credential grant capabilities = %+v", envelope.Data.CredentialGrants)
+	}
+	if envelope.Data.EgressPolicy.PolicyField != "egress_allowlist" || !envelope.Data.EgressPolicy.DefaultDeny ||
+		!envelope.Data.EgressPolicy.ExactHostsOnly || !envelope.Data.EgressPolicy.ProxyRequired ||
+		envelope.Data.EgressPolicy.DirectDNSIPEgress || envelope.Data.EgressPolicy.EnvironmentProxyBypass ||
+		!containsString(envelope.Data.EgressPolicy.ProviderEndpoints["codex"], "chatgpt.com") ||
+		!containsString(envelope.Data.EgressPolicy.ToolEndpoints["web_search"], "api.openai.com") {
+		t.Fatalf("egress policy capabilities = %+v", envelope.Data.EgressPolicy)
 	}
 }
 

@@ -30,9 +30,11 @@ type NetworkManager struct {
 	NetworkName string
 	ProxyImage  string
 	DockerHost  string // DOCKER_HOST for remote Docker daemon
+	DataDir     string // owner-private root for generated proxy policies
 
-	ensureOnce sync.Once
-	ensureErr  error
+	ensureOnce    sync.Once
+	ensureErr     error
+	policyEnsures sync.Map
 }
 
 func (m *NetworkManager) networkName() string {
@@ -196,6 +198,10 @@ func (m *NetworkManager) connectProxyToPolicyNetwork(ctx context.Context) error 
 }
 
 func (m *NetworkManager) waitForProxyReady(ctx context.Context) error {
+	return m.waitForNamedProxyReady(ctx, dockerProxyContainerName)
+}
+
+func (m *NetworkManager) waitForNamedProxyReady(ctx context.Context, containerName string) error {
 	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -205,7 +211,7 @@ func (m *NetworkManager) waitForProxyReady(ctx context.Context) error {
 		_, lastErr = dockerOutputHost(
 			readyCtx,
 			m.dockerHost(),
-			"exec", dockerProxyContainerName,
+			"exec", containerName,
 			"sh", "-c", dockerProxyReadinessProbe,
 		)
 		if lastErr == nil {
@@ -237,6 +243,7 @@ func (m *NetworkManager) RestrictedProxyEnv() map[string]string {
 	return map[string]string{
 		"HTTP_PROXY": url, "HTTPS_PROXY": url,
 		"http_proxy": url, "https_proxy": url,
+		"ALL_PROXY": url, "all_proxy": url,
 		"NO_PROXY": "localhost,127.0.0.1", "no_proxy": "localhost,127.0.0.1",
 	}
 }
@@ -247,6 +254,9 @@ func (m *NetworkManager) Cleanup(ctx context.Context) error {
 	m.ensureOnce = sync.Once{}
 	m.ensureErr = nil
 	var errs []error
+	if err := m.cleanupPolicyNetworks(ctx, ""); err != nil {
+		errs = append(errs, err)
+	}
 
 	host := m.dockerHost()
 	if exists, _ := dockerContainerExistsHost(ctx, host, dockerProxyContainerName); exists {

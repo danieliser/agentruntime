@@ -50,6 +50,17 @@ type credentialGrantCapabilities struct {
 	Persistence     string `json:"persistence"`
 }
 
+type egressPolicyCapabilities struct {
+	PolicyField            string              `json:"policy_field"`
+	DefaultDeny            bool                `json:"default_deny"`
+	ExactHostsOnly         bool                `json:"exact_hosts_only"`
+	ProxyRequired          bool                `json:"proxy_required"`
+	DirectDNSIPEgress      bool                `json:"direct_dns_ip_egress"`
+	EnvironmentProxyBypass bool                `json:"environment_proxy_bypass"`
+	ProviderEndpoints      map[string][]string `json:"provider_endpoints"`
+	ToolEndpoints          map[string][]string `json:"tool_endpoints"`
+}
+
 type v1Capabilities struct {
 	AgentDVersion           string                         `json:"agentd_version"`
 	CommitHash              string                         `json:"commit_hash"`
@@ -68,6 +79,7 @@ type v1Capabilities struct {
 	StructuredOutput        structuredOutputCapabilities   `json:"structured_output"`
 	WorkspaceProfiles       []workspaceProfileCapabilities `json:"workspace_profiles"`
 	CredentialGrants        []credentialGrantCapabilities  `json:"credential_grants"`
+	EgressPolicy            egressPolicyCapabilities       `json:"egress_policy"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -121,5 +133,11 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			Name: "codex_auth_json", Provider: "codex", RequestEnv: CodexAuthJSONEnv,
 			Materialization: "private_session_auth_file", Persistence: "name_only",
 		}},
+		EgressPolicy: egressPolicyCapabilities{
+			PolicyField: "egress_allowlist", DefaultDeny: true, ExactHostsOnly: true, ProxyRequired: true,
+			DirectDNSIPEgress: false, EnvironmentProxyBypass: false,
+			ProviderEndpoints: map[string][]string{"claude": {"api.anthropic.com"}, "codex": {"chatgpt.com"}},
+			ToolEndpoints:     map[string][]string{"web_search": {"api.openai.com"}},
+		},
 	}})
 }

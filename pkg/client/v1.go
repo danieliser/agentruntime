@@ -85,6 +85,17 @@ type CredentialGrantCapabilities struct {
 	Persistence     string `json:"persistence"`
 }
 
+type EgressPolicyCapabilities struct {
+	PolicyField            string              `json:"policy_field"`
+	DefaultDeny            bool                `json:"default_deny"`
+	ExactHostsOnly         bool                `json:"exact_hosts_only"`
+	ProxyRequired          bool                `json:"proxy_required"`
+	DirectDNSIPEgress      bool                `json:"direct_dns_ip_egress"`
+	EnvironmentProxyBypass bool                `json:"environment_proxy_bypass"`
+	ProviderEndpoints      map[string][]string `json:"provider_endpoints"`
+	ToolEndpoints          map[string][]string `json:"tool_endpoints"`
+}
+
 // Capabilities is the v1 compatibility handshake a caller checks before
 // submitting paid work.
 type Capabilities struct {
@@ -105,6 +116,7 @@ type Capabilities struct {
 	StructuredOutput        StructuredOutputCapabilities   `json:"structured_output"`
 	WorkspaceProfiles       []WorkspaceProfileCapabilities `json:"workspace_profiles"`
 	CredentialGrants        []CredentialGrantCapabilities  `json:"credential_grants"`
+	EgressPolicy            EgressPolicyCapabilities       `json:"egress_policy"`
 }
 
 type PluginStatus struct {

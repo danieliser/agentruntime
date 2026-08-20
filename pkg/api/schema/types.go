@@ -130,6 +130,7 @@ type ExecutionPolicy struct {
 	Filesystem         string   `json:"filesystem" yaml:"filesystem"`
 	Network            string   `json:"network" yaml:"network"`
 	AllowedTools       []string `json:"allowed_tools" yaml:"allowed_tools"`
+	EgressAllowlist    []string `json:"egress_allowlist" yaml:"egress_allowlist"`
 	MCPServers         []string `json:"mcp_servers" yaml:"mcp_servers"`
 	HostMounts         []string `json:"host_mounts" yaml:"host_mounts"`
 	ApprovalPolicy     string   `json:"approval_policy" yaml:"approval_policy"`

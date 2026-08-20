@@ -51,12 +51,13 @@ type SpawnConfig struct {
 	SessionID string
 
 	// Generation and idempotency fields label reconstructable durable work.
-	Generation     int64
-	IdempotencyKey string
-	RequestHash    string
-	ImageReference string
-	ImageDigest    string
-	SandboxProfile string
+	Generation          int64
+	IdempotencyKey      string
+	RequestHash         string
+	ExecutionPolicyHash string
+	ImageReference      string
+	ImageDigest         string
+	SandboxProfile      string
 
 	// AgentName identifies the agent type ("claude", "codex").
 	AgentName string

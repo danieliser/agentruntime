@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,7 +17,7 @@ func TestResolveExecutionPolicyCanonicalizesPublicResearchProfile(t *testing.T) 
 		Agent: "codex", Runtime: "docker", Prompt: "research",
 		ExecutionPolicy: &ExecutionPolicy{
 			Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
-			AllowedTools: []string{"web_search"}, ApprovalPolicy: "never",
+			AllowedTools: []string{"web_search"}, EgressAllowlist: []string{"api.openai.com", "chatgpt.com"}, ApprovalPolicy: "never",
 		},
 	}
 	resolved, err := resolveExecutionPolicy(&request, "docker")
@@ -44,6 +45,60 @@ func TestResolveExecutionPolicyCanonicalizesPublicResearchProfile(t *testing.T) 
 	}
 	if stored["execution_policy_hash"] != resolved.Hash {
 		t.Fatalf("manifest policy hash = %#v, want %q", stored["execution_policy_hash"], resolved.Hash)
+	}
+}
+
+func TestResolveExecutionPolicyEgressAllowlistIsCanonicalAndHashCovered(t *testing.T) {
+	request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
+		Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+		Network: "public_https", AllowedTools: []string{"web_search"},
+		EgressAllowlist: []string{"chatgpt.com", "api.openai.com"}, ApprovalPolicy: "never",
+	}}
+	resolved, err := resolveExecutionPolicy(&request, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := request.ExecutionPolicy.EgressAllowlist, []string{"api.openai.com", "chatgpt.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("canonical egress allowlist = %v, want %v", got, want)
+	}
+
+	changed := request
+	policyCopy := *request.ExecutionPolicy
+	policyCopy.EgressAllowlist = []string{"chatgpt.com"}
+	changed.ExecutionPolicy = &policyCopy
+	changedResolved, err := resolveExecutionPolicy(&changed, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedResolved.Hash == resolved.Hash {
+		t.Fatalf("policy hash did not change with egress allowlist: %s", resolved.Hash)
+	}
+
+	denied := request
+	deniedPolicy := *request.ExecutionPolicy
+	deniedPolicy.EgressAllowlist = nil
+	denied.ExecutionPolicy = &deniedPolicy
+	if _, err := resolveExecutionPolicy(&denied, "docker"); err != nil {
+		t.Fatalf("empty allowlist must be a valid deny-all policy: %v", err)
+	}
+	if denied.ExecutionPolicy.EgressAllowlist == nil || len(denied.ExecutionPolicy.EgressAllowlist) != 0 {
+		t.Fatalf("deny-all allowlist was not canonicalized: %#v", denied.ExecutionPolicy.EgressAllowlist)
+	}
+}
+
+func TestResolveExecutionPolicyRejectsNonExactOrUnownedEgressHosts(t *testing.T) {
+	for _, hosts := range [][]string{
+		{"*.openai.com"}, {".openai.com"}, {"https://api.openai.com"},
+		{"api.openai.com:443"}, {"127.0.0.1"}, {"example.com"},
+		{"api.anthropic.com"}, {"API.OPENAI.COM"},
+	} {
+		request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
+			Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+			Network: "public_https", EgressAllowlist: hosts, ApprovalPolicy: "never",
+		}}
+		if _, err := resolveExecutionPolicy(&request, "docker"); err == nil || !strings.Contains(err.Error(), "execution_policy_unsupported") {
+			t.Fatalf("egress hosts %v error = %v, want execution_policy_unsupported", hosts, err)
+		}
 	}
 }
 

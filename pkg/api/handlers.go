@@ -62,7 +62,8 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		})
 		return
 	}
-	if _, err := resolveExecutionPolicy(&req, rt.Name()); err != nil {
+	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
+	if err != nil {
 		writeDurableError(c, err)
 		return
 	}
@@ -252,22 +253,23 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	}
 	ctx := context.Background()
 	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
-		SessionID:      sess.ID,
-		Generation:     generationNumber,
-		IdempotencyKey: admitted.IdempotencyKey,
-		RequestHash:    admitted.RequestHash,
-		AgentName:      req.Agent,
-		Cmd:            spawnCmd,
-		Prompt:         req.Prompt,
-		Model:          req.Model,
-		Env:            req.Env,
-		WorkDir:        workDir,
-		TaskID:         req.TaskID,
-		Request:        &req,
-		SessionDir:     &sess.SessionDir,
-		VolumeName:     volumeNameForSpawn,
-		PTY:            req.PTY,
-		SandboxProfile: requestSandboxProfile(rt.Name(), nativeV1Agent(req.Agent), req),
+		SessionID:           sess.ID,
+		Generation:          generationNumber,
+		IdempotencyKey:      admitted.IdempotencyKey,
+		RequestHash:         admitted.RequestHash,
+		ExecutionPolicyHash: resolvedPolicy.Hash,
+		AgentName:           req.Agent,
+		Cmd:                 spawnCmd,
+		Prompt:              req.Prompt,
+		Model:               req.Model,
+		Env:                 req.Env,
+		WorkDir:             workDir,
+		TaskID:              req.TaskID,
+		Request:             &req,
+		SessionDir:          &sess.SessionDir,
+		VolumeName:          volumeNameForSpawn,
+		PTY:                 req.PTY,
+		SandboxProfile:      requestSandboxProfile(rt.Name(), nativeV1Agent(req.Agent), req),
 	})
 	if err != nil {
 		s.sessions.Remove(sess.ID)

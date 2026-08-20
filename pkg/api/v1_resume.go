@@ -133,7 +133,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	}
 	handle, err := rt.Spawn(context.Background(), runtime.SpawnConfig{
 		SessionID: stored.ID, Generation: nextGeneration, IdempotencyKey: stored.IdempotencyKey,
-		RequestHash: stored.RequestHash, AgentName: stored.Agent, Cmd: command, Prompt: request.Prompt,
+		RequestHash: stored.RequestHash, ExecutionPolicyHash: manifestPolicyHash(stored.RequestManifest), AgentName: stored.Agent, Cmd: command, Prompt: request.Prompt,
 		Model: request.Model, Env: request.Env, WorkDir: workDir, TaskID: request.TaskID,
 		Request: &request, SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: request.PTY,
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, request),

@@ -36,7 +36,8 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if rt == nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("unknown runtime %q", req.Runtime), nil)
 	}
-	if _, err := resolveExecutionPolicy(&req, rt.Name()); err != nil {
+	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
+	if err != nil {
 		return nil, durable.Session{}, err
 	}
 	if _, err := resolveStructuredOutput(&req); err != nil {
@@ -138,7 +139,8 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
 		SessionID: sess.ID, Generation: generationNumber, IdempotencyKey: stored.IdempotencyKey,
 		RequestHash: stored.RequestHash, AgentName: req.Agent,
-		Cmd: runtimeSpawnCommand(command, rt.Name(), req.Agent), Prompt: req.Prompt, Model: req.Model,
+		ExecutionPolicyHash: resolvedPolicy.Hash,
+		Cmd:                 runtimeSpawnCommand(command, rt.Name(), req.Agent), Prompt: req.Prompt, Model: req.Model,
 		Env: req.Env, WorkDir: workDir, TaskID: req.TaskID, Request: &req,
 		SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: req.PTY,
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, req),

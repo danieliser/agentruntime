@@ -5,14 +5,29 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sort"
+	"strings"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 )
 
-const ExecutionPolicyVersion = "1.0"
+const ExecutionPolicyVersion = "2.0"
+
+var executionPolicyEgressHosts = map[string]map[string]struct{}{
+	"codex": {
+		"chatgpt.com": {},
+	},
+	"claude": {
+		"api.anthropic.com": {},
+	},
+}
+
+var executionToolEgressHosts = map[string][]string{
+	"web_search": {"api.openai.com"},
+}
 
 type resolvedExecutionPolicy struct {
 	Policy *ExecutionPolicy
@@ -72,6 +87,32 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 		}
 	}
 	policy.AllowedTools = tools
+	egressHosts, err := canonicalUnique(policy.EgressAllowlist)
+	if err != nil {
+		return unsupported("egress_allowlist must contain unique non-empty exact hosts")
+	}
+	ownedHosts := executionPolicyEgressHosts[request.Agent]
+	if ownedHosts == nil {
+		return unsupported(fmt.Sprintf("agent %q has no managed egress endpoints", request.Agent))
+	}
+	permittedHosts := make(map[string]struct{}, len(ownedHosts)+1)
+	for host := range ownedHosts {
+		permittedHosts[host] = struct{}{}
+	}
+	for _, tool := range tools {
+		for _, host := range executionToolEgressHosts[tool] {
+			permittedHosts[host] = struct{}{}
+		}
+	}
+	for _, host := range egressHosts {
+		if host != strings.ToLower(host) || strings.ContainsAny(host, "*:/") || strings.HasPrefix(host, ".") || net.ParseIP(host) != nil {
+			return unsupported(fmt.Sprintf("egress host %q is not a lowercase exact DNS host", host))
+		}
+		if _, permitted := permittedHosts[host]; !permitted {
+			return unsupported(fmt.Sprintf("egress host %q is not a managed endpoint for agent %q", host, request.Agent))
+		}
+	}
+	policy.EgressAllowlist = egressHosts
 	policy.MCPServers = emptyIfNil(policy.MCPServers)
 	policy.HostMounts = emptyIfNil(policy.HostMounts)
 	if len(policy.MCPServers) != 0 || len(request.MCPServers) != 0 {
@@ -135,6 +176,11 @@ func manifestExecutionPolicy(manifest json.RawMessage) (*ExecutionPolicy, string
 		return nil, ""
 	}
 	return stored.Policy, stored.Hash
+}
+
+func manifestPolicyHash(manifest json.RawMessage) string {
+	_, hash := manifestExecutionPolicy(manifest)
+	return hash
 }
 
 func nativePolicy(request SessionRequest) nativeprotocol.InputPolicy {

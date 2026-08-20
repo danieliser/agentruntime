@@ -64,6 +64,7 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 		networkManager: &NetworkManager{
 			NetworkName: cfg.Network,
 			DockerHost:  cfg.Host,
+			DataDir:     cfg.DataDir,
 		},
 	}
 }
@@ -147,6 +148,9 @@ func (r *DockerRuntime) ReleaseSession(ctx context.Context, sessionID string) er
 			}
 		}
 	}
+	if err := r.manager().ReleasePolicySession(ctx, sessionID); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -165,7 +169,7 @@ func safeRuntimeSessionID(value string) bool {
 
 func (r *DockerRuntime) manager() *NetworkManager {
 	if r.networkManager == nil {
-		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network}
+		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network, DockerHost: r.cfg.Host, DataDir: r.cfg.DataDir}
 	}
 	return r.networkManager
 }
@@ -176,11 +180,22 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 	if len(cfg.Cmd) == 0 {
 		return nil, &SpawnError{Reason: "cmd is empty"}
 	}
-	if err := r.manager().EnsureNetwork(ctx); err != nil {
-		return nil, &SpawnError{Reason: "docker network", Err: err}
-	}
-	if err := r.manager().EnsureProxy(ctx); err != nil {
-		return nil, &SpawnError{Reason: "docker proxy", Err: err}
+	restricted := cfg.Request != nil && cfg.Request.ExecutionPolicy != nil
+	if restricted {
+		policyNetwork, err := policyNetworkSpec(cfg)
+		if err != nil {
+			return nil, &SpawnError{Reason: "egress policy", Err: err}
+		}
+		if err := r.manager().EnsurePolicyProxy(ctx, policyNetwork); err != nil {
+			return nil, &SpawnError{Reason: "policy proxy", Err: err}
+		}
+	} else {
+		if err := r.manager().EnsureNetwork(ctx); err != nil {
+			return nil, &SpawnError{Reason: "docker network", Err: err}
+		}
+		if err := r.manager().EnsureProxy(ctx); err != nil {
+			return nil, &SpawnError{Reason: "docker proxy", Err: err}
+		}
 	}
 	if cfg.Generation > 0 {
 		cfg.ImageReference = resolvedDockerImage(r.cfg.Image, cfg)
@@ -489,13 +504,24 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		return nil, fmt.Errorf("volume permission init: %w", err)
 	}
 
-	envValues := make(map[string]string, len(requestEnv(cfg))+3)
+	if err := validateCallerDockerEnv(requestEnv(cfg)); err != nil {
+		cleanup()
+		return nil, err
+	}
+	envValues := make(map[string]string, len(requestEnv(cfg))+8)
 	for key, value := range requestEnv(cfg) {
 		envValues[key] = value
 	}
 	restricted := req != nil && req.ExecutionPolicy != nil
 	proxyEnv := r.manager().ProxyEnv()
+	policyNetwork := PolicyNetworkSpec{}
 	if restricted {
+		var policyErr error
+		policyNetwork, policyErr = policyNetworkSpec(cfg)
+		if policyErr != nil {
+			cleanup()
+			return nil, policyErr
+		}
 		proxyEnv = r.manager().RestrictedProxyEnv()
 	}
 	for key, value := range proxyEnv {
@@ -573,7 +599,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 
 	network := r.manager().networkName()
 	if restricted {
-		network = r.manager().policyNetworkName()
+		network = policyNetwork.NetworkName()
 	}
 	if req != nil && req.Container != nil {
 		if req.Container.Memory != "" {
@@ -770,6 +796,18 @@ func validateDockerEnvValues(envMap map[string]string) error {
 		}
 	}
 
+	return nil
+}
+
+func validateCallerDockerEnv(envMap map[string]string) error {
+	for _, key := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+	} {
+		if _, exists := envMap[key]; exists {
+			return fmt.Errorf("env key %q is reserved for AgentD-managed egress", key)
+		}
+	}
 	return nil
 }
 
