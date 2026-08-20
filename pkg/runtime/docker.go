@@ -26,6 +26,13 @@ const DefaultDockerImage = "agentruntime-agent:latest"
 type DockerConfig struct {
 	// Image is the default container image (e.g., "agentruntime-agent:latest").
 	Image string
+	// ProxyImage is the managed egress proxy image.
+	ProxyImage string
+
+	// ExpectedVersion and ExpectedCommit require exact OCI release stamps on
+	// both the agent and proxy images. Development configs leave them empty.
+	ExpectedVersion string
+	ExpectedCommit  string
 
 	// Network is the Docker network to attach containers to.
 	Network string
@@ -56,6 +63,9 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 	if cfg.Image == "" {
 		cfg.Image = DefaultDockerImage
 	}
+	if cfg.ProxyImage == "" {
+		cfg.ProxyImage = defaultDockerProxyImage
+	}
 	return &DockerRuntime{
 		cfg: cfg,
 		materializer: dockerMaterializerFunc(func(req *apischema.SessionRequest, sessionID string) (*materialize.Result, error) {
@@ -63,6 +73,7 @@ func NewDockerRuntime(cfg DockerConfig) *DockerRuntime {
 		}),
 		networkManager: &NetworkManager{
 			NetworkName: cfg.Network,
+			ProxyImage:  cfg.ProxyImage,
 			DockerHost:  cfg.Host,
 			DataDir:     cfg.DataDir,
 		},
@@ -106,8 +117,35 @@ func (r *DockerRuntime) CheckAdmission(ctx context.Context) error {
 	if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "ps", "-q", "--no-trunc"); err != nil {
 		return fmt.Errorf("Docker runtime unavailable: %w", err)
 	}
-	if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "image", "inspect", r.cfg.Image); err != nil {
-		return fmt.Errorf("Docker configured image %q is unavailable: %w", r.cfg.Image, err)
+	for _, image := range []string{r.cfg.Image, r.cfg.ProxyImage} {
+		if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "image", "inspect", image); err != nil {
+			return fmt.Errorf("Docker configured image %q is unavailable: %w", image, err)
+		}
+	}
+	if r.cfg.ExpectedVersion != "" || r.cfg.ExpectedCommit != "" {
+		for _, image := range []string{r.cfg.Image, r.cfg.ProxyImage} {
+			if err := r.checkImageStamp(checkCtx, image); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *DockerRuntime) checkImageStamp(ctx context.Context, image string) error {
+	raw, err := dockerOutputHost(ctx, r.cfg.Host, "image", "inspect", "--format", "{{json .Config.Labels}}", image)
+	if err != nil {
+		return fmt.Errorf("inspect Docker image stamp %q: %w", image, err)
+	}
+	labels := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		return fmt.Errorf("decode Docker image stamp %q: %w", image, err)
+	}
+	if got := labels["org.opencontainers.image.version"]; got != r.cfg.ExpectedVersion {
+		return fmt.Errorf("Docker image %q version stamp %q does not match %q", image, got, r.cfg.ExpectedVersion)
+	}
+	if got := labels["org.opencontainers.image.revision"]; got != r.cfg.ExpectedCommit {
+		return fmt.Errorf("Docker image %q revision stamp %q does not match %q", image, got, r.cfg.ExpectedCommit)
 	}
 	return nil
 }
@@ -172,7 +210,7 @@ func safeRuntimeSessionID(value string) bool {
 
 func (r *DockerRuntime) manager() *NetworkManager {
 	if r.networkManager == nil {
-		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network, DockerHost: r.cfg.Host, DataDir: r.cfg.DataDir}
+		r.networkManager = &NetworkManager{NetworkName: r.cfg.Network, ProxyImage: r.cfg.ProxyImage, DockerHost: r.cfg.Host, DataDir: r.cfg.DataDir}
 	}
 	return r.networkManager
 }

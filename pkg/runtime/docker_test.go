@@ -32,6 +32,10 @@ if [ "$*" = "image inspect agentruntime-agent:latest" ]; then
   printf '%s\n' 'image-present'
   exit 0
 fi
+if [ "$*" = "image inspect agentruntime-proxy:latest" ]; then
+  printf '%s\n' 'proxy-present'
+  exit 0
+fi
 echo "unexpected docker command: $*" >&2
 exit 2
 `)
@@ -40,7 +44,7 @@ exit 2
 		t.Fatalf("Docker admission check failed: %v", err)
 	}
 	data, err := os.ReadFile(logFile)
-	if err != nil || string(data) != "ps -q --no-trunc\nimage inspect agentruntime-agent:latest\n" {
+	if err != nil || string(data) != "ps -q --no-trunc\nimage inspect agentruntime-agent:latest\nimage inspect agentruntime-proxy:latest\n" {
 		t.Fatalf("Docker admission proof log=%q err=%v", data, err)
 	}
 }
@@ -67,6 +71,29 @@ exit 2
 	data, err := os.ReadFile(logFile)
 	if err != nil || strings.Contains(string(data), "run ") {
 		t.Fatalf("missing-image admission created a container: log=%q err=%v", data, err)
+	}
+}
+
+func TestDockerRuntimeAdmissionCheckRejectsWrongImageStamp(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+case "$*" in
+  "ps -q --no-trunc") exit 0 ;;
+  "image inspect agentruntime-agent:2.2.0") exit 0 ;;
+  "image inspect agentruntime-proxy:2.2.0") exit 0 ;;
+  "image inspect --format {{json .Config.Labels}} agentruntime-agent:2.2.0")
+    printf '%s\n' '{"org.opencontainers.image.version":"2.2.0","org.opencontainers.image.revision":"wrong"}'
+    exit 0 ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	runtime := NewDockerRuntime(DockerConfig{
+		Image: "agentruntime-agent:2.2.0", ProxyImage: "agentruntime-proxy:2.2.0",
+		ExpectedVersion: "2.2.0", ExpectedCommit: "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err := runtime.CheckAdmission(context.Background()); err == nil || !strings.Contains(err.Error(), "revision") {
+		t.Fatalf("wrong-stamp admission error=%v", err)
 	}
 }
 

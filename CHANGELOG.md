@@ -2,6 +2,58 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.2.0] — 2026-08-20
+
+AgentD 2.2 restores the public Docker canary with explicit policy-controlled
+egress and truthful runtime readiness. The public API/event/result/receipt,
+bearer/loopback, structured-output, and replay contracts are unchanged.
+
+### Breaking policy changes
+
+- Execution policy `2.0` replaces `1.0`. Every restricted request carries an
+  `egress_allowlist` of canonical exact lowercase DNS hosts; it is returned in
+  the effective policy and covered by `execution_policy_hash`. Empty denies all.
+- Wildcards, suffix matches, schemes, ports, IP literals, duplicates, uppercase
+  aliases, and endpoints outside AgentD's advertised provider/tool set fail
+  admission. Codex advertises `chatgpt.com`; Claude advertises
+  `api.anthropic.com`; canonical `web_search` advertises `api.openai.com`.
+
+### Egress enforcement
+
+- Replaced the shared static wildcard proxy policy with a private internal
+  network and non-logging AgentD-managed Squid proxy for each session/effective
+  policy. Only HTTPS CONNECT to the policy's exact hosts is allowed.
+- Direct DNS/IP egress remains unroutable. Caller-supplied HTTP/HTTPS/ALL/NO
+  proxy variables are rejected, and removing AgentD's proxy variables cannot
+  create a direct route.
+- Policy proxies disable Squid access/cache logs and Docker logging; generated
+  policy directories/files use owner-only `0700`/`0600` modes and are removed
+  with the owning ephemeral session.
+- Capabilities now advertise the allowlist field, exact provider/tool hosts,
+  default-deny behavior, mandatory proxy, and absence of direct/proxy-bypass
+  authority.
+
+### Readiness and clean execution
+
+- Docker admission verifies daemon access plus both configured agent/proxy
+  images before writing a durable session. Qualified builds also require exact
+  OCI version and commit labels. Failure is typed `runtime_unavailable`.
+- `/health` returns HTTP 503 with per-runtime readiness when an advertised
+  runtime cannot admit work. The installer refuses missing or mismatched
+  release-stamped images.
+- A real-container qualification now proves restricted Codex starts no ambient
+  `codex_apps` or MCP plugin process when plugins/MCP are disabled by policy.
+
+### Release identity and migration
+
+- Binary `--version`/`--build-info`, authenticated capabilities, Python wrapper
+  metadata, Docker tags, and OCI image labels are built from and verified
+  against the exact `v2.2.0` tag commit.
+- Trading Floor must explicitly review the release diff, pin exact version and
+  commit, request policy `2.0`, include the exact required egress hosts, and
+  hash that full policy. No result, receipt, event, credential, or replay check
+  may be relaxed during migration.
+
 ## [2.0.0] — 2026-08-10
 
 AgentD 2.0 replaces the sidecar-era execution and byte-stream contracts with

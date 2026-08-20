@@ -6,8 +6,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "Building..."
-go build -o agentd ./cmd/agentd
+AGENTD_VERSION="${AGENTD_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' packages/agentd-py/pyproject.toml | head -1)}"
+AGENTD_COMMIT="${AGENTD_COMMIT:-$(git rev-parse HEAD)}"
+go build -trimpath -ldflags="-X github.com/danieliser/agentruntime/pkg/buildinfo.Version=${AGENTD_VERSION} -X github.com/danieliser/agentruntime/pkg/buildinfo.Commit=${AGENTD_COMMIT}" -o agentd ./cmd/agentd
 go build -o agentd-tui ./cmd/agentd-tui
+./agentd --require-build "${AGENTD_VERSION}@${AGENTD_COMMIT}"
 
 echo "Installing to ~/.local/bin/"
 rm -f ~/.local/bin/agentd ~/.local/bin/agentd-tui

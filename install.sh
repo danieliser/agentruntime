@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # agentruntime install.sh
 # Installs the agentd binary and creates a launchd/systemd service
@@ -104,19 +104,34 @@ if ! command -v go &> /dev/null; then
     exit 1
 fi
 
-# The installed daemon always advertises Docker admission to qualified callers.
-# Refuse an installation that would report ready without its runtime image.
-if ! command -v docker &> /dev/null; then
-    echo "error: Docker is required for the stamped AgentD runtime image"
-    exit 1
-fi
-if ! docker image inspect agentruntime-agent:latest &> /dev/null; then
-    echo "error: required runtime image agentruntime-agent:latest is absent; run ./docker/build.sh agent first"
+GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
+echo "using Go $GO_VERSION"
+
+AGENTD_VERSION="${AGENTD_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$SCRIPT_DIR/packages/agentd-py/pyproject.toml" | head -1)}"
+AGENTD_COMMIT="${AGENTD_COMMIT:-$(git -C "$SCRIPT_DIR" rev-parse HEAD)}"
+if [[ ! "$AGENTD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ ! "$AGENTD_COMMIT" =~ ^[a-f0-9]{40,64}$ ]]; then
+    echo "error: release identity must be an exact semantic version and commit"
     exit 1
 fi
 
-GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-echo "using Go $GO_VERSION"
+# The installed daemon advertises Docker to qualified callers. Refuse a build
+# whose exact release-stamped agent or proxy image is absent or mismatched.
+if ! command -v docker &> /dev/null; then
+    echo "error: Docker is required for release-stamped AgentD runtime images"
+    exit 1
+fi
+for image in "agentruntime-agent:${AGENTD_VERSION}" "agentruntime-proxy:${AGENTD_VERSION}"; do
+    if ! docker image inspect "$image" &> /dev/null; then
+        echo "error: required runtime image $image is absent; run ./docker/build.sh all first"
+        exit 1
+    fi
+    image_version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")"
+    image_commit="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+    if [ "$image_version" != "$AGENTD_VERSION" ] || [ "$image_commit" != "$AGENTD_COMMIT" ]; then
+        echo "error: runtime image $image stamp does not match ${AGENTD_VERSION}@${AGENTD_COMMIT}"
+        exit 1
+    fi
+done
 
 # Create bin directory if it doesn't exist
 mkdir -p "$BIN_DIR"
@@ -124,8 +139,14 @@ mkdir -p "$BIN_DIR"
 # Build agentd
 echo "building agentd..."
 cd "$SCRIPT_DIR"
-if ! go build -o "$BIN_DIR/agentd" ./cmd/agentd; then
+if ! go build -trimpath \
+    -ldflags="-X github.com/danieliser/agentruntime/pkg/buildinfo.Version=${AGENTD_VERSION} -X github.com/danieliser/agentruntime/pkg/buildinfo.Commit=${AGENTD_COMMIT}" \
+    -o "$BIN_DIR/agentd" ./cmd/agentd; then
     echo "error: failed to build agentd"
+    exit 1
+fi
+if ! "$BIN_DIR/agentd" --require-build "${AGENTD_VERSION}@${AGENTD_COMMIT}"; then
+    echo "error: installed AgentD binary identity verification failed"
     exit 1
 fi
 echo "✓ built agentd -> $BIN_DIR/agentd"

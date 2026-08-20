@@ -137,7 +137,7 @@ func main() {
 
 	// Initialize runtimes. The --runtime flag sets the default; both local
 	// and docker are always available so callers can select per-session.
-	rt, err := newRuntime(*rtName, *dataDir, *dockerHost)
+	rt, err := newRuntime(*rtName, *dataDir, *dockerHost, identity)
 	if err != nil {
 		log.Fatalf("failed to initialize runtime: %v", err)
 	}
@@ -148,10 +148,7 @@ func main() {
 	if *rtName != "docker" {
 		// Docker runtime init is lazy: if Docker isn't available, log a warning
 		// but don't fail startup. The runtime will return an error on Spawn().
-		dockerRT := runtime.NewDockerRuntime(runtime.DockerConfig{
-			DataDir: *dataDir,
-			Host:    *dockerHost,
-		})
+		dockerRT := runtime.NewDockerRuntime(dockerConfigForBuild(*dataDir, *dockerHost, identity))
 		extraRuntimes = append(extraRuntimes, dockerRT)
 	}
 
@@ -346,16 +343,27 @@ func (a *dockerVolumeAdapter) RemoveVolume(ctx context.Context, name string) err
 	return a.rt.RemoveSessionVolume(ctx, name)
 }
 
-func newRuntime(name, dataDir, dockerHost string) (runtime.Runtime, error) {
+func newRuntime(name, dataDir, dockerHost string, identity buildinfo.Identity) (runtime.Runtime, error) {
 	switch name {
 	case "local":
 		return runtime.NewLocalRuntime(), nil
 	case "docker":
-		return runtime.NewDockerRuntime(runtime.DockerConfig{
-			DataDir: dataDir,
-			Host:    dockerHost,
-		}), nil
+		return runtime.NewDockerRuntime(dockerConfigForBuild(dataDir, dockerHost, identity)), nil
 	default:
 		return nil, fmt.Errorf("unknown runtime: %s", name)
 	}
+}
+
+func dockerConfigForBuild(dataDir, dockerHost string, identity buildinfo.Identity) runtime.DockerConfig {
+	cfg := runtime.DockerConfig{DataDir: dataDir, Host: dockerHost}
+	if identity.Version == "" || identity.Version == "dev" || identity.Commit == "" || identity.Commit == "unknown" {
+		cfg.Image = runtime.DefaultDockerImage
+		cfg.ProxyImage = "agentruntime-proxy:latest"
+		return cfg
+	}
+	cfg.Image = "agentruntime-agent:" + identity.Version
+	cfg.ProxyImage = "agentruntime-proxy:" + identity.Version
+	cfg.ExpectedVersion = identity.Version
+	cfg.ExpectedCommit = identity.Commit
+	return cfg
 }

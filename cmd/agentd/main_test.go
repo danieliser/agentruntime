@@ -13,6 +13,7 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/api"
+	"github.com/danieliser/agentruntime/pkg/buildinfo"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -22,6 +23,25 @@ type blockingStartupObserver struct{}
 func (*blockingStartupObserver) Sync(ctx context.Context) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func TestQualifiedBuildUsesExactStampedDockerImages(t *testing.T) {
+	identity := buildinfo.Identity{Version: "2.2.0", Commit: "0123456789abcdef0123456789abcdef01234567"}
+	cfg := dockerConfigForBuild(t.TempDir(), "ssh://docker.example", identity)
+	if cfg.Image != "agentruntime-agent:2.2.0" || cfg.ProxyImage != "agentruntime-proxy:2.2.0" {
+		t.Fatalf("qualified Docker image config = %+v", cfg)
+	}
+	if cfg.ExpectedVersion != identity.Version || cfg.ExpectedCommit != identity.Commit {
+		t.Fatalf("qualified Docker stamps = %+v", cfg)
+	}
+	if cfg.Host != "ssh://docker.example" {
+		t.Fatalf("qualified Docker host = %q", cfg.Host)
+	}
+
+	dev := dockerConfigForBuild(t.TempDir(), "", buildinfo.Identity{Version: "dev", Commit: "unknown"})
+	if dev.Image != runtime.DefaultDockerImage || dev.ProxyImage != "agentruntime-proxy:latest" || dev.ExpectedVersion != "" || dev.ExpectedCommit != "" {
+		t.Fatalf("development Docker config = %+v", dev)
+	}
 }
 
 func TestStartupObserverCatchupIsBounded(t *testing.T) {
@@ -44,6 +64,11 @@ func TestInstallerLaunchdPathCoversDockerLocations(t *testing.T) {
 	for _, required := range []string{"<key>EnvironmentVariables</key>", "/usr/local/bin", "/opt/homebrew/bin"} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("launchd installer is missing %q", required)
+		}
+	}
+	for _, required := range []string{"buildinfo.Version", "buildinfo.Commit", "agentruntime-agent:${AGENTD_VERSION}", "org.opencontainers.image.revision"} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("installer release qualification is missing %q", required)
 		}
 	}
 }
@@ -168,14 +193,14 @@ func TestOpenDurableStoreUsesDataRoot(t *testing.T) {
 }
 
 func TestLocalRuntimeIsNativeAndLegacyAliasIsRetired(t *testing.T) {
-	rt, err := newRuntime("local", t.TempDir(), "")
+	rt, err := newRuntime("local", t.TempDir(), "", buildinfo.Identity{Version: "dev", Commit: "unknown"})
 	if err != nil {
 		t.Fatalf("new local runtime: %v", err)
 	}
 	if _, ok := rt.(*runtime.LocalRuntime); !ok {
 		t.Fatalf("local runtime = %T, want native local runtime", rt)
 	}
-	if _, err := newRuntime("local-pipe", t.TempDir(), ""); err == nil {
+	if _, err := newRuntime("local-pipe", t.TempDir(), "", buildinfo.Identity{Version: "dev", Commit: "unknown"}); err == nil {
 		t.Fatal("retired local-pipe alias remains accepted")
 	}
 }

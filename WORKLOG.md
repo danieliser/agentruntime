@@ -84,8 +84,8 @@
 
 ### 3. No ambient plugin processes
 
-- Complete in working tree as verification of the existing policy resolver and
-  clean materialization boundary; commit recorded below after qualification.
+- Complete: commit `1610aa7` (`test(ACT-1015): prove no ambient policy plugins`),
+  verifying the existing policy resolver and clean materialization boundary.
 - Added an opt-in real Docker test that resolves the actual restricted Codex
   app-server command, proves `plugins` and `enable_mcp_apps` are disabled,
   starts the real app-server with an empty MCP/plugin policy, and inspects every
@@ -99,7 +99,23 @@
 
 ### 4. Release v2.2.0
 
-- Pending.
+- Release source prepared and locally green; exact release commit/tag and image
+  verification are the remaining steps.
+- Canonical source and Python wrapper metadata are `2.2.0`; release notes list
+  the policy-version migration, exact-host proxy enforcement, truthful
+  readiness/admission, plugin-process proof, stamp changes, and unchanged
+  result/receipt/event/replay/auth contracts.
+- Qualified binaries select `agentruntime-agent:2.2.0` and
+  `agentruntime-proxy:2.2.0` and require OCI version/revision labels matching
+  their embedded build identity. Development builds remain on `:latest` without
+  claiming a release stamp.
+- Installer and reinstall paths inject exact Go `Version`/`Commit` ldflags and
+  verify the binary. The installer also checks both exact Docker tags and OCI
+  labels before activation. Release CI now refuses wrapper/tag version drift.
+- Added `scripts/verify-release.sh` to build and verify the exact binary, source
+  and wrapper versions, optional release tag, and optional Docker labels.
+- Pre-release-source verification: `go test ./...` PASS; `go test -race ./...`
+  PASS; `go vet ./...` PASS; shell syntax and `git diff --check` PASS.
 
 ## Phase 2
 
