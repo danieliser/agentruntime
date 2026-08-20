@@ -17,6 +17,15 @@ type replayCapabilities struct {
 	RestartPersistence bool `json:"restart_persistence"`
 }
 
+const recoveryCapabilityVersion = "1.0"
+
+type recoveryCapabilities struct {
+	Version             string   `json:"version"`
+	DaemonRestart       string   `json:"daemon_restart"`
+	SupportedRuntimes   []string `json:"supported_runtimes"`
+	UnsupportedRuntimes []string `json:"unsupported_runtimes"`
+}
+
 type authenticationCapabilities struct {
 	Mode               string `json:"mode"`
 	Transport          string `json:"transport"` // Deprecated: use HTTPTransport.
@@ -81,6 +90,7 @@ type v1Capabilities struct {
 	LifecycleControls       []string                       `json:"lifecycle_controls"`
 	Replay                  replayCapabilities             `json:"replay"`
 	DockerReconstruction    bool                           `json:"docker_reconstruction"`
+	Recovery                recoveryCapabilities           `json:"recovery"`
 	PluginAPIVersions       []string                       `json:"plugin_api_versions"`
 	Plugins                 []observer.PluginStatus        `json:"plugins"`
 	ListenerScope           string                         `json:"listener_scope"`
@@ -109,6 +119,20 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		}
 	}
 	durableReplay := s.durableStore != nil && s.eventBroker != nil
+	recovery := recoveryCapabilities{
+		Version: recoveryCapabilityVersion, DaemonRestart: "unsupported",
+		SupportedRuntimes: []string{}, UnsupportedRuntimes: append([]string(nil), runtimes...),
+	}
+	if dockerReconstruction && durableReplay {
+		recovery.DaemonRestart = "docker_only"
+		recovery.SupportedRuntimes = []string{"docker"}
+		recovery.UnsupportedRuntimes = recovery.UnsupportedRuntimes[:0]
+		for _, name := range runtimes {
+			if name != "docker" {
+				recovery.UnsupportedRuntimes = append(recovery.UnsupportedRuntimes, name)
+			}
+		}
+	}
 	plugins := []observer.PluginStatus{}
 	if s.observers != nil {
 		plugins = s.observers.Status()
@@ -128,6 +152,7 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
 		},
 		DockerReconstruction: dockerReconstruction && durableReplay,
+		Recovery:             recovery,
 		PluginAPIVersions:    []string{observer.APIVersion}, Plugins: plugins,
 		ListenerScope: s.listenerScope, Authentication: authentication,
 		StructuredOutput: structuredOutputCapabilities{

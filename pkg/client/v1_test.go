@@ -94,6 +94,9 @@ func TestClientDecodesCompleteAdmissionCapabilities(t *testing.T) {
 		_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{
 			"agentd_version": "2.1.0", "commit_hash": "0123456789abcdef0123456789abcdef01234567",
 			"api_versions": []string{"v1"}, "event_schema_versions": []string{"1.0"}, "execution_policy_versions": []string{"1.0"},
+			"recovery": map[string]any{
+				"version": "1.0", "daemon_restart": "docker_only", "supported_runtimes": []string{"docker"}, "unsupported_runtimes": []string{"local"},
+			},
 			"listener_scope": "loopback", "authentication": map[string]any{
 				"mode": "bearer_token_file", "transport": "authorization_header", "http_transport": "authorization_header", "websocket_transport": "authenticated_subprotocol",
 			},
@@ -120,6 +123,9 @@ func TestClientDecodesCompleteAdmissionCapabilities(t *testing.T) {
 		capabilities.Authentication.WebSocketTransport != "authenticated_subprotocol" || len(capabilities.ExecutionPolicyVersions) != 1 ||
 		!capabilities.StructuredOutput.NativeEnforced || capabilities.StructuredOutput.ResultEvent != "output.final" ||
 		len(capabilities.WorkspaceProfiles) != 1 || capabilities.WorkspaceProfiles[0].AmbientCredentials ||
+		capabilities.Recovery.Version != "1.0" || capabilities.Recovery.DaemonRestart != "docker_only" ||
+		len(capabilities.Recovery.SupportedRuntimes) != 1 || capabilities.Recovery.SupportedRuntimes[0] != "docker" ||
+		len(capabilities.Recovery.UnsupportedRuntimes) != 1 || capabilities.Recovery.UnsupportedRuntimes[0] != "local" ||
 		len(capabilities.CredentialGrants) != 1 || capabilities.CredentialGrants[0].RequestEnv != "AGENTD_CODEX_AUTH_JSON" {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}

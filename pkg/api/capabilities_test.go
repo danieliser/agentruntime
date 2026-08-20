@@ -53,10 +53,16 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 				StoredThenLive     bool `json:"stored_then_live"`
 				RestartPersistence bool `json:"restart_persistence"`
 			} `json:"replay"`
-			DockerReconstruction bool     `json:"docker_reconstruction"`
-			PluginAPIVersions    []string `json:"plugin_api_versions"`
-			ListenerScope        string   `json:"listener_scope"`
-			Authentication       struct {
+			DockerReconstruction bool `json:"docker_reconstruction"`
+			Recovery             struct {
+				Version             string   `json:"version"`
+				DaemonRestart       string   `json:"daemon_restart"`
+				SupportedRuntimes   []string `json:"supported_runtimes"`
+				UnsupportedRuntimes []string `json:"unsupported_runtimes"`
+			} `json:"recovery"`
+			PluginAPIVersions []string `json:"plugin_api_versions"`
+			ListenerScope     string   `json:"listener_scope"`
+			Authentication    struct {
 				Mode               string `json:"mode"`
 				HTTPTransport      string `json:"http_transport"`
 				WebSocketTransport string `json:"websocket_transport"`
@@ -113,6 +119,9 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		!containsString(envelope.Data.LifecycleControls, "terminate") || !containsString(envelope.Data.LifecycleControls, "resume") ||
 		!envelope.Data.Replay.StoredThenLive || !envelope.Data.Replay.RestartPersistence ||
 		!envelope.Data.DockerReconstruction || !containsString(envelope.Data.PluginAPIVersions, "1.0") ||
+		envelope.Data.Recovery.Version != "1.0" || envelope.Data.Recovery.DaemonRestart != "docker_only" ||
+		!containsString(envelope.Data.Recovery.SupportedRuntimes, "docker") ||
+		!containsString(envelope.Data.Recovery.UnsupportedRuntimes, "local") ||
 		envelope.Data.ListenerScope != "loopback" || envelope.Data.Authentication.Mode != "bearer_token_file" ||
 		envelope.Data.Authentication.HTTPTransport != "authorization_header" || envelope.Data.Authentication.WebSocketTransport != "authenticated_subprotocol" ||
 		!containsString(envelope.Data.ExecutionPolicyVersions, ExecutionPolicyVersion) ||
@@ -140,6 +149,32 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		envelope.Data.ResourceLimits.Minimums != MinimumResourceLimits ||
 		envelope.Data.ResourceLimits.Maximums != MaximumResourceLimits || envelope.Data.ResourceLimits.BreachCode != "resource_limit_exceeded" {
 		t.Fatalf("resource limit capabilities = %+v", envelope.Data.ResourceLimits)
+	}
+}
+
+func TestV1CapabilitiesFailClosedWhenNoRuntimeCanRecoverAcrossRestart(t *testing.T) {
+	server := NewServer(session.NewManager(), runtime.NewLocalRuntime(), agent.DefaultRegistry(), ServerConfig{
+		ExtraRuntimes: []runtime.Runtime{&recoveryTestRuntime{}},
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	response, err := http.Get(httpServer.URL + "/api/v1/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var envelope struct {
+		Data struct {
+			Recovery recoveryCapabilities `json:"recovery"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.Recovery.DaemonRestart != "unsupported" || len(envelope.Data.Recovery.SupportedRuntimes) != 0 ||
+		!containsString(envelope.Data.Recovery.UnsupportedRuntimes, "docker") ||
+		!containsString(envelope.Data.Recovery.UnsupportedRuntimes, "local") {
+		t.Fatalf("recovery capabilities = %+v", envelope.Data.Recovery)
 	}
 }
 

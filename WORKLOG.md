@@ -248,6 +248,23 @@
   host-disk/OrbStack blocker remains active; none of this item's proofs require
   a live Docker daemon.
 
+### 9. Non-Docker restart recovery
+
+- Complete in source (commit containing this entry) by choosing the explicit
+  unsupported path; no local-process recovery semantics were invented.
+- Added additive, versioned recovery capability `1.0`. When and only when the
+  durable store, event broker, and Docker runtime are present, it reports
+  `daemon_restart: docker_only`, `supported_runtimes: [docker]`, and lists
+  `local` under `unsupported_runtimes`. Without the complete reconstruction
+  proof it reports `daemon_restart: unsupported` and an empty supported list.
+- The Go client decodes the new capability so callers can gate work directly.
+  Existing `replay.restart_persistence` and `docker_reconstruction` fields are
+  unchanged; replay durability is no longer sufficient for a caller to infer
+  local-process restart recovery.
+- Focused server/client tests cover both docker-only and fail-closed unsupported
+  advertisements. Local runtime's existing test continues to prove `Recover`
+  returns no handles after a daemon restart.
+
 ## Phase 3
 
 - Pending; design only after Phases 1 and 2 complete.

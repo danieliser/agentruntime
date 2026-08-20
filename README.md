@@ -245,6 +245,14 @@ During startup AgentD:
 
 Controlled shutdown closes admission first, drains bounded local work, and preserves active Docker generations for the next daemon to reconstruct.
 
+The authenticated capability response makes this boundary machine-readable as
+`recovery.version: "1.0"`. `daemon_restart` is `docker_only` only when durable
+replay and Docker reconstruction are both available; `supported_runtimes` then
+contains only `docker`, while `local` is listed in `unsupported_runtimes`.
+Without that full proof surface, recovery advertises `unsupported`. Callers
+must gate restart-recoverable work on this versioned object rather than infer
+support from the general runtime list or replay persistence.
+
 ## Development and qualification
 
 ```sh

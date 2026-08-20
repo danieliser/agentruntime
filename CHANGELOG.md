@@ -17,6 +17,11 @@ All notable changes to agentruntime are documented in this file.
   Defaults are enabled/seven days; retention `0` keeps indefinitely.
 - Startup prunes only expired regular `.ndjson`/`.jsonl` diagnostic files,
   never follows symlinks, and the disable path creates no session log path.
+- Added versioned `recovery` capability `1.0`. It explicitly advertises
+  `daemon_restart: docker_only`, supported `docker`, and unsupported `local`
+  only when durable Docker reconstruction is available; otherwise it reports
+  recovery as unsupported. Existing replay and reconstruction fields remain
+  unchanged for compatibility.
 
 ## [2.2.2] — 2026-08-20
 

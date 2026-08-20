@@ -51,6 +51,13 @@ type ReplayCapabilities struct {
 	RestartPersistence bool `json:"restart_persistence"`
 }
 
+type RecoveryCapabilities struct {
+	Version             string   `json:"version"`
+	DaemonRestart       string   `json:"daemon_restart"`
+	SupportedRuntimes   []string `json:"supported_runtimes"`
+	UnsupportedRuntimes []string `json:"unsupported_runtimes"`
+}
+
 type AuthenticationCapabilities struct {
 	Mode               string `json:"mode"`
 	Transport          string `json:"transport"`
@@ -117,6 +124,7 @@ type Capabilities struct {
 	LifecycleControls       []string                       `json:"lifecycle_controls"`
 	Replay                  ReplayCapabilities             `json:"replay"`
 	DockerReconstruction    bool                           `json:"docker_reconstruction"`
+	Recovery                RecoveryCapabilities           `json:"recovery"`
 	PluginAPIVersions       []string                       `json:"plugin_api_versions"`
 	Plugins                 []PluginStatus                 `json:"plugins"`
 	ListenerScope           string                         `json:"listener_scope"`
