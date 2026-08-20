@@ -45,7 +45,7 @@
   proxy denied it.` The Codex provider endpoint menu therefore requires both
   `auth.openai.com` (OAuth refresh) and `chatgpt.com` (turn transport);
   `api.openai.com` remains the separately advertised `web_search` endpoint.
-- Fix Green in progress: the agent image installs system `bubblewrap`; native
+- Fix Green: the agent image installs system `bubblewrap`; native
   startup remains bounded at 60 seconds; restricted Codex launch forces its
   native proxy-resolution feature; every allowlisted host receives a bounded,
   retry-once CONNECT preflight before provider launch; and durable launch
@@ -60,13 +60,34 @@
   named `egress_denied` failure plus timestamp/host-only CONNECT evidence; the
   denied request never reaches the auth service and cannot rotate the retained
   refresh token.
+- Final exact-stamp gate: `v2.2.4` source and both OCI images identify commit
+  `a5d0560c68c2b9f60629b623e137146f9d1149ca`; image-aware
+  `verify-release.sh` passed. The combined real-Docker qualification passed:
+  complete turn in 71.96 seconds and named missing-auth failure in 63.24
+  seconds. `go test ./...`, `go test -race ./...`, `go vet ./...`, and
+  `git diff --check` were green for every source commit.
+- Public result, receipt, event, replay, and authentication contracts are
+  unchanged. Additive surfaces are the hash-covered diagnostic policy field,
+  capability metadata, endpoint menu entry, and stable failure codes.
 
 ## Final summary
 
-- **Canary pin:** Trading Floor should review and pin exact release `v2.2.3`
-  at commit `117064b887d3292f582c56d14761addf2e12c9f8`. Repository `main` is
-  intentionally newer only because design-only commit `4490198` adds
-  `DESIGN_NOTES.md`; it is not the executable canary pin.
+- **Canary pin:** Trading Floor should review and pin exact release `v2.2.4`
+  at commit `a5d0560c68c2b9f60629b623e137146f9d1149ca`.
+- **Root cause (verbatim):** `Codex could not find bubblewrap on PATH. Install
+  bubblewrap with your OS package manager. See the sandbox prerequisites:
+  https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex
+  will use the bundled bubblewrap in the meantime.` That slow startup crossed
+  AgentD's 15-second bootstrap bound before any CONNECT. Once startup was
+  repaired, Codex OAuth refresh additionally required the exact endpoint
+  `auth.openai.com` and the provider-native setting
+  `features.respect_system_proxy=true`; environment proxy variables alone did
+  not route that client.
+- **Minimal Trading Floor policy delta:** retain the existing
+  `api.openai.com` and `chatgpt.com` hosts and exact v2.2.3 ceilings, add only
+  `auth.openai.com`, set `egress_diagnostics: true` for the qualification
+  canary, and recompute the hash over that final policy. No authority or
+  contract check is relaxed.
 - **Phase 1 complete:** policy egress `f14f88c`, truthful image readiness
   `95f2b5a`, no-plugin process proof `1610aa7`, and release `v2.2.0` at
   `530bad2b5dab578589bf422c4573d6f3182f2389`.
