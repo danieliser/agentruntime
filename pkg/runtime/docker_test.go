@@ -420,6 +420,9 @@ esac
 	if result.Err != nil || result.Code != 137 || !result.OOMKilled || result.Signal != "SIGKILL" {
 		t.Fatalf("OOM terminal proof = %+v", result)
 	}
+	if result.FailureReason != "resource_limit_exceeded" {
+		t.Fatalf("OOM failure reason = %q, want resource_limit_exceeded", result.FailureReason)
+	}
 	if result.StartedAt.Format(time.RFC3339Nano) != "2026-08-09T12:00:00.123456789Z" ||
 		result.EndedAt.Format(time.RFC3339Nano) != "2026-08-09T12:00:05.987654321Z" {
 		t.Fatalf("OOM timestamps = %s .. %s", result.StartedAt, result.EndedAt)
@@ -638,6 +641,29 @@ func TestDockerSpawnRestrictedPolicyDropsAllCapabilitiesAndUsesReadOnlyLimits(t 
 	}
 	if strings.Contains(env, "host.docker.internal") || strings.Contains(env, "host-gateway") {
 		t.Fatalf("restricted proxy environment bypasses internal isolation: %q", env)
+	}
+}
+
+func TestDockerSpawnRestrictedPolicyUsesHashCoveredResourceLimits(t *testing.T) {
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd: []string{"echo", "ok"}, SessionID: "policy-resources-1234",
+		Request: &apischema.SessionRequest{Agent: "codex", ExecutionPolicy: &apischema.ExecutionPolicy{
+			Version: "2.1", Workspace: "ephemeral", Filesystem: "read_only", Network: "public_https",
+			MCPServers: []string{}, HostMounts: []string{}, ApprovalPolicy: "never",
+			Resources: &apischema.ResourceLimits{MemoryBytes: 536870912, CPUCores: 0.5, PIDs: 64, OpenFiles: 256},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spec.cleanup()
+	for flag, value := range map[string]string{
+		"--memory": "536870912", "--cpus": "0.5", "--pids-limit": "64", "--ulimit": "nofile=256:256",
+	} {
+		if !hasFlagValue(spec.args, flag, value) {
+			t.Errorf("restricted Docker args missing %s %s: %v", flag, value, spec.args)
+		}
 	}
 }
 

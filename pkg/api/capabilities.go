@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/observer"
 )
@@ -61,6 +62,14 @@ type egressPolicyCapabilities struct {
 	ToolEndpoints          map[string][]string `json:"tool_endpoints"`
 }
 
+type resourceLimitCapabilities struct {
+	PolicyField string         `json:"policy_field"`
+	Defaults    ResourceLimits `json:"defaults"`
+	Minimums    ResourceLimits `json:"minimums"`
+	Maximums    ResourceLimits `json:"maximums"`
+	BreachCode  string         `json:"breach_code"`
+}
+
 type v1Capabilities struct {
 	AgentDVersion           string                         `json:"agentd_version"`
 	CommitHash              string                         `json:"commit_hash"`
@@ -80,6 +89,7 @@ type v1Capabilities struct {
 	WorkspaceProfiles       []workspaceProfileCapabilities `json:"workspace_profiles"`
 	CredentialGrants        []credentialGrantCapabilities  `json:"credential_grants"`
 	EgressPolicy            egressPolicyCapabilities       `json:"egress_policy"`
+	ResourceLimits          resourceLimitCapabilities      `json:"resource_limits"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -112,7 +122,7 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, CommitHash: s.commitHash, APIVersions: []string{"v1"},
-		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{ExecutionPolicyVersion}, NativeProviders: providers,
+		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{LegacyExecutionPolicyVersion, ExecutionPolicyVersion}, NativeProviders: providers,
 		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "interrupt", "cancel", "terminate", "resume", "receipt"},
 		Runtimes:          runtimes, Replay: replayCapabilities{
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
@@ -138,6 +148,10 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			DirectDNSIPEgress: false, EnvironmentProxyBypass: false,
 			ProviderEndpoints: map[string][]string{"claude": {"api.anthropic.com"}, "codex": {"chatgpt.com"}},
 			ToolEndpoints:     map[string][]string{"web_search": {"api.openai.com"}},
+		},
+		ResourceLimits: resourceLimitCapabilities{
+			PolicyField: "resources", Defaults: DefaultResourceLimits, Minimums: MinimumResourceLimits, Maximums: MaximumResourceLimits,
+			BreachCode: string(durable.CodeResourceLimitExceeded),
 		},
 	}})
 }

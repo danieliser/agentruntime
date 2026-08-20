@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -14,7 +15,16 @@ import (
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 )
 
-const ExecutionPolicyVersion = "2.0"
+const (
+	LegacyExecutionPolicyVersion = "2.0"
+	ExecutionPolicyVersion       = "2.1"
+)
+
+var (
+	DefaultResourceLimits = ResourceLimits{MemoryBytes: 2 << 30, CPUCores: 2, PIDs: 256, OpenFiles: 1024}
+	MaximumResourceLimits = DefaultResourceLimits
+	MinimumResourceLimits = ResourceLimits{MemoryBytes: 64 << 20, CPUCores: 0.1, PIDs: 16, OpenFiles: 64}
+)
 
 var executionPolicyEgressHosts = map[string]map[string]struct{}{
 	"codex": {
@@ -52,7 +62,7 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 	unsupported := func(message string) (resolvedExecutionPolicy, error) {
 		return resolvedExecutionPolicy{}, durable.NewError(durable.CodeExecutionPolicyUnsupported, op, message, nil)
 	}
-	if policy.Version != ExecutionPolicyVersion {
+	if policy.Version != ExecutionPolicyVersion && policy.Version != LegacyExecutionPolicyVersion {
 		return unsupported(fmt.Sprintf("execution policy version %q is unsupported", policy.Version))
 	}
 	if runtimeName != "docker" {
@@ -75,6 +85,22 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 	}
 	if policy.ApprovalPolicy != "never" {
 		return unsupported("execution policy v1 supports only approval_policy=never")
+	}
+	if policy.Version == LegacyExecutionPolicyVersion {
+		if policy.Resources != nil {
+			return unsupported("execution policy v2.0 does not define caller-selected resource limits")
+		}
+	} else {
+		if policy.Resources == nil {
+			limits := DefaultResourceLimits
+			policy.Resources = &limits
+		}
+		if err := validateResourceLimits(*policy.Resources); err != nil {
+			return resolvedExecutionPolicy{}, err
+		}
+	}
+	if request.Container != nil && (request.Container.Memory != "" || request.Container.CPUs != 0) {
+		return unsupported("container resource overrides cannot widen an execution policy")
 	}
 
 	tools, err := canonicalUnique(policy.AllowedTools)
@@ -147,6 +173,20 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 	}
 	digest := sha256.Sum256(raw)
 	return resolvedExecutionPolicy{Policy: request.ExecutionPolicy, Hash: "sha256:" + hex.EncodeToString(digest[:])}, nil
+}
+
+func validateResourceLimits(limits ResourceLimits) error {
+	const op = "resolve_execution_policy"
+	if limits.MemoryBytes < MinimumResourceLimits.MemoryBytes || limits.CPUCores < MinimumResourceLimits.CPUCores ||
+		limits.PIDs < MinimumResourceLimits.PIDs || limits.OpenFiles < MinimumResourceLimits.OpenFiles ||
+		math.IsNaN(limits.CPUCores) || math.IsInf(limits.CPUCores, 0) {
+		return durable.NewError(durable.CodeResourceLimitExceeded, op, "requested resource limits are below AgentD minimums", nil)
+	}
+	if limits.MemoryBytes > MaximumResourceLimits.MemoryBytes || limits.CPUCores > MaximumResourceLimits.CPUCores ||
+		limits.PIDs > MaximumResourceLimits.PIDs || limits.OpenFiles > MaximumResourceLimits.OpenFiles {
+		return durable.NewError(durable.CodeResourceLimitExceeded, op, "requested resource limits exceed AgentD maximums", nil)
+	}
+	return nil
 }
 
 func canonicalUnique(values []string) ([]string, error) {

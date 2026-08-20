@@ -642,6 +642,44 @@ func TestV1StructuredOutputFailureIsTypedAndHasNoArtifact(t *testing.T) {
 	}
 }
 
+func TestV1RuntimeResourceBreachEmitsTypedTerminalWithoutChangingReceiptContract(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	registry := agent.NewRegistry()
+	registry.Register(&nativeClaudeFixtureAgent{})
+	rt := &terminalResultRuntime{result: runtime.ExitResult{
+		Code: 137, Signal: "SIGKILL", OOMKilled: true, FailureReason: "resource_limit_exceeded",
+	}}
+	server := NewServer(session.NewManager(), rt, registry, ServerConfig{
+		DataDir: t.TempDir(), LogDir: filepath.Join(t.TempDir(), "logs"),
+		DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	t.Cleanup(server.sessions.ShutdownAll)
+	httpServer := httptest.NewServer(server.router)
+	t.Cleanup(httpServer.Close)
+
+	response := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-v1-resource-breach", "agent": "claude", "runtime": "test", "prompt": "fixture",
+	})
+	defer response.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, response.Body, &created)
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateFailed || receipt.Reason != string(durable.StateFailed) || receipt.ExitCode == nil || *receipt.ExitCode != 137 {
+		t.Fatalf("resource breach receipt = %+v err=%v", receipt, err)
+	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 20})
+	if err != nil || len(page.Events) == 0 || page.Events[len(page.Events)-1].Type != "session.resource_limit_exceeded" {
+		t.Fatalf("resource breach events = %+v err=%v", page.Events, err)
+	}
+}
+
 func TestV1CodexAppServerBootstrapsAndPersistsNativeLedger(t *testing.T) {
 	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
 	if err != nil {
@@ -1235,6 +1273,39 @@ type countingRuntime struct {
 	Runtime runtime.Runtime
 	count   *atomic.Int32
 }
+
+type terminalResultRuntime struct {
+	result runtime.ExitResult
+}
+
+func (*terminalResultRuntime) Name() string { return "test" }
+func (rt *terminalResultRuntime) Spawn(ctx context.Context, config runtime.SpawnConfig) (runtime.ProcessHandle, error) {
+	handle, err := runtime.NewLocalRuntime().Spawn(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	wait := make(chan runtime.ExitResult, 1)
+	go func() {
+		observed := <-handle.Wait()
+		result := rt.result
+		result.StartedAt = observed.StartedAt
+		result.EndedAt = observed.EndedAt
+		wait <- result
+		close(wait)
+	}()
+	return &imageIdentifiedTestHandle{ProcessHandle: &terminalResultHandle{ProcessHandle: handle, wait: wait}}, nil
+}
+func (*terminalResultRuntime) Recover(context.Context) ([]runtime.ProcessHandle, error) {
+	return nil, nil
+}
+func (*terminalResultRuntime) Cleanup(context.Context) error { return nil }
+
+type terminalResultHandle struct {
+	runtime.ProcessHandle
+	wait <-chan runtime.ExitResult
+}
+
+func (handle *terminalResultHandle) Wait() <-chan runtime.ExitResult { return handle.wait }
 
 type admissionTestRuntime struct {
 	admissionErr error

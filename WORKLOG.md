@@ -99,8 +99,9 @@
 
 ### 4. Release v2.2.0
 
-- Release source prepared and locally green; exact release commit/tag and image
-  verification are the remaining steps.
+- Complete: release commit `530bad2b5dab578589bf422c4573d6f3182f2389`,
+  annotated tag `v2.2.0`, and GitHub release
+  `https://github.com/danieliser/agentruntime/releases/tag/v2.2.0`.
 - Canonical source and Python wrapper metadata are `2.2.0`; release notes list
   the policy-version migration, exact-host proxy enforcement, truthful
   readiness/admission, plugin-process proof, stamp changes, and unchanged
@@ -116,10 +117,43 @@
   and wrapper versions, optional release tag, and optional Docker labels.
 - Pre-release-source verification: `go test ./...` PASS; `go test -race ./...`
   PASS; `go vet ./...` PASS; shell syntax and `git diff --check` PASS.
+- Built and inspected exact local `agentruntime-agent:2.2.0` and
+  `agentruntime-proxy:2.2.0` images; both OCI version/revision stamps matched the
+  release commit. `REQUIRE_RELEASE_TAG=1 VERIFY_DOCKER_IMAGES=1
+  ./scripts/verify-release.sh 2.2.0 530bad2b5dab578589bf422c4573d6f3182f2389`
+  passed after tagging.
+- Retained Trading Floor public contract suites passed read-only: 20 tests in
+  `test_agentd_v21_contract.py`, `test_agentd_v212_contract.py`,
+  `test_agentd_port.py`, and `test_agentd_source_scout.py`. This was not a live
+  candidate canary; Trading Floor still needs the reviewed exact pin/policy
+  migration before its live re-run.
+- Hosted GitHub CI and trusted PyPI release workflows both completed
+  successfully.
 
 ## Phase 2
 
-- Pending.
+### 5. Per-session resource ceilings
+
+- Implementation complete; release `v2.2.1` is being qualified.
+- Added compatible execution policy `2.1`; policy `2.0` remains accepted with
+  its original implicit fixed limits. Policy `2.1` canonicalizes memory, CPU,
+  PID, and open-file ceilings into `effective_policy_sha256`; changing a limit
+  changes the hash.
+- Defaults/maximums are 2 GiB, 2 CPU cores, 256 PIDs, and 1,024 open files.
+  Minimums are 64 MiB, 0.1 CPU, 16 PIDs, and 64 open files. Invalid, non-finite,
+  below-minimum, above-maximum, and legacy container resource overrides fail
+  before admission with typed `resource_limit_exceeded`.
+- Capabilities advertise the policy field, defaults, minimums, maximums, and
+  breach code. `docs/execution-policy.md` documents semantics and compatibility.
+- Real Docker ceiling qualification: PASS. Docker HostConfig proved 512 MiB,
+  0.5 CPU, 64 PIDs, and soft/hard 256 FD limits on the live session container.
+- Real Docker breach qualification: PASS. A 256 MiB allocation in a 64 MiB
+  session produced Docker `OOMKilled=true`, exit 137, `SIGKILL`, and stable
+  `resource_limit_exceeded` terminal proof.
+- CPU quota is kernel throttling, not a terminal error. PID and FD exhaustion
+  are kernel refusals visible to the provider; AgentD does not infer a terminal
+  cause from provider output. This preserves truthful classification rather
+  than guessing from an exit code.
 
 ## Phase 3
 

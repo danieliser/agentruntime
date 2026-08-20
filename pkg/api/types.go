@@ -13,6 +13,7 @@ type Resources = apischema.Resources
 type TeamConfig = apischema.TeamConfig
 type TraceConfig = apischema.TraceConfig
 type ExecutionPolicy = apischema.ExecutionPolicy
+type ResourceLimits = apischema.ResourceLimits
 type LifecycleConfig = apischema.LifecycleConfig
 type StructuredOutput = apischema.StructuredOutput
 

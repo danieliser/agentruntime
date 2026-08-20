@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/danieliser/agentruntime/pkg/durable"
 	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 )
 
@@ -83,6 +84,67 @@ func TestResolveExecutionPolicyEgressAllowlistIsCanonicalAndHashCovered(t *testi
 	}
 	if denied.ExecutionPolicy.EgressAllowlist == nil || len(denied.ExecutionPolicy.EgressAllowlist) != 0 {
 		t.Fatalf("deny-all allowlist was not canonicalized: %#v", denied.ExecutionPolicy.EgressAllowlist)
+	}
+}
+
+func TestResolveExecutionPolicyResourceLimitsAreCanonicalAndHashCovered(t *testing.T) {
+	request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
+		Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+		Network: "public_https", ApprovalPolicy: "never",
+	}}
+	resolved, err := resolveExecutionPolicy(&request, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.ExecutionPolicy.Resources == nil || *request.ExecutionPolicy.Resources != DefaultResourceLimits {
+		t.Fatalf("canonical resource limits = %+v, want %+v", request.ExecutionPolicy.Resources, DefaultResourceLimits)
+	}
+
+	changed := request
+	policyCopy := *request.ExecutionPolicy
+	limits := DefaultResourceLimits
+	limits.MemoryBytes /= 2
+	policyCopy.Resources = &limits
+	changed.ExecutionPolicy = &policyCopy
+	changedResolved, err := resolveExecutionPolicy(&changed, "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedResolved.Hash == resolved.Hash {
+		t.Fatalf("policy hash did not change with resource limits: %s", resolved.Hash)
+	}
+}
+
+func TestResolveExecutionPolicyRejectsResourceLimitWideningWithTypedError(t *testing.T) {
+	for name, limits := range map[string]ResourceLimits{
+		"memory": {MemoryBytes: DefaultResourceLimits.MemoryBytes + 1, CPUCores: 1, PIDs: 64, OpenFiles: 128},
+		"cpu":    {MemoryBytes: 1 << 30, CPUCores: DefaultResourceLimits.CPUCores + 0.1, PIDs: 64, OpenFiles: 128},
+		"pids":   {MemoryBytes: 1 << 30, CPUCores: 1, PIDs: DefaultResourceLimits.PIDs + 1, OpenFiles: 128},
+		"fds":    {MemoryBytes: 1 << 30, CPUCores: 1, PIDs: 64, OpenFiles: DefaultResourceLimits.OpenFiles + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
+				Version: ExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+				Network: "public_https", ApprovalPolicy: "never", Resources: &limits,
+			}}
+			_, err := resolveExecutionPolicy(&request, "docker")
+			if !durable.IsCode(err, durable.CodeResourceLimitExceeded) {
+				t.Fatalf("resource widening error = %v, want %s", err, durable.CodeResourceLimitExceeded)
+			}
+		})
+	}
+}
+
+func TestResolveLegacyExecutionPolicyRetainsFixedResourceProfile(t *testing.T) {
+	request := SessionRequest{Agent: "codex", ExecutionPolicy: &ExecutionPolicy{
+		Version: LegacyExecutionPolicyVersion, Workspace: "ephemeral", Filesystem: "read_only",
+		Network: "public_https", ApprovalPolicy: "never",
+	}}
+	if _, err := resolveExecutionPolicy(&request, "docker"); err != nil {
+		t.Fatal(err)
+	}
+	if request.ExecutionPolicy.Resources != nil {
+		t.Fatalf("legacy policy unexpectedly changed its serialized contract: %+v", request.ExecutionPolicy.Resources)
 	}
 }
 

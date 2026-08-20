@@ -92,6 +92,13 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 				ProviderEndpoints      map[string][]string `json:"provider_endpoints"`
 				ToolEndpoints          map[string][]string `json:"tool_endpoints"`
 			} `json:"egress_policy"`
+			ResourceLimits struct {
+				PolicyField string         `json:"policy_field"`
+				Defaults    ResourceLimits `json:"defaults"`
+				Minimums    ResourceLimits `json:"minimums"`
+				Maximums    ResourceLimits `json:"maximums"`
+				BreachCode  string         `json:"breach_code"`
+			} `json:"resource_limits"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
@@ -128,6 +135,11 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		!containsString(envelope.Data.EgressPolicy.ProviderEndpoints["codex"], "chatgpt.com") ||
 		!containsString(envelope.Data.EgressPolicy.ToolEndpoints["web_search"], "api.openai.com") {
 		t.Fatalf("egress policy capabilities = %+v", envelope.Data.EgressPolicy)
+	}
+	if envelope.Data.ResourceLimits.PolicyField != "resources" || envelope.Data.ResourceLimits.Defaults != DefaultResourceLimits ||
+		envelope.Data.ResourceLimits.Minimums != MinimumResourceLimits ||
+		envelope.Data.ResourceLimits.Maximums != MaximumResourceLimits || envelope.Data.ResourceLimits.BreachCode != "resource_limit_exceeded" {
+		t.Fatalf("resource limit capabilities = %+v", envelope.Data.ResourceLimits)
 	}
 }
 

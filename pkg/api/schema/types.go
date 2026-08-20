@@ -134,6 +134,20 @@ type ExecutionPolicy struct {
 	MCPServers         []string `json:"mcp_servers" yaml:"mcp_servers"`
 	HostMounts         []string `json:"host_mounts" yaml:"host_mounts"`
 	ApprovalPolicy     string   `json:"approval_policy" yaml:"approval_policy"`
+	// Resources is required and hash-covered by policy v2.1. A nil value is
+	// canonicalized to AgentD's documented default ceiling. Policy v2.0 keeps
+	// its original fixed, implicit resource profile for compatibility.
+	Resources *ResourceLimits `json:"resources,omitempty" yaml:"resources,omitempty"`
+}
+
+// ResourceLimits is the per-session Docker cgroup and RLIMIT authority grant.
+// Callers may request tighter positive limits but cannot exceed AgentD's
+// advertised maximums.
+type ResourceLimits struct {
+	MemoryBytes int64   `json:"memory_bytes" yaml:"memory_bytes"`
+	CPUCores    float64 `json:"cpu_cores" yaml:"cpu_cores"`
+	PIDs        int64   `json:"pids" yaml:"pids"`
+	OpenFiles   int64   `json:"open_files" yaml:"open_files"`
 }
 
 type StructuredOutput struct {

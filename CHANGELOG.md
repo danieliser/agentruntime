@@ -2,6 +2,24 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.2.1] — 2026-08-20
+
+- Added execution policy `2.1`, retaining policy `2.0` for compatibility.
+  Policy `2.1` canonicalizes per-session memory, CPU, PID, and open-file
+  ceilings into the effective policy hash. Callers may tighten, but not widen,
+  AgentD's advertised defaults and maximums.
+- Capabilities now advertise the resource policy field, defaults, minimums,
+  maximums, and stable `resource_limit_exceeded` code. Invalid or widening
+  limits fail with that typed error before admission.
+- Restricted Docker sessions enforce the canonical values through memory/CPU
+  cgroups, the PID cgroup controller, and soft/hard `RLIMIT_NOFILE`. Legacy
+  `container.memory`/`container.cpus` values cannot bypass the execution policy.
+- Docker OOM proof produces a typed `session.resource_limit_exceeded` event and
+  failure result. The public result/event envelope and immutable terminal
+  receipt schema are unchanged; receipts retain `state=failed, reason=failed`.
+- Added opt-in real-Docker qualification for all four installed ceilings and a
+  real 64 MiB OOM breach with typed terminal proof.
+
 ## [2.2.0] — 2026-08-20
 
 AgentD 2.2 restores the public Docker canary with explicit policy-controlled

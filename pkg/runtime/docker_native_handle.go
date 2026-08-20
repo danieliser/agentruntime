@@ -173,6 +173,7 @@ func inspectDockerExitResult(host, containerID string, waitCode int) ExitResult 
 	}
 	if state.OOMKilled {
 		result.Signal = "SIGKILL"
+		result.FailureReason = "resource_limit_exceeded"
 	}
 	if value, parseErr := time.Parse(time.RFC3339Nano, state.StartedAt); parseErr == nil {
 		result.StartedAt = value.UTC()

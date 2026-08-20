@@ -21,6 +21,7 @@ const (
 	CodeStoreClosed                 ErrorCode = "store_closed"
 	CodeRuntimeUnavailable          ErrorCode = "runtime_unavailable"
 	CodeExecutionPolicyUnsupported  ErrorCode = "execution_policy_unsupported"
+	CodeResourceLimitExceeded       ErrorCode = "resource_limit_exceeded"
 	CodeStructuredOutputUnsupported ErrorCode = "structured_output_unsupported"
 	CodeStructuredOutputInvalid     ErrorCode = "structured_output_invalid"
 	CodeStructuredOutputTooLarge    ErrorCode = "structured_output_too_large"

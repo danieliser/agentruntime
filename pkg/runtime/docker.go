@@ -596,11 +596,20 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		"--env-file", envFile,
 	}
 	if restricted {
+		memory, cpus, pids, openFiles := "2g", "2", int64(256), int64(1024)
+		if limits := req.ExecutionPolicy.Resources; limits != nil {
+			memory = strconv.FormatInt(limits.MemoryBytes, 10)
+			cpus = strconv.FormatFloat(limits.CPUCores, 'f', -1, 64)
+			pids = limits.PIDs
+			openFiles = limits.OpenFiles
+		}
 		args = append(args,
 			"--read-only",
 			"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
-			"--pids-limit", "256",
-			"--ulimit", "nofile=1024:1024",
+			"--memory", memory,
+			"--cpus", cpus,
+			"--pids-limit", strconv.FormatInt(pids, 10),
+			"--ulimit", fmt.Sprintf("nofile=%d:%d", openFiles, openFiles),
 		)
 		if req.ExecutionPolicy.Filesystem == "workspace_write" {
 			args = append(args, "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m")
@@ -652,12 +661,6 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		for _, opt := range req.Container.SecurityOpt {
 			args = append(args, "--security-opt", opt)
 		}
-	}
-	if restricted && (req.Container == nil || req.Container.Memory == "") {
-		args = append(args, "--memory", "2g")
-	}
-	if restricted && (req.Container == nil || req.Container.CPUs == 0) {
-		args = append(args, "--cpus", "2")
 	}
 	if network != "" {
 		args = append(args, "--network", network)

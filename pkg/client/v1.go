@@ -96,6 +96,14 @@ type EgressPolicyCapabilities struct {
 	ToolEndpoints          map[string][]string `json:"tool_endpoints"`
 }
 
+type ResourceLimitCapabilities struct {
+	PolicyField string             `json:"policy_field"`
+	Defaults    api.ResourceLimits `json:"defaults"`
+	Minimums    api.ResourceLimits `json:"minimums"`
+	Maximums    api.ResourceLimits `json:"maximums"`
+	BreachCode  string             `json:"breach_code"`
+}
+
 // Capabilities is the v1 compatibility handshake a caller checks before
 // submitting paid work.
 type Capabilities struct {
@@ -117,6 +125,7 @@ type Capabilities struct {
 	WorkspaceProfiles       []WorkspaceProfileCapabilities `json:"workspace_profiles"`
 	CredentialGrants        []CredentialGrantCapabilities  `json:"credential_grants"`
 	EgressPolicy            EgressPolicyCapabilities       `json:"egress_policy"`
+	ResourceLimits          ResourceLimitCapabilities      `json:"resource_limits"`
 }
 
 type PluginStatus struct {

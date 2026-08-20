@@ -59,6 +59,9 @@ func AttachNativeSessionIO(
 		if terminalReason != nil {
 			reason = terminalReason()
 		}
+		if reason == "" {
+			reason = result.FailureReason
+		}
 		terminalReasons <- reason
 		close(terminalReasons)
 		nativeWait <- nativeprotocol.Exit{
@@ -150,7 +153,7 @@ func AttachNativeSessionIO(
 		drains.Wait()
 		ingestMu.Lock()
 		streamErr := errors.Join(ingestErr, nativeExit.Err)
-		if turnCompleted && ingestErr == nil && nativeExit.Err == nil {
+		if turnCompleted && ingestErr == nil && nativeExit.Err == nil && reason == "" && nativeExit.Signal == "" && !nativeExit.OOMKilled {
 			nativeExit.Code = 0
 		}
 		endedAt := nativeExit.EndedAt
@@ -158,7 +161,7 @@ func AttachNativeSessionIO(
 			endedAt = time.Now().UTC()
 		}
 		artifactHash := ""
-		failureReason := ""
+		failureReason := reason
 		if collector != nil && streamErr == nil && nativeExit.Code == 0 && reason == "" {
 			result, err := collector.Finalize()
 			if err != nil {
