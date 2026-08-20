@@ -62,7 +62,7 @@
 
 ### 2. Readiness truthfulness
 
-- Complete in working tree; commit recorded below after qualification.
+- Complete: commit `95f2b5a` (`fix(ACT-1014): fail readiness without runtime image`).
 - `DockerRuntime.CheckAdmission` now verifies both Docker daemon reachability and
   the configured runtime image before admission.
 - A new stable `runtime_unavailable` error is returned as HTTP 503 before the
@@ -84,7 +84,18 @@
 
 ### 3. No ambient plugin processes
 
-- Pending.
+- Complete in working tree as verification of the existing policy resolver and
+  clean materialization boundary; commit recorded below after qualification.
+- Added an opt-in real Docker test that resolves the actual restricted Codex
+  app-server command, proves `plugins` and `enable_mcp_apps` are disabled,
+  starts the real app-server with an empty MCP/plugin policy, and inspects every
+  process command line inside the live session container.
+- Real Docker qualification (`AGENTRUNTIME_DOCKER_INTEGRATION=1 go test
+  ./pkg/api -run TestDockerRestrictedCodexStartsNoAmbientPluginProcesses
+  -count=1 -v`): PASS. The Codex app-server was live and zero `codex_apps`,
+  `mcp-server`, or `mcp_server` processes existed.
+- Verification before commit: `go test ./...` PASS; `go test -race ./...` PASS;
+  `git diff --check` PASS.
 
 ### 4. Release v2.2.0
 
