@@ -2,6 +2,36 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.2.4] — 2026-08-20
+
+- Codex's advertised provider endpoint set is now the exact pair
+  `auth.openai.com` (ChatGPT OAuth refresh) and `chatgpt.com` (turn
+  transport). `api.openai.com` remains separately advertised for
+  `web_search`; callers choose the final exact allowlist, which remains
+  hash-covered and is never widened by AgentD.
+- Restricted Codex app-server launches force the provider-native
+  `features.respect_system_proxy=true` setting in addition to AgentD's proxy
+  environment. The agent image now provides system `bubblewrap`, eliminating
+  the slow bundled fallback that previously exhausted native startup before
+  the first provider byte.
+- Restricted Docker admission performs a bounded proxy CONNECT preflight for
+  every allowlisted host before provider launch. Dead policy proxies and
+  unreachable endpoints fail with stable `egress_preflight_failed`; bounded
+  native startup failures use `provider_startup_failed`.
+- Added hash-covered, default-off `egress_diagnostics`. When selected, the
+  private `0700`/`0600` session diagnostic area retains only CONNECT host names
+  and timestamps under the existing redaction and retention lifecycle.
+  Capabilities advertise the flag, default, and exact retained fields.
+- Denied provider CONNECTs become `egress_denied` failures naming the host,
+  including failures discovered after provider startup. Diagnostic read errors
+  cannot replace the original typed cause.
+- Added an opt-in real-Docker qualification that proves a complete minimal
+  Codex turn, strict structured output, artifact, and terminal receipt under an
+  exact-host policy, plus a missing-`auth.openai.com` negative case with a
+  named typed failure instead of a session deadline.
+- Public result, receipt, event, replay, and authentication contracts are
+  unchanged.
+
 ## [2.2.3] — 2026-08-20
 
 - Session diagnostic directories/files are now always tightened to
