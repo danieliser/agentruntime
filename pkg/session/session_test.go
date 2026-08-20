@@ -33,11 +33,6 @@ func TestNewSession_InitialState(t *testing.T) {
 	}
 }
 
-
-
-
-
-
 // --- Manager CRUD ---
 
 func TestManager_AddAndGet(t *testing.T) {
@@ -54,7 +49,6 @@ func TestManager_AddAndGet(t *testing.T) {
 		t.Fatalf("expected ID %q, got %q", s.ID, got.ID)
 	}
 }
-
 
 func TestManager_AddDuplicate(t *testing.T) {
 	m := NewManager()
@@ -75,7 +69,6 @@ func TestManager_Remove(t *testing.T) {
 		t.Fatal("expected nil after Remove")
 	}
 }
-
 
 func TestManager_List(t *testing.T) {
 	m := NewManager()
@@ -235,7 +228,6 @@ func TestNewSession_ReplayBufferDefaultSize(t *testing.T) {
 		t.Fatalf("expected %d bytes written, got %d", len(data), n)
 	}
 }
-
 
 // --- Metrics tracking ---
 
@@ -404,6 +396,24 @@ func TestSession_NotifyResult_SignalsChannel(t *testing.T) {
 	}
 }
 
+func TestSession_NotifyResult_WakesAllCurrentWaiters(t *testing.T) {
+	s := NewSession("", "claude", "local")
+	first := s.ResultCh()
+	second := s.ResultCh()
+	if first != second {
+		t.Fatal("current waiters must observe the same broadcast generation")
+	}
+
+	s.NotifyResult()
+	for index, waiter := range []<-chan struct{}{first, second} {
+		select {
+		case <-waiter:
+		case <-time.After(time.Second):
+			t.Fatalf("waiter %d did not receive result broadcast", index+1)
+		}
+	}
+}
+
 func TestSession_NotifyResult_MultipleFires(t *testing.T) {
 	s := NewSession("", "claude", "local")
 
@@ -495,6 +505,27 @@ func TestManager_MaxSessions_RemoveFreesSlot(t *testing.T) {
 	m.Remove(s1.ID)
 	if err := m.Add(NewSession("", "claude", "local")); err != nil {
 		t.Fatalf("Add after Remove should succeed, got %v", err)
+	}
+}
+
+func TestManager_MaxSessions_TerminalHistoryDoesNotConsumeActiveLease(t *testing.T) {
+	m := NewManager()
+	m.SetMaxSessions(1)
+
+	historical := NewSession("", "claude", "docker")
+	if err := m.Add(historical); err != nil {
+		t.Fatalf("add active session: %v", err)
+	}
+	if err := m.Add(NewSession("", "claude", "docker")); err != ErrMaxSessions {
+		t.Fatalf("concurrent active session error = %v, want %v", err, ErrMaxSessions)
+	}
+
+	historical.SetCompleted(0)
+	if err := m.Add(NewSession("", "claude", "docker")); err != nil {
+		t.Fatalf("terminal retained session consumed active lifetime lease: %v", err)
+	}
+	if got := len(m.List()); got != 2 {
+		t.Fatalf("retained session count = %d, want 2", got)
 	}
 }
 

@@ -247,7 +247,7 @@ func (m *Manager) SetMaxSessions(n int) {
 func (m *Manager) Add(s *Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.maxSessions > 0 && len(m.sessions) >= m.maxSessions {
+	if m.maxSessions > 0 && m.activeSessionCountLocked() >= m.maxSessions {
 		return ErrMaxSessions
 	}
 	if _, exists := m.sessions[s.ID]; exists {
@@ -255,6 +255,20 @@ func (m *Manager) Add(s *Session) error {
 	}
 	m.sessions[s.ID] = s
 	return nil
+}
+
+// activeSessionCountLocked counts lifetime leases, not retained history.
+// Callers must hold m.mu. Terminal sessions remain inspectable until explicit
+// removal but release their admission slot as soon as their lifetime ends.
+func (m *Manager) activeSessionCountLocked() int {
+	active := 0
+	for _, candidate := range m.sessions {
+		state := candidate.Snapshot().State
+		if state != StateCompleted && state != StateFailed {
+			active++
+		}
+	}
+	return active
 }
 
 // Get returns the session with the given ID, or nil if not found.

@@ -180,7 +180,8 @@
 
 ### 7. Diagnostic log hygiene
 
-- Implementation complete; release `v2.2.3` is being qualified.
+- Implementation complete in commit `d537d2b`; release `v2.2.3` is blocked and
+  was not tagged or pushed.
 - Session diagnostic directories and files are created/tightened to
   `0700`/`0600`, including pre-existing retained logs. Installer/reinstaller
   now pre-create the launchd log directory/file with the same modes before
@@ -200,6 +201,52 @@
   `.ndjson`/`.jsonl` files without following symlinks. An end-to-end native v1
   test proves disabled diagnostics create no log directory/file while the
   immutable terminal receipt remains available.
+- Required source gates passed before commit: `go test ./...`, `go test -race
+  ./...`, `go vet ./...`, shell syntax, and `git diff --check`. The opt-in
+  30-session scenario also passed 30/30 after the change, and the real Docker
+  no-plugin process inspection passed.
+- Release qualification blocker: building the exact `v2.2.3` Docker images
+  exhausted the host data volume. OrbStack stopped and cannot restart because
+  the host reports `no space left on device` (231-345 MiB free during later
+  checks). Only this repository is writable for this run, so I did not delete
+  user caches or OrbStack data outside it. No `v2.2.3` tag, GitHub release, or
+  remote source push was created; `origin/main` remains at `v2.2.2`.
+
+### 8. Audit-gap verification
+
+- Complete in source (commit containing this entry). The 2026-08-07 audit was
+  checked against the current v2 API rather than assuming its v0.8 paths still
+  applied.
+- Added a focused two-subscriber broker test: closing one viewer's independent
+  subscription does not close the other, and the surviving viewer receives the
+  next committed live event. Durable replay remains store-owned rather than a
+  viewer-owned shared byte buffer.
+- Added a replay/live wire proof with invalid UTF-8 bytes. Authenticated HTTP
+  replay, WebSocket catch-up, and WebSocket live delivery all use the same
+  unambiguous `raw_base64` field and decode to the exact original bytes. This
+  verifies the existing v1 canonical-base64 contract without changing the
+  public event schema to reintroduce the retired mixed utf8/base64 framing.
+- Added a two-waiter result-broadcast test. Both current consumers observe the
+  same closed channel generation; the already-existing multiple-fire test
+  proves later results use a fresh generation. The old single-consumer channel
+  race was fixed by close-and-replace signaling in `v0.6.2`.
+- Fixed the remaining capacity bug using an active-lifetime count under the
+  manager lock. Pending/running/orphaned sessions consume admission slots;
+  completed/failed records remain inspectable but no longer consume capacity.
+  The regression test first failed against the historical `len(map)` behavior,
+  then passed after the fix.
+- Existing proofs close the other two audit findings: `pkg/runtime/docker_test.go`
+  proves native and generic Docker execution publish/query no sidecar port and
+  skip the removed sidecar bridge; `pkg/api/routes_retirement_test.go` proves
+  the unversioned sidecar route is absent. `pkg/api/auth_test.go` proves missing
+  Origin is accepted for non-browser clients, exact same-origin is accepted,
+  and cross-origin/invalid-scheme browser requests are rejected.
+- Focused new tests, `go test ./...`, `go test -race ./...`, `go vet ./...`,
+  and `git diff --check` passed. The first parallel race link hit host ENOSPC;
+  serial linking completed green and the exact command then completed green
+  from cache. Real Docker repetition was skipped because the recorded
+  host-disk/OrbStack blocker remains active; none of this item's proofs require
+  a live Docker daemon.
 
 ## Phase 3
 

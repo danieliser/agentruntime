@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -54,6 +55,83 @@ func TestV1EventReplayUsesSequenceCursor(t *testing.T) {
 	stored, err := store.GetSession(context.Background(), "replay-session")
 	if err != nil || stored.LastSequence != 2 {
 		t.Fatalf("stored session = %+v err=%v", stored, err)
+	}
+}
+
+func TestV1ReplayAndLiveFramesUseExplicitRawBase64Encoding(t *testing.T) {
+	ts, _, broker := newEventStreamTestServer(t, "encoding-session")
+	ctx := context.Background()
+	replayRaw := []byte{0xff, 0x00, 0xfe, '\n'}
+	_, err := broker.Ingest(ctx, eventstream.IngestParams{
+		SessionID: "encoding-session", Generation: 1,
+		Record: nativeprotocol.Record{
+			Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamRuntimeStderr,
+			Ordinal: 1, Timestamp: time.Unix(211, 0).UTC(), Raw: replayRaw,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ingest replay bytes: %v", err)
+	}
+
+	response := get(t, ts, "/api/v1/sessions/encoding-session/events?after_sequence=0&limit=10")
+	defer response.Body.Close()
+	var page struct {
+		Data eventPageEnvelope `json:"data"`
+	}
+	decodeJSON(t, response.Body, &page)
+	if response.StatusCode != http.StatusOK || len(page.Data.Events) != 1 {
+		t.Fatalf("replay status=%d events=%d", response.StatusCode, len(page.Data.Events))
+	}
+	assertRawBase64Event(t, "HTTP replay", page.Data.Events[0], replayRaw)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/ws/sessions/encoding-session/events?after_sequence=0"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial event stream: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var ready streamReadyFrame
+	if err := conn.ReadJSON(&ready); err != nil {
+		t.Fatalf("read ready frame: %v", err)
+	}
+	var replay eventEnvelope
+	if err := conn.ReadJSON(&replay); err != nil {
+		t.Fatalf("read WebSocket replay: %v", err)
+	}
+	assertRawBase64Event(t, "WebSocket replay", replay, replayRaw)
+
+	liveRaw := []byte{0x80, 0x81, 0x00, 'x'}
+	_, err = broker.Ingest(ctx, eventstream.IngestParams{
+		SessionID: "encoding-session", Generation: 1,
+		Record: nativeprotocol.Record{
+			Provider: nativeprotocol.ProviderClaude, Stream: nativeprotocol.StreamRuntimeStderr,
+			Ordinal: 2, Timestamp: time.Unix(212, 0).UTC(), Raw: liveRaw,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ingest live bytes: %v", err)
+	}
+	var live eventEnvelope
+	if err := conn.ReadJSON(&live); err != nil {
+		t.Fatalf("read WebSocket live event: %v", err)
+	}
+	assertRawBase64Event(t, "WebSocket live", live, liveRaw)
+}
+
+func assertRawBase64Event(t *testing.T, source string, event eventEnvelope, want []byte) {
+	t.Helper()
+	if event.RawBase64 == "" {
+		t.Fatalf("%s has no raw_base64 encoding discriminator", source)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(event.RawBase64)
+	if err != nil {
+		t.Fatalf("decode %s raw_base64: %v", source, err)
+	}
+	if !bytes.Equal(decoded, want) {
+		t.Fatalf("%s decoded raw = %x, want %x", source, decoded, want)
 	}
 }
 

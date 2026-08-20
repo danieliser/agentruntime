@@ -119,6 +119,37 @@ func TestSubscribeClosesStoredThenLiveRace(t *testing.T) {
 	}
 }
 
+func TestClosingOneSubscriberDoesNotAffectAnother(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	createStreamSession(t, ctx, store, "session-multi-subscriber")
+	broker := New(store)
+
+	first, err := broker.Subscribe(ctx, "session-multi-subscriber", 0, 4)
+	if err != nil {
+		t.Fatalf("subscribe first viewer: %v", err)
+	}
+	second, err := broker.Subscribe(ctx, "session-multi-subscriber", 0, 4)
+	if err != nil {
+		t.Fatalf("subscribe second viewer: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("disconnect first viewer: %v", err)
+	}
+	want := ingestClaudeDelta(t, ctx, broker, "session-multi-subscriber", 1)
+	got, err := second.Next(ctx)
+	if err != nil {
+		t.Fatalf("second viewer after first disconnect: %v", err)
+	}
+	if got.EventID != want.EventID || got.Sequence != 1 {
+		t.Fatalf("second viewer event = %+v, want %+v", got, want)
+	}
+}
+
 func TestIngestKeepsStderrSeparateAndEventIDsStable(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
