@@ -16,6 +16,26 @@ type resolvedResumeSession struct {
 	SourceSessionID string
 }
 
+type providerVolumePlan struct {
+	// Name is persisted on the logical AgentD session for later continuation.
+	Name string
+	// ExistingName is passed to the runtime only when the volume must already
+	// exist. An empty value tells Docker to create the first-generation volume.
+	ExistingName string
+}
+
+func planProviderVolume(sessionID string, persist bool, existingNames ...string) providerVolumePlan {
+	if !persist {
+		return providerVolumePlan{}
+	}
+	for _, existingName := range existingNames {
+		if existingName != "" {
+			return providerVolumePlan{Name: existingName, ExistingName: existingName}
+		}
+	}
+	return providerVolumePlan{Name: "agentruntime-vol-" + sessionID}
+}
+
 func validateResolvedResumeState(runtimeName, requested string, resolved resolvedResumeSession) error {
 	if runtimeName == "docker" && requested != "" && resolved.VolumeName == "" {
 		return fmt.Errorf("Docker resume requires a logical AgentD session with persistent provider state")

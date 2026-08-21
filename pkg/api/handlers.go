@@ -263,20 +263,12 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		return
 	}
 
-	// Determine volume name for persistence
-	var volumeNameForSpawn string
-	if req.PersistSession {
-		if resumeSession.VolumeName != "" {
-			volumeNameForSpawn = resumeSession.VolumeName
-		} else if originalSession != nil && originalSession.VolumeName != "" {
-			// Reuse the original session's volume for resume
-			volumeNameForSpawn = originalSession.VolumeName
-		} else {
-			// Create a new volume for this session
-			volumeNameForSpawn = "agentruntime-vol-" + sess.ID
-		}
-		sess.VolumeName = volumeNameForSpawn
+	originalVolumeName := ""
+	if originalSession != nil {
+		originalVolumeName = originalSession.VolumeName
 	}
+	volumePlan := planProviderVolume(sess.ID, req.PersistSession, resumeSession.VolumeName, originalVolumeName)
+	sess.VolumeName = volumePlan.Name
 
 	// Spawn the process.
 	generationNumber := admitted.ActiveGeneration + 1
@@ -306,7 +298,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		TaskID:              req.TaskID,
 		Request:             &req,
 		SessionDir:          &sess.SessionDir,
-		VolumeName:          volumeNameForSpawn,
+		VolumeName:          volumePlan.ExistingName,
 		PTY:                 req.PTY,
 		SandboxProfile:      requestSandboxProfile(rt.Name(), nativeV1Agent(req.Agent), req),
 	}
@@ -513,15 +505,12 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 		return nil, fmt.Errorf("add session: %w", err)
 	}
 
-	var volumeNameForSpawn string
-	if req.PersistSession {
-		if originalSession != nil && originalSession.VolumeName != "" {
-			volumeNameForSpawn = originalSession.VolumeName
-		} else {
-			volumeNameForSpawn = "agentruntime-vol-" + sess.ID
-		}
-		sess.VolumeName = volumeNameForSpawn
+	originalVolumeName := ""
+	if originalSession != nil {
+		originalVolumeName = originalSession.VolumeName
 	}
+	volumePlan := planProviderVolume(sess.ID, req.PersistSession, originalVolumeName)
+	sess.VolumeName = volumePlan.Name
 
 	handle, err := rt.Spawn(ctx, runtime.SpawnConfig{
 		SessionID:  sess.ID,
@@ -534,7 +523,7 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 		TaskID:     req.TaskID,
 		Request:    &req,
 		SessionDir: &sess.SessionDir,
-		VolumeName: volumeNameForSpawn,
+		VolumeName: volumePlan.ExistingName,
 		PTY:        req.PTY,
 	})
 	if err != nil {

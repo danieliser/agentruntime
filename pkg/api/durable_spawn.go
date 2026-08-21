@@ -138,17 +138,12 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		return failAdmission(err)
 	}
 
-	volumeName := ""
-	if req.PersistSession {
-		if resumeSession.VolumeName != "" {
-			volumeName = resumeSession.VolumeName
-		} else if original != nil && original.VolumeName != "" {
-			volumeName = original.VolumeName
-		} else {
-			volumeName = "agentruntime-vol-" + sess.ID
-		}
-		sess.VolumeName = volumeName
+	originalVolumeName := ""
+	if original != nil {
+		originalVolumeName = original.VolumeName
 	}
+	volumePlan := planProviderVolume(sess.ID, req.PersistSession, resumeSession.VolumeName, originalVolumeName)
+	sess.VolumeName = volumePlan.Name
 	lifecycleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	stored, err = s.durableStore.TransitionSession(lifecycleCtx, durable.TransitionSessionParams{
 		SessionID: stored.ID, From: durable.StateCreated, To: durable.StateStarting, At: time.Now().UTC(),
@@ -164,7 +159,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		ExecutionPolicyHash: resolvedPolicy.Hash,
 		Cmd:                 runtimeSpawnCommand(command, rt.Name(), req.Agent), Prompt: req.Prompt, Model: req.Model,
 		Env: req.Env, WorkDir: workDir, TaskID: req.TaskID, Request: &req,
-		SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: req.PTY,
+		SessionDir: &sess.SessionDir, VolumeName: volumePlan.ExistingName, PTY: req.PTY,
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, req),
 	}
 	s.progress.publish(stored.ID, "runtime.spawn", "starting runtime process or container", false)

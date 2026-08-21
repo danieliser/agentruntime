@@ -145,6 +145,21 @@
   immutable image ID differs from the configured proxy image ID. The sole
   AgentD-owned stale proxy container was removed and recreated from stamped
   v2.2.5; no unrelated container, host file, or cache was deleted.
+- Installed-candidate live Docker session
+  `2db6b3a1-d39e-4f43-a8c7-73225ccf02af` proved a first-generation persistence
+  regression. Admission returned HTTP 201 in 6.193 ms and the WebSocket emitted
+  `runtime.spawn`, then the session failed verbatim with `spawn: docker run
+  args: persistent provider volume
+  "agentruntime-vol-2db6b3a1-d39e-4f43-a8c7-73225ccf02af" is unavailable: exit
+  status 1: []\nError response from daemon: get
+  agentruntime-vol-2db6b3a1-d39e-4f43-a8c7-73225ccf02af: no such volume`.
+  Root cause: the API stored the deterministic new volume name and also passed
+  it through `SpawnConfig.VolumeName`, whose runtime contract means an existing
+  resume volume; Docker therefore inspected a volume generation 1 had not yet
+  created. A red volume-plan regression now distinguishes the durable name
+  from the existing-volume runtime hint. Generation 1 creates the volume;
+  continuations reuse and validate it, preserving fail-closed missing-state
+  behavior.
 
 ## Embedded live-agent console scaffold
 

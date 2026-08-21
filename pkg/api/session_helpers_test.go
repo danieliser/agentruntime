@@ -77,6 +77,23 @@ func TestDockerNativeSessionsPersistProviderStateByDefaultExceptEphemeralPolicy(
 	}
 }
 
+func TestPlanProviderVolumeCreatesFirstGenerationAndReusesContinuation(t *testing.T) {
+	first := planProviderVolume("first-session", true)
+	if first.Name != "agentruntime-vol-first-session" || first.ExistingName != "" {
+		t.Fatalf("first-generation provider volume plan = %+v", first)
+	}
+
+	continuation := planProviderVolume("followup-session", true, "agentruntime-vol-first-session")
+	if continuation.Name != "agentruntime-vol-first-session" || continuation.ExistingName != continuation.Name {
+		t.Fatalf("continuation provider volume plan = %+v", continuation)
+	}
+
+	ephemeral := planProviderVolume("ephemeral-session", false, "agentruntime-vol-ignored")
+	if ephemeral.Name != "" || ephemeral.ExistingName != "" {
+		t.Fatalf("ephemeral provider volume plan = %+v", ephemeral)
+	}
+}
+
 func TestDockerResumeRejectsProviderIDWithoutDurableVolumeLineage(t *testing.T) {
 	resolved := resolvedResumeSession{ProviderID: "provider-only-id"}
 	if err := validateResolvedResumeState("docker", "provider-only-id", resolved); err == nil {

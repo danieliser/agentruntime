@@ -24,6 +24,8 @@ All notable changes to agentruntime are documented in this file.
   conversation state by default. Follow-ups resolve provider identity and root
   volume lineage from the durable store across daemon restarts, fail closed if
   the volume is missing, and send the exact Codex `thread/resume` request.
+  First-generation sessions create their named volume before mounting it;
+  only continuations require a previously retained volume to exist.
 - Public sessions expose `provider_session_id`, `resumable`, and continuation
   lineage. The embedded dashboard can continue eligible Docker history and
   uses logical AgentD IDs instead of lossy provider-ID-only handoff.
