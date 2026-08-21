@@ -63,6 +63,24 @@ func TestDockerAgentImageProvidesBubblewrapOnPath(t *testing.T) {
 	}
 }
 
+func TestDockerReleaseStampsFollowHeavyContentLayers(t *testing.T) {
+	for _, file := range []string{"Dockerfile.agent", "Dockerfile.proxy"} {
+		contents, err := os.ReadFile(filepath.Join("..", "..", "docker", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		stamp := strings.Index(text, "ARG AGENTD_VERSION")
+		lastContentLayer := strings.LastIndex(text, "\nRUN ")
+		if file == "Dockerfile.proxy" {
+			lastContentLayer = strings.LastIndex(text, "\nCOPY ")
+		}
+		if stamp < lastContentLayer {
+			t.Fatalf("%s declares release stamp before its last content layer; stamp-only releases will rebuild provider contents", file)
+		}
+	}
+}
+
 func TestProxyConfigurationDisablesCachingWithoutInvalidNullStore(t *testing.T) {
 	config, err := os.ReadFile(filepath.Join("..", "..", "docker", "squid.conf"))
 	if err != nil {

@@ -29,6 +29,8 @@ All notable changes to agentruntime are documented in this file.
 - Release builds add stamped Codex-only and Claude-only runtime images and
   select them per provider, while retaining the combined compatibility image.
   Release installation and Docker verification require all provider images.
+  Version/commit labels are applied after provider content layers so a
+  stamp-only AgentD release reuses the exact tested CLI and sandbox contents.
 - The macOS installer replaces an already-loaded launchd job with
   bootout/bootstrap/kickstart, preventing an upgraded binary and plist from
   leaving the previous in-memory daemon running.

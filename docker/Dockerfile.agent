@@ -2,15 +2,7 @@ FROM node:22-slim
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
-ARG AGENTD_VERSION=dev
-ARG AGENTD_COMMIT=unknown
 ARG AGENTD_PROVIDER=all
-
-LABEL org.opencontainers.image.title="AgentD runtime"
-LABEL org.opencontainers.image.version="${AGENTD_VERSION}"
-LABEL org.opencontainers.image.revision="${AGENTD_COMMIT}"
-LABEL org.opencontainers.image.source="https://github.com/danieliser/agentruntime"
-LABEL io.agentruntime.provider="${AGENTD_PROVIDER}"
 
 ENV TERM=xterm-256color
 
@@ -73,6 +65,15 @@ RUN if getent group "${HOST_GID}" > /dev/null; then \
 RUN mkdir -p /home/agent/.claude /home/agent/.codex /workspace \
     && touch /home/agent/.claude.json \
     && chown -R agent:agent /home/agent /workspace
+
+ARG AGENTD_VERSION=dev
+ARG AGENTD_COMMIT=unknown
+
+LABEL org.opencontainers.image.title="AgentD runtime"
+LABEL org.opencontainers.image.version="${AGENTD_VERSION}"
+LABEL org.opencontainers.image.revision="${AGENTD_COMMIT}"
+LABEL org.opencontainers.image.source="https://github.com/danieliser/agentruntime"
+LABEL io.agentruntime.provider="${AGENTD_PROVIDER}"
 
 USER agent
 

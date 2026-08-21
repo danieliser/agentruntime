@@ -1,5 +1,7 @@
 FROM ubuntu/squid:latest
 
+COPY squid.conf /etc/squid/squid.conf
+
 ARG AGENTD_VERSION=dev
 ARG AGENTD_COMMIT=unknown
 
@@ -7,7 +9,5 @@ LABEL org.opencontainers.image.title="AgentD policy proxy"
 LABEL org.opencontainers.image.version="${AGENTD_VERSION}"
 LABEL org.opencontainers.image.revision="${AGENTD_COMMIT}"
 LABEL org.opencontainers.image.source="https://github.com/danieliser/agentruntime"
-
-COPY squid.conf /etc/squid/squid.conf
 
 EXPOSE 3128

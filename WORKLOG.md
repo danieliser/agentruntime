@@ -85,6 +85,14 @@
   ABI/provenance layer pinned to a provider digest; heavy toolchain layers must
   rebuild only when provider or sandbox inputs change, with the previous
   digest retained for rollback. This is not being added after the v2.2.5 tag.
+- The first restamp attempt proved that `AGENTD_VERSION`/`AGENTD_COMMIT` were
+  declared before the runtime package `RUN`, invalidating the entire heavy
+  provider layer for a metadata-only commit change. That redundant build was
+  cancelled before completion. A red Dockerfile-order regression test now
+  requires release stamp arguments after the final content layer; v2.2.5 keeps
+  the already-qualified provider/sandbox layers byte-for-byte and changes only
+  OCI provenance. Fully independent daily provider-base promotion remains a
+  later release concern.
 - The first installed v2.2.5 candidate at `de173ab...` was rejected by the live
   gate and preserved as an RC rather than attested. The installer replaced the
   executable and plist but `launchctl load` returned verbatim `Load failed: 5:
