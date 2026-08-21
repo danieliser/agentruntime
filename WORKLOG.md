@@ -113,6 +113,18 @@
   initialized first by a networkless helper with only `CAP_CHOWN`, followed by
   extraction as the unprivileged `agent` user with `--no-same-owner`, no
   network, no capabilities, and `no-new-privileges`.
+- RC3 proved the repaired path against real OrbStack volumes. The unchanged
+  RC2 archive uploaded with the same content ID, imported into a fresh volume
+  and caller-supplied `/tmp/agentruntime-v230-rc3-import-workdir`, resumed the
+  exact Codex provider thread `01a0235d-ab95-76c3-8a07-071c3592e641`, returned
+  the remembered `PORTABLE-RC2` nonce, and committed a completed exit-0 receipt.
+  The imported one-shot container count was zero immediately afterward while
+  its provider volume remained resumable. Candidate startup had also removed
+  13 proven-old stopped AgentD containers without deleting provider volumes.
+- Final source gates after both live-found fixes pass: full `go test ./...`,
+  full `go test -race ./...`, `go vet ./...`, dashboard JavaScript syntax, and
+  `git diff --check`. Four-image rebuilds reused every heavy provider/sandbox
+  content layer and completed in 2-4 seconds; only OCI provenance changed.
 
 ## v2.2.5 readiness, startup, and Docker continuation
 
