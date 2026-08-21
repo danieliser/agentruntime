@@ -14,6 +14,7 @@ type resolvedResumeSession struct {
 	ProviderID      string
 	VolumeName      string
 	SourceSessionID string
+	PortableStateID string
 }
 
 type providerVolumePlan struct {
@@ -48,6 +49,32 @@ func configureDockerProviderPersistence(request *SessionRequest, runtimeName str
 		return
 	}
 	request.PersistSession = true
+}
+
+func (s *Server) resolvePortableResumeState(request SessionRequest) (resolvedResumeSession, error) {
+	if request.ResumeStateID == "" {
+		return resolvedResumeSession{}, nil
+	}
+	if request.ResumeSession != "" {
+		return resolvedResumeSession{}, fmt.Errorf("resume_state_id and resume_session are mutually exclusive")
+	}
+	if request.Runtime != "docker" || !nativeV1Agent(request.Agent) || request.ExecutionPolicy != nil {
+		return resolvedResumeSession{}, fmt.Errorf("portable resume state requires an unrestricted native Docker session")
+	}
+	if s.resumeStates == nil {
+		return resolvedResumeSession{}, fmt.Errorf("portable resume state store is unavailable")
+	}
+	manifest, err := s.resumeStates.Manifest(request.ResumeStateID)
+	if err != nil {
+		return resolvedResumeSession{}, err
+	}
+	if manifest.Agent != request.Agent {
+		return resolvedResumeSession{}, fmt.Errorf("portable resume agent %q does not match %q", manifest.Agent, request.Agent)
+	}
+	return resolvedResumeSession{
+		ProviderID: manifest.ProviderSessionID, SourceSessionID: manifest.SourceSessionID,
+		PortableStateID: request.ResumeStateID,
+	}, nil
 }
 
 // resolveResumeSession is the canonical provider-continuation resolver. A

@@ -16,5 +16,6 @@ type ExecutionPolicy = apischema.ExecutionPolicy
 type ResourceLimits = apischema.ResourceLimits
 type LifecycleConfig = apischema.LifecycleConfig
 type StructuredOutput = apischema.StructuredOutput
+type ContainerLease = apischema.ContainerLease
 
 const CodexAuthJSONEnv = apischema.CodexAuthJSONEnv

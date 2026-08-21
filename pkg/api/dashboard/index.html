@@ -128,7 +128,13 @@
                                     <label><input type="checkbox" id="console-fast"> Priority / fast mode</label>
                                     <label><input type="checkbox" id="console-clean" checked> Clean context</label>
                                     <label><input type="checkbox" id="console-restricted"> Restricted public egress</label>
+                                    <label><input type="checkbox" id="console-maintain" checked> Keep container warm</label>
+                                    <label><input type="checkbox" id="console-portable"> Snapshot portable resume state</label>
                                 </div>
+                                <label class="field lifecycle-field">
+                                    <span>Warm-container idle expiry (seconds)</span>
+                                    <input id="console-idle-ttl" type="number" min="5" max="86400" value="600">
+                                </label>
                                 <label class="field restricted-field" hidden>
                                     <span>Allowed HTTPS hosts</span>
                                     <input id="console-hosts" value="api.openai.com, auth.openai.com, chatgpt.com">
@@ -165,6 +171,7 @@
                                 <h2 id="console-session-title">Waiting for launch</h2>
                             </div>
                             <div class="stream-actions">
+                                <button type="button" id="console-export" disabled>Export state</button>
                                 <button type="button" id="console-interrupt" disabled>Interrupt</button>
                                 <button type="button" id="console-cancel" disabled>Cancel</button>
                             </div>

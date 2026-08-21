@@ -16,6 +16,8 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 		v1.GET("/sessions/:id", s.handleV1GetSession)
 		v1.GET("/sessions/:id/receipt", s.handleV1GetTerminalReceipt)
 		v1.GET("/sessions/:id/result", s.handleV1GetStructuredResult)
+		v1.POST("/sessions/:id/resume-state", s.handleV1CreateResumeState)
+		v1.GET("/sessions/:id/resume-state", s.handleV1GetLatestResumeState)
 		v1.GET("/sessions/:id/traces", s.handleV1SessionTraces)
 		v1.POST("/sessions/:id/resume", s.handleV1ResumeSession)
 		v1.POST("/sessions/:id/input", s.handleV1NativeInput)
@@ -24,6 +26,8 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 		v1.POST("/sessions/:id/terminate", s.handleV1NativeTerminate)
 		v1.GET("/sessions/:id/events", s.handleV1EventReplay)
 		v1.GET("/ws/sessions/:id/events", s.handleV1EventStream)
+		v1.POST("/resume-states", s.handleV1UploadResumeState)
+		v1.GET("/resume-states/:id", s.handleV1DownloadResumeState)
 	}
 
 	chats := r.Group("/chats")

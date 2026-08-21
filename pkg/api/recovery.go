@@ -381,6 +381,20 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	if _, err := resolveStructuredOutput(&manifest); err != nil {
 		return durable.NewError(durable.CodeIndeterminate, op, "stored structured-output contract is no longer enforceable", err)
 	}
+	containerLease, err := resolveContainerLease(manifest, stored.Runtime, true)
+	if err != nil {
+		return durable.NewError(durable.CodeIndeterminate, op, "stored container lease is no longer enforceable", err)
+	}
+	recoveredIdle := false
+	if containerLease.Maintain && stored.LastSequence > 0 {
+		page, eventErr := s.durableStore.ListEvents(ctx, durable.EventQuery{
+			SessionID: stored.ID, AfterSequence: stored.LastSequence - 1, Limit: 1,
+		})
+		if eventErr != nil {
+			return durable.NewError(durable.CodeIndeterminate, op, "inspect maintained session turn boundary", eventErr)
+		}
+		recoveredIdle = len(page.Events) == 1 && page.Events[0].Sequence == stored.LastSequence && page.Events[0].Type == "turn.completed"
+	}
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
 	rt := s.RuntimeFor(stored.Runtime)
@@ -391,7 +405,7 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, generation.ProviderID,
-		"", diagnosticRedactions(manifest), !manifest.Interactive,
+		"", diagnosticRedactions(manifest), !manifest.Interactive && !containerLease.Maintain,
 		true, nativePolicy(manifest), manifest.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
@@ -401,9 +415,27 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 			return current.terminalReason()
 		},
 		func(transport nativeprotocol.Transport) {
-			current := s.setNativeTransport(sess.ID, transport)
+			var current *activeNativeSession
+			if containerLease.Maintain {
+				current = s.setMaintainedNativeTransport(
+					sess.ID, transport, containerLease.IdleTTL, manifest.EffectiveTimeout(), stored.UpdatedAt,
+					func(expiring *activeNativeSession) {
+						s.expireMaintainedNativeSession(sess.ID, generation.Number, expiring)
+					},
+					func(expiring *activeNativeSession) {
+						s.expireNativeSession(sess.ID, generation.Number, expiring, manifest.EffectiveTimeout())
+					},
+				)
+			} else {
+				current = s.setNativeTransport(sess.ID, transport)
+			}
 			active.Store(current)
-			s.armNativeTimeout(sess.ID, generation.Number, current, manifest.EffectiveTimeout(), generation.CreatedAt)
+			if recoveredIdle {
+				current.turnCompleted()
+			}
+			if !containerLease.Maintain {
+				s.armNativeTimeout(sess.ID, generation.Number, current, manifest.EffectiveTimeout(), generation.CreatedAt)
+			}
 		},
 		func(result runtime.ExitResult, streamErr error) {
 			current := active.Load()
@@ -415,6 +447,11 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 				reason = current.terminalReceiptReason()
 			}
 			s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
+		},
+		func() {
+			if current := active.Load(); current != nil {
+				current.turnCompleted()
+			}
 		},
 		classifyNativeExitFailure(rt, spawnConfig),
 	); err != nil {

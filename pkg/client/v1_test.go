@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -278,6 +279,55 @@ func TestClientUsesV1LifecycleControlsAndReceipt(t *testing.T) {
 		observed[0].Body["idempotency_key"] != "prompt-key" || observed[3].Path != "/api/v1/sessions/native/terminate" ||
 		observed[4].Body["prompt"] != "recover" || observed[5].Method != http.MethodGet {
 		t.Fatalf("observed requests = %+v", observed)
+	}
+}
+
+func TestClientTransfersPortableResumeState(t *testing.T) {
+	bundle := []byte("portable-bundle")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/sessions/native/resume-state":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{
+				"resume_state_id": "state-id", "source_session_id": "native", "provider_session_id": "provider-id",
+			}})
+		case "/api/v1/resume-states":
+			if request.Header.Get("Content-Type") != api.PortableResumeContentType {
+				t.Errorf("upload content type=%q", request.Header.Get("Content-Type"))
+			}
+			got, _ := io.ReadAll(request.Body)
+			if !bytes.Equal(got, bundle) {
+				t.Errorf("uploaded bundle=%q", got)
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"api_version": "v1", "data": map[string]any{"resume_state_id": "state-id"}})
+		case "/api/v1/resume-states/state-id":
+			writer.Header().Set("Content-Type", api.PortableResumeContentType)
+			_, _ = writer.Write(bundle)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL)
+	created, err := client.CreateResumeState(context.Background(), "native")
+	if err != nil || created.ProviderSessionID != "provider-id" {
+		t.Fatalf("created resume state=%+v err=%v", created, err)
+	}
+	latest, err := client.GetLatestResumeState(context.Background(), "native")
+	if err != nil || latest.ResumeStateID != "state-id" {
+		t.Fatalf("latest resume state=%+v err=%v", latest, err)
+	}
+	uploaded, err := client.UploadResumeState(context.Background(), bytes.NewReader(bundle))
+	if err != nil || uploaded.ResumeStateID != "state-id" {
+		t.Fatalf("uploaded resume state=%+v err=%v", uploaded, err)
+	}
+	download, err := client.DownloadResumeState(context.Background(), "state-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(download)
+	download.Close()
+	if err != nil || !bytes.Equal(got, bundle) {
+		t.Fatalf("downloaded resume state=%q err=%v", got, err)
 	}
 }
 

@@ -61,6 +61,27 @@ type EphemeralSessionReleaser interface {
 	ReleaseSession(ctx context.Context, sessionID string) error
 }
 
+// TerminalContainerReleaser removes only a terminal runtime container and its
+// per-launch materialization. Provider conversation volumes remain intact for
+// cold resume or portable export.
+type TerminalContainerReleaser interface {
+	ReleaseContainer(ctx context.Context, sessionID string) error
+}
+
+// StoppedContainerPruner removes only AgentD-labeled containers that Docker
+// proves have been stopped since before the supplied cutoff.
+type StoppedContainerPruner interface {
+	PruneStoppedContainers(ctx context.Context, finishedBefore time.Time) (int, error)
+}
+
+// PortableProviderState moves only the provider's resumable conversation
+// directory between a named volume and a caller-owned tar stream.
+type PortableProviderState interface {
+	ExportProviderState(ctx context.Context, agent, volumeName string, writer io.Writer) error
+	ImportProviderState(ctx context.Context, agent, volumeName string, reader io.Reader) error
+	RemoveProviderState(ctx context.Context, volumeName string) error
+}
+
 // EgressFailureInspector attributes a provider bootstrap failure to a denied
 // CONNECT host when policy-scoped diagnostics were enabled.
 type EgressFailureInspector interface {

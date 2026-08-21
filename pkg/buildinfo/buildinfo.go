@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const ReleaseVersion = "2.2.5"
+const ReleaseVersion = "2.3.0"
 
 // Version and Commit are set by release builds with -ldflags. Development
 // builds fall back to Go's VCS metadata for the commit when it is available.

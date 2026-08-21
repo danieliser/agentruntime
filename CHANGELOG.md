@@ -2,6 +2,35 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.3.0] — 2026-08-21
+
+- Native unrestricted Docker calls can declare a bounded maintained-container
+  lease. Each completed provider turn becomes an idle warm boundary, a new
+  idempotent `prompt` reuses the same provider transport without Docker startup,
+  every turn retains its own timeout, and idle expiry commits the logical
+  session's single immutable terminal receipt.
+- Terminal Docker containers and launch materialization are removed
+  immediately. A supervised background pass also removes only AgentD-labeled
+  containers Docker proves have been stopped beyond the cleanup grace period;
+  running/recent/unproven containers and retained provider volumes are never
+  pruned by this pass.
+- Added content-addressed portable provider-state archives and authenticated v1
+  export, latest, download, upload, and cold-import endpoints. Archives contain
+  a provenance manifest plus the provider conversation directory only—never
+  credentials, host mounts, working-directory contents, or execution-policy
+  authority. Imports require fresh mounts, work directory, and secret grants.
+- Portable archives are bounded and validated before import. Unsafe tar paths,
+  links/devices, cross-provider use, missing image provenance, active-turn
+  snapshots, local runtime use, and restricted-policy import/export fail
+  closed. Export/import helper containers have no network, no capabilities, and
+  no attached credential or workspace mounts.
+- The embedded live console exposes warm retention, idle expiry, automatic
+  portable snapshots, explicit state export, next-prompt vs mid-turn steering,
+  and full expandable native tool payloads. Active maintained sessions can be
+  reopened from dashboard history without cold continuation.
+- Capabilities and the Go client expose the maintained-container, cleanup, and
+  portable-resume contracts. No durable database migration is required.
+
 ## [2.2.5] — 2026-08-21
 
 - Runtime admission is supervised in the background. `/health` returns the

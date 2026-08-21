@@ -52,6 +52,9 @@ type Server struct {
 	activationMu  sync.Mutex
 	activations   int
 	progress      *activationProgressBroker
+	cleanupOnce   sync.Once
+	cleanupWG     sync.WaitGroup
+	resumeStates  *resumeStateStore
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -229,6 +232,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		activationCtx: activationCtx,
 		activationEnd: activationEnd,
 		progress:      newActivationProgressBroker(),
+		resumeStates:  newResumeStateStore(filepath.Join(dataDir, "resume-states")),
 	}
 	if len(cfgs) > 0 {
 		s.listenerScope = cfgs[0].ListenerScope
@@ -251,6 +255,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 // Start begins listening on the given address. Blocks until the server is stopped.
 func (s *Server) Start(addr string) error {
 	s.startRuntimeReadiness()
+	s.startStoppedContainerCleanup()
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           s.router,
@@ -286,6 +291,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.activationEnd()
 	s.waitForActivationDrain(ctx)
+	s.waitForStoppedContainerCleanup(ctx)
 
 	waitForSessionDrain(ctx, s.sessions)
 	preserveDocker := false

@@ -223,8 +223,21 @@ func (r *DockerRuntime) Cleanup(ctx context.Context) error {
 // session state after the durable terminal receipt is committed. Durable
 // events, results, receipts, and chat history live outside these paths.
 func (r *DockerRuntime) ReleaseSession(ctx context.Context, sessionID string) error {
+	var errs []error
+	if err := r.ReleaseContainer(ctx, sessionID); err != nil {
+		errs = append(errs, err)
+	}
+	if err := r.manager().ReleasePolicySession(ctx, sessionID); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// ReleaseContainer removes only terminal containers and per-launch
+// materialization. Named provider-state volumes are intentionally preserved.
+func (r *DockerRuntime) ReleaseContainer(ctx context.Context, sessionID string) error {
 	if !safeRuntimeSessionID(sessionID) {
-		return fmt.Errorf("release session: unsafe session ID")
+		return fmt.Errorf("release container: unsafe session ID")
 	}
 	var errs []error
 	output, err := dockerOutputHost(ctx, r.cfg.Host, "ps", "-aq", "--no-trunc", "--filter", fmt.Sprintf("label=%s=%s", dockerSessionLabelKey, sessionID))
@@ -237,18 +250,169 @@ func (r *DockerRuntime) ReleaseSession(ctx context.Context, sessionID string) er
 			}
 		}
 	}
-	if r.cfg.DataDir != "" {
-		for _, root := range []string{"claude-sessions", "codex-sessions"} {
-			path := filepath.Join(r.cfg.DataDir, root, sessionID)
-			if err := os.RemoveAll(path); err != nil {
-				errs = append(errs, fmt.Errorf("remove %s state: %w", root, err))
-			}
+	errs = append(errs, r.removeSessionMaterialization(sessionID)...)
+	return errors.Join(errs...)
+}
+
+// PruneStoppedContainers is the restart/self-healing cleanup path. It only
+// considers containers carrying AgentD's session label, never removes a
+// running container, and leaves named provider-state volumes untouched.
+func (r *DockerRuntime) PruneStoppedContainers(ctx context.Context, finishedBefore time.Time) (int, error) {
+	output, err := dockerOutputHost(ctx, r.cfg.Host, "ps", "-aq", "--no-trunc", "--filter", fmt.Sprintf("label=%s", dockerSessionLabelKey))
+	if err != nil {
+		return 0, fmt.Errorf("list AgentD containers: %w", err)
+	}
+	removed := 0
+	var errs []error
+	for _, containerID := range strings.Fields(output) {
+		raw, inspectErr := dockerOutputHost(ctx, r.cfg.Host, "inspect", containerID)
+		if inspectErr != nil {
+			errs = append(errs, fmt.Errorf("inspect AgentD container %q: %w", containerID, inspectErr))
+			continue
+		}
+		var inspected []struct {
+			ID     string `json:"Id"`
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+			State struct {
+				Running    bool   `json:"Running"`
+				FinishedAt string `json:"FinishedAt"`
+			} `json:"State"`
+		}
+		if json.Unmarshal([]byte(raw), &inspected) != nil || len(inspected) != 1 || inspected[0].ID == "" {
+			errs = append(errs, fmt.Errorf("inspect AgentD container %q returned invalid identity", containerID))
+			continue
+		}
+		sessionID := strings.TrimSpace(inspected[0].Config.Labels[dockerSessionLabelKey])
+		if inspected[0].State.Running || !safeRuntimeSessionID(sessionID) {
+			continue
+		}
+		finishedAt, parseErr := time.Parse(time.RFC3339Nano, inspected[0].State.FinishedAt)
+		if parseErr != nil || finishedAt.IsZero() || finishedAt.After(finishedBefore) {
+			continue
+		}
+		if _, removeErr := dockerOutputHost(ctx, r.cfg.Host, "rm", "-f", inspected[0].ID); removeErr != nil && !dockerObjectMissing(removeErr) {
+			errs = append(errs, fmt.Errorf("remove stopped AgentD container %q: %w", inspected[0].ID, removeErr))
+			continue
+		}
+		removed++
+		errs = append(errs, r.removeSessionMaterialization(sessionID)...)
+	}
+	return removed, errors.Join(errs...)
+}
+
+func (r *DockerRuntime) removeSessionMaterialization(sessionID string) []error {
+	if r.cfg.DataDir == "" {
+		return nil
+	}
+	var errs []error
+	for _, root := range []string{"claude-sessions", "codex-sessions"} {
+		path := filepath.Join(r.cfg.DataDir, root, sessionID)
+		if err := os.RemoveAll(path); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s state: %w", root, err))
 		}
 	}
-	if err := r.manager().ReleasePolicySession(ctx, sessionID); err != nil {
-		errs = append(errs, err)
+	return errs
+}
+
+// ExportProviderState streams only the provider conversation volume through a
+// networkless, read-only helper. Materialized credentials and host mounts are
+// not attached to the helper and therefore cannot enter the archive.
+func (r *DockerRuntime) ExportProviderState(ctx context.Context, agent, volumeName string, writer io.Writer) error {
+	if !safePortableVolumeName(volumeName) || writer == nil {
+		return fmt.Errorf("export provider state: safe volume name and writer are required")
 	}
-	return errors.Join(errs...)
+	if _, err := dockerOutputHost(ctx, r.cfg.Host, "volume", "inspect", volumeName); err != nil {
+		return fmt.Errorf("export provider state: volume %q is unavailable: %w", volumeName, err)
+	}
+	image, err := r.portableProviderImage(agent)
+	if err != nil {
+		return err
+	}
+	cmd := r.dockerCmd(ctx,
+		"run", "--rm", "--read-only", "--network", "none",
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+		"--user", "agent", "-v", volumeName+":/state:ro",
+		"--entrypoint", "tar", image, "-C", "/state", "-cf", "-", ".",
+	)
+	var stderr bytes.Buffer
+	cmd.Stdout = writer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("export provider state: %w", dockerCommandError(err, stderr.String()))
+	}
+	return nil
+}
+
+// ImportProviderState creates a fresh named volume and extracts a prevalidated
+// tar stream through a networkless helper. The caller must remove the volume
+// if later admission fails after a successful import.
+func (r *DockerRuntime) ImportProviderState(ctx context.Context, agent, volumeName string, reader io.Reader) error {
+	if !safePortableVolumeName(volumeName) || reader == nil {
+		return fmt.Errorf("import provider state: safe volume name and reader are required")
+	}
+	image, err := r.portableProviderImage(agent)
+	if err != nil {
+		return err
+	}
+	if err := r.CreateNamedVolume(ctx, volumeName, map[string]string{"agentruntime.portable_state": "true"}); err != nil {
+		return fmt.Errorf("import provider state: %w", err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = r.RemoveSessionVolume(context.Background(), volumeName)
+		}
+	}()
+	cmd := r.dockerCmd(ctx,
+		"run", "--rm", "--network", "none",
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+		"--user", "root", "-i", "-v", volumeName+":/state:rw",
+		"--entrypoint", "tar", image, "-C", "/state", "-xf", "-",
+	)
+	var stderr bytes.Buffer
+	cmd.Stdin = reader
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("import provider state: %w", dockerCommandError(err, stderr.String()))
+	}
+	if err := r.initVolumePermissions(ctx, image, []apischema.Mount{{Host: volumeName, Container: "/state", Mode: "rw", Type: "volume"}}); err != nil {
+		return fmt.Errorf("import provider state permissions: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
+func (r *DockerRuntime) RemoveProviderState(ctx context.Context, volumeName string) error {
+	if !safePortableVolumeName(volumeName) {
+		return fmt.Errorf("remove provider state: unsafe volume name")
+	}
+	return r.RemoveSessionVolume(ctx, volumeName)
+}
+
+func (r *DockerRuntime) portableProviderImage(agent string) (string, error) {
+	if agent != "codex" && agent != "claude" {
+		return "", fmt.Errorf("portable provider state does not support agent %q", agent)
+	}
+	image := resolvedDockerImage(r.cfg, SpawnConfig{Request: &apischema.SessionRequest{Agent: agent}})
+	if image == "" {
+		return "", fmt.Errorf("portable provider state has no configured image for agent %q", agent)
+	}
+	return image, nil
+}
+
+func safePortableVolumeName(name string) bool {
+	if !strings.HasPrefix(name, "agentruntime-vol-") || len(name) > 160 {
+		return false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func safeRuntimeSessionID(value string) bool {

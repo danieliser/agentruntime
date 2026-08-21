@@ -44,6 +44,9 @@ type v1SessionData struct {
 	ProviderSessionID   string               `json:"provider_session_id,omitempty"`
 	Resumable           bool                 `json:"resumable"`
 	ResumeSourceSession string               `json:"resume_source_session_id,omitempty"`
+	ResumeStateID       string               `json:"resume_state_id,omitempty"`
+	ContainerLease      *ContainerLease      `json:"container_lease,omitempty"`
+	NextInputKind       string               `json:"next_input_kind,omitempty"`
 }
 
 type v1TerminalReceiptData struct {
@@ -346,8 +349,10 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 	policy, policyHash := manifestExecutionPolicy(stored.RequestManifest)
 	structuredOutput, outputSchemaHash := structuredOutputFromManifest(stored.RequestManifest)
 	var continuation struct {
-		ResumeSession  string `json:"resume_session"`
-		PersistSession bool   `json:"persist_session"`
+		ResumeSession  string          `json:"resume_session"`
+		ResumeStateID  string          `json:"resume_state_id"`
+		PersistSession bool            `json:"persist_session"`
+		ContainerLease *ContainerLease `json:"container_lease"`
 	}
 	_ = json.Unmarshal(stored.RequestManifest, &continuation)
 	providerID := ""
@@ -360,6 +365,13 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 	if stored.Runtime == "docker" {
 		resumable = resumable && continuation.PersistSession
 	}
+	nextInputKind := ""
+	if !stored.State.Terminal() && continuation.ContainerLease != nil && continuation.ContainerLease.Mode == "maintain" {
+		nextInputKind = string(nativeprotocol.InputSteer)
+		if active := s.nativeSession(stored.ID); active != nil && active.lease != nil && active.lease.IsIdle() {
+			nextInputKind = string(nativeprotocol.InputPrompt)
+		}
+	}
 	return v1SessionData{
 		SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
 		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
@@ -369,6 +381,8 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 		ExecutionPolicy: policy, ExecutionPolicyHash: policyHash,
 		StructuredOutput: structuredOutput, OutputSchemaHash: outputSchemaHash,
 		ProviderSessionID: providerID, Resumable: resumable, ResumeSourceSession: continuation.ResumeSession,
+		ResumeStateID: continuation.ResumeStateID, ContainerLease: continuation.ContainerLease,
+		NextInputKind: nextInputKind,
 	}
 }
 
@@ -532,7 +546,34 @@ func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.Ex
 		log.Printf("[session %s] durable finalization failed: %v", sessionID, err)
 		return
 	}
+	if manifestRequestsPortableResume(stored.RequestManifest) {
+		exportCtx, exportCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if id, _, exportErr := s.createPortableResumeState(exportCtx, stored.ID); exportErr != nil {
+			log.Printf("[session %s] automatic portable resume snapshot failed: %v", sessionID, exportErr)
+		} else {
+			log.Printf("[session %s] automatic portable resume snapshot created: %s", sessionID, id)
+		}
+		exportCancel()
+	}
 	s.releaseEphemeralSession(stored)
+	s.releaseTerminalContainer(stored)
+}
+
+func (s *Server) releaseTerminalContainer(stored durable.Session) {
+	if stored.Runtime != "docker" {
+		return
+	}
+	rt := s.RuntimeFor(stored.Runtime)
+	releaser, ok := rt.(runtime.TerminalContainerReleaser)
+	if !ok {
+		log.Printf("[session %s] runtime %s cannot release its terminal container", stored.ID, stored.Runtime)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := releaser.ReleaseContainer(ctx, stored.ID); err != nil {
+		log.Printf("[session %s] terminal container cleanup failed: %v", stored.ID, err)
+	}
 }
 
 func (s *Server) releaseEphemeralSession(stored durable.Session) {

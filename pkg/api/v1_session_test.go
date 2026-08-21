@@ -588,7 +588,7 @@ func TestV1ClaudeOutputUsesDurableNativeLedger(t *testing.T) {
 		t.Fatalf("first native raw = %q", page.Events[0].Raw)
 	}
 	generation, err := store.GetGeneration(context.Background(), created.Data.SessionID, 1)
-	if err != nil || generation.ProviderID != "claude-fixture-session" || generation.ImageDigest != "sha256:test-image" || generation.SandboxProfile != "test-native-v1" {
+	if err != nil || generation.ProviderID != "claude-fixture-session" || generation.ImageDigest != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || generation.SandboxProfile != "test-native-v1" {
 		t.Fatalf("native provider identity = %+v err=%v", generation, err)
 	}
 	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
@@ -925,6 +925,71 @@ func TestV1NativeInputAndInterruptUseActiveProviderTransport(t *testing.T) {
 		t.Fatalf("native interrupt status=%d", interruptResponse.StatusCode)
 	}
 	waitForDurableTerminal(t, store, created.Data.SessionID)
+}
+
+func TestV1MaintainedDockerSessionAcceptsWarmPromptAndExpiresIdle(t *testing.T) {
+	store := durablememory.New()
+	registry := agent.NewRegistry()
+	registry.Register(&interactiveCodexFixtureAgent{})
+	manager := session.NewManager()
+	rt := &portableImportTestRuntime{
+		Runtime:     runtime.NewLocalRuntime(),
+		exportState: testProviderStateTar(t, "rollout/thread.jsonl", []byte("warm portable state")),
+	}
+	server := NewServer(manager, rt, registry, ServerConfig{
+		DataDir: t.TempDir(), LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	createdResponse := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "job-maintained-warm", "agent": "codex", "runtime": "docker", "prompt": "first",
+		"container_lease": map[string]any{"mode": "maintain", "idle_ttl": "150ms", "portable_resume": true},
+	})
+	defer createdResponse.Body.Close()
+	var created struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, createdResponse.Body, &created)
+	if createdResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create maintained session status=%d", createdResponse.StatusCode)
+	}
+	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 1)
+	stored, err := store.GetSession(context.Background(), created.Data.SessionID)
+	if err != nil || stored.State != durable.StateRunning {
+		t.Fatalf("maintained session after first turn=%+v err=%v", stored, err)
+	}
+
+	body := map[string]any{"idempotency_key": "maintained-second", "kind": "prompt", "text": "second"}
+	response := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("warm prompt status=%d", response.StatusCode)
+	}
+	repeat := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", body)
+	repeat.Body.Close()
+	if repeat.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent warm prompt status=%d", repeat.StatusCode)
+	}
+	waitForEventType(t, store, created.Data.SessionID, "turn.completed", 2)
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	receipt, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || receipt.State != durable.StateCompleted || receipt.Reason != "completed" {
+		t.Fatalf("idle-expiry receipt=%+v err=%v", receipt, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, manifest, latestErr := server.resumeStates.Latest(created.Data.SessionID)
+		if latestErr == nil {
+			if manifest.ProviderSessionID != "codex-controls-thread" {
+				t.Fatalf("automatic portable state=%+v", manifest)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("automatic portable state was not created: %v", latestErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestV1CancelCommitsCancelledTerminalReceiptIdempotently(t *testing.T) {
@@ -1553,8 +1618,10 @@ func (counting *countingRuntime) Spawn(ctx context.Context, config runtime.Spawn
 
 type imageIdentifiedTestHandle struct{ runtime.ProcessHandle }
 
-func (*imageIdentifiedTestHandle) RuntimeImageDigest() string { return "sha256:test-image" }
-func (*imageIdentifiedTestHandle) NativeStdio() bool          { return true }
+func (*imageIdentifiedTestHandle) RuntimeImageDigest() string {
+	return "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+func (*imageIdentifiedTestHandle) NativeStdio() bool { return true }
 
 func (counting *countingRuntime) Recover(ctx context.Context) ([]runtime.ProcessHandle, error) {
 	return counting.Runtime.Recover(ctx)

@@ -90,6 +90,11 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored structured-output contract is no longer enforceable", err))
 		return
 	}
+	containerLease, err := resolveContainerLease(request, rt.Name(), true)
+	if err != nil {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored container lease is no longer enforceable", err))
+		return
+	}
 	ag := s.agents.Get(stored.Agent)
 	if ag == nil {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "stored agent is unavailable", nil))
@@ -177,7 +182,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, provider, generation.Number, previous.ProviderID, request.Prompt,
-		diagnosticRedactions(request), !request.Interactive, false, nativePolicy(request), request.StructuredOutput, s.eventBroker,
+		diagnosticRedactions(request), !request.Interactive && !containerLease.Maintain, false, nativePolicy(request), request.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {
@@ -186,9 +191,24 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 			return current.terminalReason()
 		},
 		func(transport nativeprotocol.Transport) {
-			current := s.setNativeTransport(stored.ID, transport)
+			var current *activeNativeSession
+			if containerLease.Maintain {
+				current = s.setMaintainedNativeTransport(
+					stored.ID, transport, containerLease.IdleTTL, request.EffectiveTimeout(), generation.CreatedAt,
+					func(expiring *activeNativeSession) {
+						s.expireMaintainedNativeSession(stored.ID, generation.Number, expiring)
+					},
+					func(expiring *activeNativeSession) {
+						s.expireNativeSession(stored.ID, generation.Number, expiring, request.EffectiveTimeout())
+					},
+				)
+			} else {
+				current = s.setNativeTransport(stored.ID, transport)
+			}
 			active.Store(current)
-			s.armNativeTimeout(stored.ID, generation.Number, current, request.EffectiveTimeout(), generation.CreatedAt)
+			if !containerLease.Maintain {
+				s.armNativeTimeout(stored.ID, generation.Number, current, request.EffectiveTimeout(), generation.CreatedAt)
+			}
 		},
 		func(result runtime.ExitResult, streamErr error) {
 			current := active.Load()
@@ -200,6 +220,11 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 				reason = current.terminalReceiptReason()
 			}
 			s.finalizeV1SessionClassified(stored.ID, result, override, reason, streamErr)
+		},
+		func() {
+			if current := active.Load(); current != nil {
+				current.turnCompleted()
+			}
 		},
 		classifyNativeExitFailure(rt, spawnConfig),
 	); err != nil {

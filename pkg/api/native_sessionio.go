@@ -37,6 +37,7 @@ func AttachNativeSessionIO(
 	terminalReason func() string,
 	onAttach func(nativeprotocol.Transport),
 	onExit func(runtime.ExitResult, error),
+	onTurnCompleted func(),
 	failureClassifiers ...func(runtime.ExitResult) error,
 ) error {
 	const op = "attach_native_session_io"
@@ -132,9 +133,14 @@ func AttachNativeSessionIO(
 					}
 					if record.Stream == nativeprotocol.StreamProviderStdout {
 						parseAndTrackEvent(sess, record.Raw)
-						if stopOnTurnCompletion && event.Type == "turn.completed" {
+						if event.Type == "turn.completed" {
 							turnCompleted = true
-							go func() { _ = transport.Close() }()
+							if onTurnCompleted != nil {
+								onTurnCompleted()
+							}
+							if stopOnTurnCompletion {
+								go func() { _ = transport.Close() }()
+							}
 						}
 					}
 				}

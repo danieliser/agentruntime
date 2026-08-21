@@ -30,6 +30,8 @@ type v1InterruptRequest struct {
 
 type activeNativeSession struct {
 	transport nativeprotocol.Transport
+	lease     *nativeContainerLease
+	controlMu sync.Mutex
 
 	mu                    sync.Mutex
 	terminalRequested     durable.SessionState
@@ -72,6 +74,10 @@ func (active *activeNativeSession) beginTimeout() bool {
 
 func (active *activeNativeSession) beginTerminate() bool {
 	return active.beginTerminal(durable.StateCancelled, "terminated")
+}
+
+func (active *activeNativeSession) beginIdleCompletion() bool {
+	return active.beginTerminal(durable.StateCompleted, "completed")
 }
 
 func (active *activeNativeSession) beginTerminal(state durable.SessionState, reason string) bool {
@@ -143,6 +149,9 @@ func (active *activeNativeSession) terminalState() durable.SessionState {
 }
 
 func (active *activeNativeSession) markFinished() {
+	if active.lease != nil {
+		active.lease.Close()
+	}
 	active.finishedOnce.Do(func() { close(active.finished) })
 }
 
@@ -154,12 +163,51 @@ func (s *Server) setNativeTransport(sessionID string, transport nativeprotocol.T
 	return active
 }
 
+func (s *Server) setMaintainedNativeTransport(
+	sessionID string,
+	transport nativeprotocol.Transport,
+	idleTTL time.Duration,
+	turnTTL time.Duration,
+	startedAt time.Time,
+	idleExpire func(*activeNativeSession),
+	turnExpire func(*activeNativeSession),
+) *activeNativeSession {
+	active := newActiveNativeSession(transport)
+	active.lease = newNativeContainerLease(idleTTL, func() { idleExpire(active) })
+	active.lease.ConfigureTurnTimeout(turnTTL, startedAt, func() { turnExpire(active) })
+	s.nativeMu.Lock()
+	s.native[sessionID] = active
+	s.nativeMu.Unlock()
+	return active
+}
+
 func (s *Server) clearNativeTransport(sessionID string, active *activeNativeSession) {
+	if active != nil && active.lease != nil {
+		active.lease.Close()
+	}
 	s.nativeMu.Lock()
 	if current := s.native[sessionID]; current == active {
 		delete(s.native, sessionID)
 	}
 	s.nativeMu.Unlock()
+}
+
+func (s *Server) expireMaintainedNativeSession(sessionID string, generation int64, active *activeNativeSession) {
+	if active == nil || !active.beginIdleCompletion() {
+		return
+	}
+	if err := active.transport.Close(); err != nil {
+		active.settleTerminal(durable.StateIndeterminate)
+		log.Printf("[session %s] idle lease g%d termination could not be confirmed: %v", sessionID, generation, err)
+		return
+	}
+	active.settleTerminal(durable.StateCompleted)
+}
+
+func (active *activeNativeSession) turnCompleted() {
+	if active != nil && active.lease != nil {
+		active.lease.TurnCompleted()
+	}
 }
 
 func (s *Server) nativeSession(sessionID string) *activeNativeSession {
@@ -272,17 +320,43 @@ func (s *Server) SendSessionInput(ctx context.Context, sessionID, idempotencyKey
 
 func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey string, kind nativeprotocol.InputKind, text string) (bool, error) {
 	const op = "send_v1_native_input"
-	control, alreadyDispatched, err := s.beginNativeControlContext(ctx, sessionID, idempotencyKey, string(kind), map[string]any{"text": text})
-	if err != nil || alreadyDispatched {
-		return alreadyDispatched, err
-	}
 	active := s.nativeSession(sessionID)
 	if active == nil {
-		return false, durable.NewError(durable.CodeIndeterminate, op, "control intent is durable but the native transport is unavailable", nil)
+		return false, durable.NewError(durable.CodeInvalidState, op, "native transport is unavailable", nil)
+	}
+	active.controlMu.Lock()
+	defer active.controlMu.Unlock()
+	control, err := s.nativeControlParamsContext(ctx, sessionID, idempotencyKey, string(kind), map[string]any{"text": text})
+	if err != nil {
+		return false, err
+	}
+	probe, err := s.eventBroker.ProbeControl(ctx, control)
+	if err != nil {
+		return false, err
+	}
+	if probe.AlreadyDispatched {
+		return true, nil
+	}
+	leaseClaimed := false
+	if active.lease != nil {
+		if err := active.lease.BeginInput(string(kind)); err != nil {
+			return false, durable.NewError(durable.CodeInvalidState, op, err.Error(), nil)
+		}
+		leaseClaimed = kind == nativeprotocol.InputPrompt
+	}
+	begin, err := s.eventBroker.BeginControl(ctx, control)
+	if err != nil || begin.AlreadyDispatched {
+		if leaseClaimed {
+			active.lease.AbortPrompt()
+		}
+		return begin.AlreadyDispatched, err
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := active.transport.Send(sendCtx, nativeprotocol.Input{Kind: kind, Text: text}); err != nil {
+		if leaseClaimed {
+			active.lease.AbortPrompt()
+		}
 		return false, durable.NewError(durable.CodeIndeterminate, op, "send provider input", err)
 	}
 	if _, err := s.eventBroker.CompleteControl(sendCtx, control); err != nil {
@@ -431,28 +505,36 @@ func (s *Server) beginNativeControl(c *gin.Context, idempotencyKey, kind string,
 }
 
 func (s *Server) beginNativeControlContext(ctx context.Context, sessionID, idempotencyKey, kind string, command any) (eventstream.ControlParams, bool, error) {
-	const op = "begin_v1_native_control"
-	if s.durableStore == nil || s.eventBroker == nil {
-		return eventstream.ControlParams{}, false, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
-	}
-	stored, err := s.durableStore.GetSession(ctx, sessionID)
+	params, err := s.nativeControlParamsContext(ctx, sessionID, idempotencyKey, kind, command)
 	if err != nil {
 		return eventstream.ControlParams{}, false, err
-	}
-	if stored.ActiveGeneration < 1 {
-		return eventstream.ControlParams{}, false, durable.NewError(durable.CodeInvalidState, op, "session has no runtime generation", nil)
-	}
-	payload, err := json.Marshal(command)
-	if err != nil {
-		return eventstream.ControlParams{}, false, durable.NewError(durable.CodeInvalidArgument, op, "encode control command", err)
-	}
-	params := eventstream.ControlParams{
-		SessionID: stored.ID, Generation: stored.ActiveGeneration, IdempotencyKey: idempotencyKey,
-		Timestamp: time.Now().UTC(), Kind: kind, Payload: payload,
 	}
 	begin, err := s.eventBroker.BeginControl(ctx, params)
 	if err != nil {
 		return eventstream.ControlParams{}, false, err
 	}
 	return params, begin.AlreadyDispatched, nil
+}
+
+func (s *Server) nativeControlParamsContext(ctx context.Context, sessionID, idempotencyKey, kind string, command any) (eventstream.ControlParams, error) {
+	const op = "begin_v1_native_control"
+	if s.durableStore == nil || s.eventBroker == nil {
+		return eventstream.ControlParams{}, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
+	}
+	stored, err := s.durableStore.GetSession(ctx, sessionID)
+	if err != nil {
+		return eventstream.ControlParams{}, err
+	}
+	if stored.ActiveGeneration < 1 {
+		return eventstream.ControlParams{}, durable.NewError(durable.CodeInvalidState, op, "session has no runtime generation", nil)
+	}
+	payload, err := json.Marshal(command)
+	if err != nil {
+		return eventstream.ControlParams{}, durable.NewError(durable.CodeInvalidArgument, op, "encode control command", err)
+	}
+	params := eventstream.ControlParams{
+		SessionID: stored.ID, Generation: stored.ActiveGeneration, IdempotencyKey: idempotencyKey,
+		Timestamp: time.Now().UTC(), Kind: kind, Payload: payload,
+	}
+	return params, nil
 }

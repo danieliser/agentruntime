@@ -9,6 +9,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/observer"
+	"github.com/danieliser/agentruntime/pkg/runtime"
 )
 
 type replayCapabilities struct {
@@ -82,6 +83,16 @@ type resourceLimitCapabilities struct {
 	BreachCode  string         `json:"breach_code"`
 }
 
+type containerLifecycleCapabilities struct {
+	MaintainedDocker     bool   `json:"maintained_docker"`
+	MaximumIdleTTL       string `json:"maximum_idle_ttl"`
+	StoppedCleanup       bool   `json:"stopped_cleanup"`
+	StoppedCleanupGrace  string `json:"stopped_cleanup_grace"`
+	PortableResume       bool   `json:"portable_resume"`
+	ResumeStateSchema    string `json:"resume_state_schema"`
+	ResumeStateMediaType string `json:"resume_state_media_type"`
+}
+
 type v1Capabilities struct {
 	AgentDVersion           string                         `json:"agentd_version"`
 	CommitHash              string                         `json:"commit_hash"`
@@ -103,15 +114,20 @@ type v1Capabilities struct {
 	CredentialGrants        []credentialGrantCapabilities  `json:"credential_grants"`
 	EgressPolicy            egressPolicyCapabilities       `json:"egress_policy"`
 	ResourceLimits          resourceLimitCapabilities      `json:"resource_limits"`
+	ContainerLifecycle      containerLifecycleCapabilities `json:"container_lifecycle"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
 	runtimes := make([]string, 0, len(s.runtimes))
 	dockerReconstruction := false
+	portableResume := false
+	stoppedCleanup := false
 	for name := range s.runtimes {
 		runtimes = append(runtimes, name)
 		if name == "docker" {
 			dockerReconstruction = true
+			_, portableResume = s.runtimes[name].(runtime.PortableProviderState)
+			_, stoppedCleanup = s.runtimes[name].(runtime.StoppedContainerPruner)
 		}
 	}
 	sort.Strings(runtimes)
@@ -150,7 +166,7 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, CommitHash: s.commitHash, APIVersions: []string{"v1"},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{LegacyExecutionPolicyVersion, ExecutionPolicyVersion}, NativeProviders: providers,
-		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "interrupt", "cancel", "terminate", "resume", "receipt"},
+		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "interrupt", "cancel", "terminate", "resume", "receipt", "maintain", "resume_state_export", "resume_state_import"},
 		Runtimes:          runtimes, Replay: replayCapabilities{
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
 		},
@@ -182,6 +198,13 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		ResourceLimits: resourceLimitCapabilities{
 			PolicyField: "resources", Defaults: DefaultResourceLimits, Minimums: MinimumResourceLimits, Maximums: MaximumResourceLimits,
 			BreachCode: string(durable.CodeResourceLimitExceeded),
+		},
+		ContainerLifecycle: containerLifecycleCapabilities{
+			MaintainedDocker: dockerReconstruction && durableReplay,
+			MaximumIdleTTL:   maxContainerLeaseIdleTTL.String(),
+			StoppedCleanup:   stoppedCleanup, StoppedCleanupGrace: defaultStoppedContainerGrace.String(),
+			PortableResume: portableResume && durableReplay, ResumeStateSchema: portableResumeSchemaVersion,
+			ResumeStateMediaType: PortableResumeContentType,
 		},
 	}})
 }

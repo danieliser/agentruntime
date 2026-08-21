@@ -37,6 +37,9 @@ type DurableSession struct {
 	ProviderSessionID   string                `json:"provider_session_id,omitempty"`
 	Resumable           bool                  `json:"resumable"`
 	ResumeSourceSession string                `json:"resume_source_session_id,omitempty"`
+	ResumeStateID       string                `json:"resume_state_id,omitempty"`
+	ContainerLease      *api.ContainerLease   `json:"container_lease,omitempty"`
+	NextInputKind       string                `json:"next_input_kind,omitempty"`
 }
 
 // StructuredResult is the exact validated final JSON artifact and its durable
@@ -117,6 +120,16 @@ type ResourceLimitCapabilities struct {
 	BreachCode  string             `json:"breach_code"`
 }
 
+type ContainerLifecycleCapabilities struct {
+	MaintainedDocker     bool   `json:"maintained_docker"`
+	MaximumIdleTTL       string `json:"maximum_idle_ttl"`
+	StoppedCleanup       bool   `json:"stopped_cleanup"`
+	StoppedCleanupGrace  string `json:"stopped_cleanup_grace"`
+	PortableResume       bool   `json:"portable_resume"`
+	ResumeStateSchema    string `json:"resume_state_schema"`
+	ResumeStateMediaType string `json:"resume_state_media_type"`
+}
+
 // Capabilities is the v1 compatibility handshake a caller checks before
 // submitting paid work.
 type Capabilities struct {
@@ -140,6 +153,7 @@ type Capabilities struct {
 	CredentialGrants        []CredentialGrantCapabilities  `json:"credential_grants"`
 	EgressPolicy            EgressPolicyCapabilities       `json:"egress_policy"`
 	ResourceLimits          ResourceLimitCapabilities      `json:"resource_limits"`
+	ContainerLifecycle      ContainerLifecycleCapabilities `json:"container_lifecycle"`
 }
 
 type PluginStatus struct {
@@ -157,6 +171,20 @@ type TraceLink struct {
 	SessionID            string `json:"session_id"`
 	TraceID              string `json:"trace_id"`
 	AcknowledgedSequence int64  `json:"acknowledged_sequence"`
+}
+
+type ResumeState struct {
+	ResumeStateID       string    `json:"resume_state_id"`
+	SchemaVersion       string    `json:"schema_version"`
+	SourceSessionID     string    `json:"source_session_id"`
+	Agent               string    `json:"agent"`
+	ProviderSessionID   string    `json:"provider_session_id"`
+	ProviderStateTarget string    `json:"provider_state_target"`
+	ProviderStateSHA256 string    `json:"provider_state_sha256"`
+	ImageReference      string    `json:"image_reference"`
+	ImageDigest         string    `json:"image_digest"`
+	CreatedAt           time.Time `json:"created_at"`
+	DownloadURL         string    `json:"download_url"`
 }
 
 // Event is one immutable v1 AgentD event with decoded exact raw bytes.
@@ -328,6 +356,64 @@ func (c *Client) GetTraceLinks(ctx context.Context, sessionID string) ([]TraceLi
 		envelope.Data = []TraceLink{}
 	}
 	return envelope.Data, nil
+}
+
+func (c *Client) CreateResumeState(ctx context.Context, sessionID string) (*ResumeState, error) {
+	return c.resumeStateJSON(ctx, http.MethodPost, v1SessionPath(sessionID)+"/resume-state", nil)
+}
+
+func (c *Client) GetLatestResumeState(ctx context.Context, sessionID string) (*ResumeState, error) {
+	return c.resumeStateJSON(ctx, http.MethodGet, v1SessionPath(sessionID)+"/resume-state", nil)
+}
+
+func (c *Client) UploadResumeState(ctx context.Context, reader io.Reader) (*ResumeState, error) {
+	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/resume-states", reader)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", api.PortableResumeContentType)
+	return c.doResumeStateJSON(request)
+}
+
+// DownloadResumeState returns the authenticated portable archive stream. The
+// caller owns and must close the returned body.
+func (c *Client) DownloadResumeState(ctx context.Context, resumeStateID string) (io.ReadCloser, error) {
+	request, err := c.newRequest(ctx, http.MethodGet, "/api/v1/resume-states/"+url.PathEscape(resumeStateID), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", api.PortableResumeContentType)
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkResponse(response); err != nil {
+		response.Body.Close()
+		return nil, err
+	}
+	if contentType := strings.Split(response.Header.Get("Content-Type"), ";")[0]; contentType != api.PortableResumeContentType {
+		response.Body.Close()
+		return nil, fmt.Errorf("portable resume download returned content type %q", contentType)
+	}
+	return response.Body, nil
+}
+
+func (c *Client) resumeStateJSON(ctx context.Context, method, path string, body io.Reader) (*ResumeState, error) {
+	request, err := c.newRequest(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	return c.doResumeStateJSON(request)
+}
+
+func (c *Client) doResumeStateJSON(request *http.Request) (*ResumeState, error) {
+	var envelope struct {
+		Data ResumeState `json:"data"`
+	}
+	if err := c.doJSON(request, &envelope); err != nil {
+		return nil, err
+	}
+	return &envelope.Data, nil
 }
 
 // GetTerminalReceipt returns the immutable terminal proof for a session.

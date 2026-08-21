@@ -3,6 +3,8 @@ const consoleState = {
     sequence: 0,
     ws: null,
     terminal: true,
+	maintained: false,
+	turnIdle: false,
     eventCount: 0,
 	resumeID: null,
 	resumable: false,
@@ -52,11 +54,15 @@ function bindConsoleControls() {
     document.getElementById('console-agent').addEventListener('change', updateModelControls);
     document.getElementById('console-model').addEventListener('change', updateModelSpecificControls);
     document.getElementById('console-restricted').addEventListener('change', updateRestrictedControls);
+	document.getElementById('console-runtime').addEventListener('change', updateLifecycleControls);
+	document.getElementById('console-maintain').addEventListener('change', updateLifecycleControls);
     document.getElementById('console-auth-file').addEventListener('change', loadConsoleAuthFile);
     document.getElementById('console-form').addEventListener('submit', launchConsoleSession);
     document.getElementById('console-steer-form').addEventListener('submit', steerConsoleSession);
     document.getElementById('console-interrupt').addEventListener('click', () => controlConsoleSession('interrupt'));
     document.getElementById('console-cancel').addEventListener('click', () => controlConsoleSession('cancel'));
+	document.getElementById('console-export').addEventListener('click', exportConsoleResumeState);
+	updateLifecycleControls();
 }
 
 function updateModelControls() {
@@ -110,6 +116,20 @@ function updateRestrictedControls() {
     document.querySelectorAll('.restricted-field').forEach((field) => {
         field.hidden = !restricted;
     });
+	updateLifecycleControls();
+}
+
+function updateLifecycleControls() {
+	const docker = document.getElementById('console-runtime').value === 'docker';
+	const restricted = document.getElementById('console-restricted').checked;
+	const maintain = document.getElementById('console-maintain');
+	maintain.disabled = !docker || restricted;
+	if (maintain.disabled) maintain.checked = false;
+	const enabled = maintain.checked && !maintain.disabled;
+	document.querySelectorAll('.lifecycle-field').forEach((field) => { field.hidden = !enabled; });
+	const portable = document.getElementById('console-portable');
+	portable.disabled = !docker || restricted;
+	if (portable.disabled) portable.checked = false;
 }
 
 async function loadConsoleAuthFile(event) {
@@ -188,6 +208,15 @@ function buildConsoleRequest() {
         context: document.getElementById('console-clean').checked ? 'clean' : '',
         auto_discover: !document.getElementById('console-clean').checked,
     };
+	const maintain = document.getElementById('console-maintain').checked;
+	const portable = document.getElementById('console-portable').checked;
+	if (maintain || portable) {
+		request.container_lease = {
+			mode: maintain ? 'maintain' : 'delete',
+			portable_resume: portable,
+		};
+		if (maintain) request.container_lease.idle_ttl = `${document.getElementById('console-idle-ttl').value}s`;
+	}
     if (workDir) request.work_dir = workDir;
     if (tracePolicy !== 'off') request.trace = {plugin: 'opentraces', policy: tracePolicy};
     if (agent === 'claude') {
@@ -195,7 +224,10 @@ function buildConsoleRequest() {
     } else {
         request.codex = {approval_mode: 'full-auto'};
     }
-    if (schemaText) request.structured_output = {json_schema: JSON.parse(schemaText)};
+	if (schemaText) {
+		if (maintain) throw new Error('Structured output currently requires a one-turn container.');
+		request.structured_output = {json_schema: JSON.parse(schemaText)};
+	}
     if (restricted) addRestrictedPolicy(request);
     return request;
 }
@@ -224,6 +256,8 @@ function resetConsoleStream() {
 	consoleState.resumable = false;
     consoleState.runtime = null;
     consoleState.terminal = false;
+	consoleState.maintained = false;
+	consoleState.turnIdle = false;
     document.getElementById('console-output').textContent = '';
     document.getElementById('console-activity').replaceChildren();
     document.getElementById('console-event-count').textContent = '0 events';
@@ -233,6 +267,8 @@ function resetConsoleStream() {
 function renderConsoleSession(session) {
 	consoleState.runtime = session.runtime;
 	consoleState.resumable = Boolean(session.resumable);
+	consoleState.maintained = session.container_lease?.mode === 'maintain';
+	if (session.next_input_kind) consoleState.turnIdle = session.next_input_kind === 'prompt';
 	consoleState.resumeID = session.provider_session_id || consoleState.resumeID;
     const shortID = session.session_id.slice(0, 8);
     document.getElementById('console-session-title').textContent = `${session.agent} · ${shortID}`;
@@ -243,7 +279,7 @@ function renderConsoleSession(session) {
         pill.textContent = text;
         document.getElementById('console-session-strip').appendChild(pill);
     }
-    setConsoleControls(!consoleState.terminal);
+	setConsoleControls(!consoleState.terminal && !(consoleState.maintained && consoleState.turnIdle));
 }
 
 async function resumeConsoleSession(session) {
@@ -251,7 +287,9 @@ async function resumeConsoleSession(session) {
     consoleState.sessionId = session.session_id;
     consoleState.sequence = session.last_sequence || 0;
     consoleState.eventCount = session.last_sequence || 0;
-	consoleState.terminal = true;
+	consoleState.terminal = terminalStates.has(session.state);
+	consoleState.maintained = session.container_lease?.mode === 'maintain';
+	consoleState.turnIdle = session.next_input_kind === 'prompt';
 	consoleState.resumeID = null;
 	consoleState.resumable = Boolean(session.resumable);
     document.getElementById('console-agent').value = session.agent;
@@ -267,6 +305,12 @@ async function resumeConsoleSession(session) {
     setConsoleConnection('Loading history…');
     closeDetailPanel();
     switchTab('console');
+	if (!consoleState.terminal && consoleState.maintained) {
+		setConsoleConnection(consoleState.turnIdle ? 'Warm · ready' : 'Streaming', false, true);
+		setConsoleControls(!consoleState.turnIdle);
+		connectConsoleStream();
+		return;
+	}
 	if (!session.resumable) {
 		setConsoleConnection('Resume unavailable', true);
 		appendConsoleActivity('error', 'This session does not have retained provider state.');
@@ -366,7 +410,10 @@ function handleConsoleFrame(event) {
     consoleState.eventCount += 1;
     document.getElementById('console-event-count').textContent = `${consoleState.eventCount} events`;
     const payload = event.payload || {};
-    consoleState.resumeID ||= providerResumeIDFromEvent(event);
+	consoleState.resumeID ||= providerResumeIDFromEvent(event);
+	if (consoleState.resumeID && consoleState.runtime === 'docker' && consoleState.maintained) {
+		consoleState.resumable = true;
+	}
     if (event.type === 'content.delta') {
         document.getElementById('console-output').textContent += payload.text || '';
         scrollConsoleOutput();
@@ -376,6 +423,16 @@ function handleConsoleFrame(event) {
         appendConsoleToolActivity('call', payload);
     } else if (event.type === 'tool.result') {
         appendConsoleToolActivity('result', payload);
+	} else if (event.type === 'turn.started' && consoleState.maintained) {
+		consoleState.turnIdle = false;
+		setConsoleConnection('Streaming', false, true);
+		setConsoleControls(true);
+		appendConsoleActivity('system', 'turn.started');
+	} else if (event.type === 'turn.completed' && consoleState.maintained) {
+		consoleState.turnIdle = true;
+		setConsoleConnection('Warm · ready', false, true);
+		setConsoleControls(false);
+		appendConsoleActivity('terminal', 'turn.completed · container ready');
     } else if (event.stream === 'terminal' && event.type.startsWith('session.')) {
         consoleState.terminal = true;
         appendConsoleActivity(event.type === 'session.completed' ? 'terminal' : 'error', event.type);
@@ -420,8 +477,14 @@ async function steerConsoleSession(event) {
         await followUpConsoleSession(text);
         return;
     }
-    await postConsoleControl('input', {idempotency_key: `steer:${crypto.randomUUID()}`, kind: 'steer', text});
-    appendConsoleActivity('system', `Steer sent · ${text}`);
+	const kind = consoleState.maintained && consoleState.turnIdle ? 'prompt' : 'steer';
+	await postConsoleControl('input', {idempotency_key: `${kind}:${crypto.randomUUID()}`, kind, text});
+	if (kind === 'prompt') {
+		consoleState.turnIdle = false;
+		setConsoleControls(true);
+		setConsoleConnection('Starting warm turn…', false, true);
+	}
+	appendConsoleActivity('system', `${kind === 'prompt' ? 'Warm prompt' : 'Steer'} sent · ${text}`);
     input.value = '';
 }
 
@@ -475,16 +538,47 @@ async function postConsoleControl(action, body) {
 
 function setConsoleControls(enabled, locked = false) {
 	const hasSession = Boolean(consoleState.sessionId);
-	const canCompose = hasSession && (enabled || consoleState.resumable);
+	const warmPrompt = !consoleState.terminal && consoleState.maintained && consoleState.turnIdle;
+	const canCompose = hasSession && (enabled || warmPrompt || consoleState.terminal && consoleState.resumable);
     const composer = document.getElementById('console-steer');
     const submit = document.getElementById('console-steer-button');
     composer.disabled = !canCompose || locked;
     submit.disabled = !canCompose || locked;
-	composer.placeholder = enabled ? 'Steer the active turn…' : consoleState.resumable ?
+	composer.placeholder = enabled ? 'Steer the active turn…' : warmPrompt ? 'Send the next prompt instantly…' : consoleState.resumable ?
 		'Continue this conversation…' : 'Provider state was not retained';
-    submit.textContent = enabled ? 'Send steer' : 'Send follow-up';
+	submit.textContent = enabled ? 'Send steer' : warmPrompt ? 'Send warm prompt' : 'Send follow-up';
     document.getElementById('console-interrupt').disabled = !enabled;
-    document.getElementById('console-cancel').disabled = !enabled;
+	document.getElementById('console-cancel').disabled = locked || consoleState.terminal || !hasSession;
+	document.getElementById('console-export').disabled = locked || !consoleState.resumable ||
+		(!consoleState.terminal && !(consoleState.maintained && consoleState.turnIdle));
+}
+
+async function exportConsoleResumeState() {
+	if (!consoleState.sessionId) return;
+	const button = document.getElementById('console-export');
+	button.disabled = true;
+	try {
+		setConsoleConnection('Exporting state…');
+		const created = await apiFetch(`/api/v1/sessions/${consoleState.sessionId}/resume-state`, {method: 'POST'});
+		const envelope = await created.json();
+		if (!created.ok) throw new Error(envelope.error?.message || `Export returned HTTP ${created.status}`);
+		const id = envelope.data.resume_state_id;
+		const download = await apiFetch(`/api/v1/resume-states/${id}`);
+		if (!download.ok) throw new Error(`Download returned HTTP ${download.status}`);
+		const url = URL.createObjectURL(await download.blob());
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `${id}.agentstate`;
+		link.click();
+		URL.revokeObjectURL(url);
+		appendConsoleActivity('terminal', `Portable state · ${id.slice(0, 12)}`);
+		setConsoleConnection(consoleState.terminal ? 'Complete' : 'Warm · ready', false, true);
+	} catch (error) {
+		appendConsoleActivity('error', error.message);
+		setConsoleConnection('Export failed', true);
+	} finally {
+		setConsoleControls(!consoleState.turnIdle && !consoleState.terminal);
+	}
 }
 
 function appendConsoleToolActivity(phase, payload) {

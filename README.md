@@ -73,7 +73,8 @@ putting it in a URL or process argument.
 The handshake reports exact build version and commit, API/event/plugin/policy
 versions, listener and authentication contracts, native providers, configured
 runtimes, replay persistence, Docker reconstruction, structured-output modes,
-workspace profiles, and observer health.
+workspace profiles, maintained-container/portable-resume support, and observer
+health.
 
 Restricted Codex sessions may receive an explicit one-session `auth.json` via
 the `AGENTD_CODEX_AUTH_JSON` environment grant. The caller must include that
@@ -110,6 +111,45 @@ agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions \
 ```
 
 The first request returns `201`. Repeating the exact request/key returns the same logical session with `200` and never launches a second paid process. Reusing the key with a changed request returns `409 idempotency_conflict`.
+
+### Millisecond warm prompts and portable resume
+
+An unrestricted native Docker session can keep its provider process warm
+between turns:
+
+```json
+{
+  "idempotency_key": "conversation-001",
+  "agent": "codex",
+  "runtime": "docker",
+  "prompt": "Inspect the failing test",
+  "container_lease": {
+    "mode": "maintain",
+    "idle_ttl": "10m",
+    "portable_resume": true
+  }
+}
+```
+
+After the durable `turn.completed` event, send the next turn to
+`POST /api/v1/sessions/{session_id}/input` with `kind: "prompt"`. During an
+active turn use `kind: "steer"`. Docker and provider bootstrap are absent from
+the warm-prompt path; the independent per-turn timeout is reset for each new
+prompt. Idle expiry or explicit termination closes the transport and creates
+the one terminal receipt for the logical conversation.
+
+`POST /api/v1/sessions/{session_id}/resume-state` creates a content-addressed
+portable snapshot while a maintained session is idle or after it is terminal.
+Use `GET` on that path for the latest snapshot, download it from
+`GET /api/v1/resume-states/{resume_state_id}`, or upload an `.agentstate` file
+to `POST /api/v1/resume-states`. A new Docker call cold-imports it with
+`resume_state_id`; its `work_dir`, mounts, and secret grants come from the new
+request and may differ from the source host. Portable state contains provider
+conversation files and provenance only, not credentials or workspace data.
+
+Stopped AgentD containers are removed at terminal finalization. A supervised
+cleanup pass also removes old stopped AgentD-labeled containers left by crashes
+or prior releases while preserving named provider-state volumes.
 
 The response includes:
 
@@ -315,7 +355,7 @@ The canonical implementation tracker is [docs/specs/agentd-durable-streaming/TAS
 
 ## Compatibility status
 
-The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, typed Go client, and chat history use durable v1 sequences. The typed client covers dispatch, list/inspect, replay/raw streaming, prompt/steer, interrupt, cancel, terminate, lost-generation resume, and immutable receipts. Unversioned session, byte-log, and bidirectional bridge routes have been removed. Pre-v1 chat NDJSON remains read-only and is explicitly reported as unverified legacy history.
+The execution sidecar and its port/health/WebSocket protocol are gone. The CLI attach/dispatch flows, TUI, embedded dashboard, typed Go client, and chat history use durable v1 sequences. The typed client covers dispatch, list/inspect, replay/raw streaming, prompt/steer, interrupt, cancel, terminate, lost-generation resume, portable state transfer, and immutable receipts. Unversioned session, byte-log, and bidirectional bridge routes have been removed. Pre-v1 chat NDJSON remains read-only and is explicitly reported as unverified legacy history.
 
 AgentD's private v1 HTTP and WebSocket surfaces require the token stored below
 its data root. The health-only public surface contains no session or credential

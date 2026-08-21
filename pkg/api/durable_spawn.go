@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -37,6 +38,13 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("unknown runtime %q", req.Runtime), nil)
 	}
 	configureDockerProviderPersistence(&req, rt.Name())
+	containerLease, err := resolveContainerLease(req, rt.Name(), nativeV1Agent(req.Agent))
+	if err != nil {
+		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "invalid container lease", err)
+	}
+	if containerLease.Maintain || containerLease.PortableResume {
+		req.PersistSession = true
+	}
 	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
 	if err != nil {
 		return nil, durable.Session{}, err
@@ -75,14 +83,21 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 			req.PersistSession = true
 		}
 	}
-	resumeSession, err := s.resolveResumeSession(ctx, req.Agent, req.ResumeSession, original)
+	var resumeSession resolvedResumeSession
+	if req.ResumeStateID != "" {
+		portableRequest := req
+		portableRequest.Runtime = rt.Name()
+		resumeSession, err = s.resolvePortableResumeState(portableRequest)
+	} else {
+		resumeSession, err = s.resolveResumeSession(ctx, req.Agent, req.ResumeSession, original)
+	}
 	if err != nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider session", err)
 	}
 	if err := validateResolvedResumeState(rt.Name(), req.ResumeSession, resumeSession); err != nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider state", err)
 	}
-	if resumeSession.VolumeName != "" {
+	if resumeSession.VolumeName != "" || resumeSession.PortableStateID != "" {
 		req.PersistSession = true
 	}
 	providerID := resumeSession.ProviderID
@@ -119,8 +134,16 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		}
 	}
 	stored := admission.Session
+	importedVolumeName := ""
 	failAdmission := func(cause error) (*session.Session, durable.Session, error) {
 		s.sessions.Remove(stored.ID)
+		if importedVolumeName != "" {
+			if portable, ok := rt.(runtime.PortableProviderState); ok {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_ = portable.RemoveProviderState(cleanupCtx, importedVolumeName)
+				cleanupCancel()
+			}
+		}
 		settleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		settled, settleErr := s.settleAdmittedSession(settleCtx, stored.ID, durable.StateFailed, "failed", cause)
@@ -136,6 +159,22 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	}
 	if err := s.sessions.Add(sess); err != nil {
 		return failAdmission(err)
+	}
+	if resumeSession.PortableStateID != "" {
+		portable, ok := rt.(runtime.PortableProviderState)
+		if !ok || s.resumeStates == nil {
+			return failAdmission(durable.NewError(durable.CodeInvalidState, op, "runtime cannot import portable provider state", nil))
+		}
+		importedVolumeName = "agentruntime-vol-" + sess.ID
+		importCtx, importCancel := context.WithTimeout(ctx, 2*time.Minute)
+		err := s.resumeStates.Import(importCtx, resumeSession.PortableStateID, func(driverCtx context.Context, reader io.Reader) error {
+			return portable.ImportProviderState(driverCtx, req.Agent, importedVolumeName, reader)
+		})
+		importCancel()
+		if err != nil {
+			return failAdmission(durable.NewError(durable.CodeInvalidArgument, op, "import portable provider state", err))
+		}
+		resumeSession.VolumeName = importedVolumeName
 	}
 
 	originalVolumeName := ""
@@ -204,7 +243,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	s.progress.publish(stored.ID, "provider.bootstrap", "initializing provider-native transport", false)
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, nativeprotocol.Provider(req.Agent), generation.Number, providerID,
-		req.Prompt, diagnosticRedactions(req), !req.Interactive, false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
+		req.Prompt, diagnosticRedactions(req), !req.Interactive && !containerLease.Maintain, false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 		func() string {
 			current := active.Load()
 			if current == nil {
@@ -213,9 +252,24 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 			return current.terminalReason()
 		},
 		func(transport nativeprotocol.Transport) {
-			current := s.setNativeTransport(sess.ID, transport)
+			var current *activeNativeSession
+			if containerLease.Maintain {
+				current = s.setMaintainedNativeTransport(
+					sess.ID, transport, containerLease.IdleTTL, req.EffectiveTimeout(), generation.CreatedAt,
+					func(expiring *activeNativeSession) {
+						s.expireMaintainedNativeSession(sess.ID, generation.Number, expiring)
+					},
+					func(expiring *activeNativeSession) {
+						s.expireNativeSession(sess.ID, generation.Number, expiring, req.EffectiveTimeout())
+					},
+				)
+			} else {
+				current = s.setNativeTransport(sess.ID, transport)
+			}
 			active.Store(current)
-			s.armNativeTimeout(sess.ID, generation.Number, current, req.EffectiveTimeout(), generation.CreatedAt)
+			if !containerLease.Maintain {
+				s.armNativeTimeout(sess.ID, generation.Number, current, req.EffectiveTimeout(), generation.CreatedAt)
+			}
 		},
 		func(result runtime.ExitResult, streamErr error) {
 			current := active.Load()
@@ -227,6 +281,11 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 				reason = current.terminalReceiptReason()
 			}
 			s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
+		},
+		func() {
+			if current := active.Load(); current != nil {
+				current.turnCompleted()
+			}
 		},
 		classifyNativeExitFailure(rt, spawnConfig),
 	); err != nil {

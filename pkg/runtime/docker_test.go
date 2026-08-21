@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -1016,6 +1017,93 @@ exit 2
 	for _, root := range []string{"claude-sessions", "codex-sessions"} {
 		if _, err := os.Stat(filepath.Join(dataDir, root, sessionID)); !os.IsNotExist(err) {
 			t.Fatalf("provider state %s retained: %v", root, err)
+		}
+	}
+}
+
+func TestDockerPruneStoppedContainersRemovesOnlyExpiredAgentDContainers(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "docker.log")
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "`+logFile+`"
+case "$*" in
+  "ps -aq --no-trunc --filter label=`+dockerSessionLabelKey+`")
+    printf '%s\n' old-stopped recent-stopped running
+    exit 0 ;;
+  "inspect old-stopped")
+    printf '%s\n' '[{"Id":"old-stopped","Config":{"Labels":{"`+dockerSessionLabelKey+`":"old-session"}},"State":{"Running":false,"FinishedAt":"2026-08-21T06:00:00Z"}}]'
+    exit 0 ;;
+  "inspect recent-stopped")
+    printf '%s\n' '[{"Id":"recent-stopped","Config":{"Labels":{"`+dockerSessionLabelKey+`":"recent-session"}},"State":{"Running":false,"FinishedAt":"2026-08-21T06:59:30Z"}}]'
+    exit 0 ;;
+  "inspect running")
+    printf '%s\n' '[{"Id":"running","Config":{"Labels":{"`+dockerSessionLabelKey+`":"running-session"}},"State":{"Running":true,"FinishedAt":"0001-01-01T00:00:00Z"}}]'
+    exit 0 ;;
+  "rm -f old-stopped") exit 0 ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	runtime := NewDockerRuntime(DockerConfig{})
+	removed, err := runtime.PruneStoppedContainers(context.Background(), time.Date(2026, 8, 21, 6, 59, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("prune stopped containers: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	commands, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "rm -f old-stopped\n") || strings.Contains(string(commands), "rm -f recent-stopped") || strings.Contains(string(commands), "rm -f running") {
+		t.Fatalf("prune commands = %q", commands)
+	}
+}
+
+func TestDockerPortableProviderStateUsesIsolatedTarHelpers(t *testing.T) {
+	stateDir := t.TempDir()
+	logFile := filepath.Join(stateDir, "docker.log")
+	importedFile := filepath.Join(stateDir, "imported.tar")
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "`+logFile+`"
+case "$1 $2" in
+  "run --rm")
+    case "$*" in
+      *":/state:ro"*) printf '%s' 'portable-tar'; exit 0 ;;
+      *":/state:rw"*) cat > "`+importedFile+`"; exit 0 ;;
+      *) exit 0 ;;
+    esac ;;
+  "volume create") printf '%s\n' "$5"; exit 0 ;;
+  "volume inspect") printf '%s\n' '[{"Name":"'$3'"}]'; exit 0 ;;
+  "volume rm") exit 0 ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+	runtime := NewDockerRuntime(DockerConfig{Image: "agent:compat", CodexImage: "agent:codex"})
+	var exported bytes.Buffer
+	if err := runtime.ExportProviderState(context.Background(), "codex", "agentruntime-vol-source", &exported); err != nil {
+		t.Fatalf("export provider state: %v", err)
+	}
+	if exported.String() != "portable-tar" {
+		t.Fatalf("exported state = %q", exported.String())
+	}
+	if err := runtime.ImportProviderState(context.Background(), "codex", "agentruntime-vol-import", strings.NewReader("import-tar")); err != nil {
+		t.Fatalf("import provider state: %v", err)
+	}
+	imported, err := os.ReadFile(importedFile)
+	if err != nil || string(imported) != "import-tar" {
+		t.Fatalf("imported state=%q err=%v", imported, err)
+	}
+	commands, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"--network none", "--cap-drop ALL", "--security-opt no-new-privileges:true", "agent:codex"} {
+		if !strings.Contains(string(commands), required) {
+			t.Errorf("portable state helper missing %q: %s", required, commands)
 		}
 	}
 }

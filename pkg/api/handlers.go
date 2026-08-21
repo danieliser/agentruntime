@@ -85,6 +85,14 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		return
 	}
 	configureDockerProviderPersistence(&req, rt.Name())
+	containerLease, err := resolveContainerLease(req, rt.Name(), nativeV1Agent(req.Agent))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if containerLease.Maintain || containerLease.PortableResume {
+		req.PersistSession = true
+	}
 	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
 	if err != nil {
 		writeDurableError(c, err)
@@ -179,7 +187,14 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		}
 	}
 
-	resumeSession, err := s.resolveResumeSession(c.Request.Context(), req.Agent, req.ResumeSession, originalSession)
+	var resumeSession resolvedResumeSession
+	if req.ResumeStateID != "" {
+		portableRequest := req
+		portableRequest.Runtime = rt.Name()
+		resumeSession, err = s.resolvePortableResumeState(portableRequest)
+	} else {
+		resumeSession, err = s.resolveResumeSession(c.Request.Context(), req.Agent, req.ResumeSession, originalSession)
+	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -188,7 +203,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if resumeSession.VolumeName != "" {
+	if resumeSession.VolumeName != "" || resumeSession.PortableStateID != "" {
 		req.PersistSession = true
 	}
 	resumeSessionID := resumeSession.ProviderID
@@ -369,7 +384,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		var active activeNativeSessionRef
 		if err := AttachNativeSessionIO(
 			sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
-			resumeSessionID, req.Prompt, diagnosticRedactions(req), !req.Interactive,
+			resumeSessionID, req.Prompt, diagnosticRedactions(req), !req.Interactive && !containerLease.Maintain,
 			false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 			func() string {
 				current := active.Load()
@@ -379,9 +394,24 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 				return current.terminalReason()
 			},
 			func(transport nativeprotocol.Transport) {
-				current := s.setNativeTransport(sess.ID, transport)
+				var current *activeNativeSession
+				if containerLease.Maintain {
+					current = s.setMaintainedNativeTransport(
+						sess.ID, transport, containerLease.IdleTTL, req.EffectiveTimeout(), admitted.UpdatedAt,
+						func(expiring *activeNativeSession) {
+							s.expireMaintainedNativeSession(sess.ID, admitted.ActiveGeneration, expiring)
+						},
+						func(expiring *activeNativeSession) {
+							s.expireNativeSession(sess.ID, admitted.ActiveGeneration, expiring, req.EffectiveTimeout())
+						},
+					)
+				} else {
+					current = s.setNativeTransport(sess.ID, transport)
+				}
 				active.Store(current)
-				s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, current, req.EffectiveTimeout(), admitted.UpdatedAt)
+				if !containerLease.Maintain {
+					s.armNativeTimeout(sess.ID, admitted.ActiveGeneration, current, req.EffectiveTimeout(), admitted.UpdatedAt)
+				}
 			},
 			func(result runtime.ExitResult, streamErr error) {
 				current := active.Load()
@@ -393,6 +423,11 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 					reason = current.terminalReceiptReason()
 				}
 				s.finalizeV1SessionClassified(sess.ID, result, override, reason, streamErr)
+			},
+			func() {
+				if current := active.Load(); current != nil {
+					current.turnCompleted()
+				}
 			},
 			classifyNativeExitFailure(rt, spawnConfig),
 		); err != nil {

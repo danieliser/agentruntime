@@ -1,5 +1,85 @@
 # AgentD overnight qualification worklog
 
+## v2.3.0 warm resume, retention, and portable provider state
+
+- Started: 2026-08-21 (America/New_York), from released v2.2.5 commit
+  `4e316f2619d58732d15c95b272b07df9d90d6bd2`. The installed v2.2.5 daemon
+  remains the control while v2.3.0 is developed and qualified. The minor
+  version reflects new runtime-lifecycle and portable-resume API contracts.
+- Scope authorized: measure the real admission-to-first-output floor; add a
+  caller-declared bounded container lease, supervised cleanup of stopped
+  AgentD-owned containers, and a static portable provider-state export/import
+  path that can cold-boot with a caller-supplied current workspace mapping.
+  Preserve immutable per-turn receipts and fail-closed Docker isolation.
+- Design boundary: provider conversation state may be retained or exported,
+  but credentials, materialized homes, host mounts, and execution-policy
+  authority are never included in a portable state bundle. Resume must regrant
+  secrets and re-resolve the current `work_dir`/mounts at admission.
+- Stretch scope after the core gates: Cursor Agent and Grok CLI native-provider
+  support. Provider expansion must not delay or weaken the retention/cleanup
+  release.
+- Installed v2.2.5 control benchmark (Docker 29.4.0, stamped Codex image,
+  auto-discovery disabled to exclude an unrelated malformed host config): HTTP
+  admission was 2.127 ms, the Codex thread/turn was ready at 1.668 s, first
+  content arrived at 5.521 s, and the minimal turn was terminal at 6.039 s.
+  A cold continuation admitted in 3.008 ms, started its resumed turn at 1.845
+  s, produced first content at 6.066 s, and completed at 6.468 s. The provider
+  accounted for roughly 4.2 s after turn start in both samples; container plus
+  provider bootstrap accounted for roughly 1.7-1.8 s.
+- The control host had nine stopped AgentD-labeled Codex containers before the
+  benchmark; the two new successful turns added two more. Their Docker status
+  is `Exited (137)` because v2.2.5 deliberately kills the app-server after
+  `turn.completed`; this is not Docker `OOMKilled` proof. No terminal cleanup
+  owns ordinary unrestricted containers, so they accumulate indefinitely.
+- Warm-path decision: an opt-in maintained container lease makes one logical
+  session a multi-turn conversation. `turn.completed` is the durable per-turn
+  boundary; the provider transport remains live and accepts the next `prompt`
+  through the existing idempotent control ledger. The immutable terminal
+  receipt is committed when the lease expires or the caller terminates the
+  conversation. This avoids falsifying terminal receipts while allowing
+  millisecond prompt dispatch.
+- Installed v2.2.5 live-transport prototype proved the target before code
+  changes. An interactive Docker Codex session completed its cold first turn,
+  then accepted a second prompt through the same app-server transport in
+  24.379 ms HTTP wall time. Durable control request/dispatch were committed at
+  sequence 24/25; provider `turn/started` followed 27.527 ms after the request,
+  first content arrived at 1.741 s wall time, and the complete warm turn ended
+  at 1.904 s. The polling observer saw turn-start at 131.889 ms, so the durable
+  event timestamps—not poll cadence—prove the 27.5 ms provider dispatch. The
+  remaining first-token latency is provider/network inference, not Docker.
+- TDD implementation in progress: native Docker requests now accept an
+  explicit `container_lease` (`delete` or `maintain`, bounded idle TTL, and an
+  optional portable-state snapshot). A maintained transport stays within the
+  same durable logical session across prompts, has an independent timeout for
+  every provider turn, rejects prompt/steer state mismatches, pins an idle
+  volume during snapshot export, and expires to one terminal receipt.
+- AgentD now supervises a minute-interval cleanup pass that removes only
+  AgentD-labeled Docker containers proven stopped for at least ten minutes;
+  running/recent/unproven containers and provider volumes are preserved.
+  Ordinary terminal Docker finalization also removes its container and launch
+  materialization immediately while preserving retained provider state.
+- Portable resume state is a bounded, content-addressed `.agentstate` ZIP
+  containing only a provenance manifest and validated provider-state tar.
+  Export, latest-state lookup, authenticated download, validated upload, and
+  cold import are wired through v1 endpoints. Tar traversal, links/devices,
+  cross-provider import, non-Docker use, active-turn snapshots, and restricted
+  execution-policy authority widening fail closed. Callers supply fresh
+  mounts, current working directory, and secret grants on import.
+- Current targeted gates pass for the lease timers/snapshot lock, portable
+  store/API round trip, import driver, Docker cleanup, and runtime export/import
+  isolation. The installed v2.2.5 control remains untouched.
+- Core pre-release gates pass: full `go test ./...`, full `go test -race
+  ./...`, `go vet ./...`, dashboard JavaScript syntax, and `git diff --check`.
+  The maintained-session integration proves two turns, idempotent warm input,
+  idle completion, one terminal receipt, and automatic portable snapshot. The
+  cold-import integration proves exact provider identity plus a newly supplied
+  working directory.
+- Pre-build host check: Docker 29.4.0/overlay2 is healthy; the macOS data volume
+  has 200 GiB available. Docker reports 27.7 GB of images, 45.15 GB of volumes,
+  and 9.459 GB of build cache, so no pre-build cleanup is required. Installed
+  v2.2.5 `/health` remains `ok` with exact `4e316f2...` image stamps and no
+  durable sessions in `created`, `starting`, or `running` state.
+
 ## v2.2.5 readiness, startup, and Docker continuation
 
 - Started: 2026-08-21 (America/New_York), from the current post-v2.2.4
@@ -160,6 +240,101 @@
   from the existing-volume runtime hint. Generation 1 creates the volume;
   continuations reuse and validate it, preserving fail-closed missing-state
   behavior.
+- The rejected installed candidate was preserved as annotated tag
+  `v2.2.5-rc4`. Final local release tag `v2.2.5` now points to
+  `4e316f2619d58732d15c95b272b07df9d90d6bd2`. Its first-generation volume
+  regression failed Red before the canonical volume-plan helper passed, then
+  `go test ./... -count=1`, `go test -race ./... -count=1`, `go vet ./...`,
+  shell/JavaScript syntax, and `git diff --check` all passed.
+- Final four-image restamp completed in 36.21 seconds. Every heavy provider,
+  package, user, and bubblewrap content layer was `CACHED`; only the
+  version/revision image configuration changed. Exact final image IDs are
+  compatibility runtime
+  `sha256:32ef3b7ee442bb9e94722c06c789348e7f30a7032e8ca47f691b481e85953b14`,
+  Codex runtime
+  `sha256:6b1a2844be8f7012c02c51ebb3867ede9e08b404dc09e9436df2d3be058e820e`,
+  Claude runtime
+  `sha256:9c05711231d9fdaeee4459998b5f08f0af64eb93ded6364b97ec129d2c1c63d7`,
+  and proxy
+  `sha256:b999f29f5fd7c4deb15214a6bb3b0592f47a38e0ed48c3d088ed23e332ba4f5b`.
+  All exact OCI stamps and provider labels passed
+  `REQUIRE_RELEASE_TAG=1 VERIFY_DOCKER_IMAGES=1 scripts/verify-release.sh
+  2.2.5 4e316f2619d58732d15c95b272b07df9d90d6bd2`. Docker/OrbStack reported
+  client/server 29.4.0 and host data-volume headroom was 220 GiB before the
+  gates and 216 GiB afterward; no user or repo cache was deleted.
+- The corrected installer completed with `--port 38093 --docker-default` and
+  launchd now runs exact installed binary
+  `2.2.5@4e316f2619d58732d15c95b272b07df9d90d6bd2`. Initial health became HTTP
+  200 on attempt 9. More than 45 seconds later, three consecutive `/health`
+  reads took 0.78-1.23 ms and returned fresh independent snapshots:
+  `status=ok`, `default_runtime=docker`, Docker/local `ready`, all four exact
+  image digests/stamps above, and `stale=false`. The live shared proxy is
+  running immutable image ID `sha256:b999f29...`.
+- Live installed-daemon streaming/steering proof: Docker Codex session
+  `63d92724-8681-4a4f-bcf1-c1b75622b37f` admitted HTTP 201 in 2.573 ms,
+  streamed spawn/bootstrap/running progress, 65 durable events, 30 content
+  deltas, and full normalized tool payloads. An automated steer sent at the
+  first turn-start notification was transiently too early and returned HTTP
+  503; the same manual mid-turn action was accepted HTTP 202 and committed.
+  The session completed exit 0 with
+  `STREAM_STEER_MARKER ORIGINAL_CONTEXT_NONCE_P4M8 MANUAL_STEER_WORKED`, output
+  hash `sha256:d03da95cbcbb4e6113257e1a99776d2e1200ed514dfbd21068607f7bba45373e`,
+  provider ID `01a022fb-cdf2-7ca3-9f2d-4da66fca91a3`, and `resumable=true`.
+- Installed-daemon history continuation proof: follow-up
+  `b04ab6f1-b034-476c-ac98-47b1dfee6b4d` resumed the logical AgentD ID above,
+  reused the same provider ID and root volume
+  `agentruntime-vol-63d92724-8681-4a4f-bcf1-c1b75622b37f`, streamed 36 events
+  and 13 deltas, recalled `ORIGINAL_CONTEXT_NONCE_P4M8`, and completed exit 0
+  with `resume_source_session_id` set to the root session.
+- Live installed-daemon restricted-egress positive: session
+  `0237769e-7965-4a7c-826a-8d6360c1551a` admitted in 3.266 ms, streamed the
+  exact structured result `{"ok":true}`, and completed exit 0 at sequence 26
+  with output hash
+  `sha256:db9b5fef29183b1ca8d8d6d41e288da06e4b14b8e70847a3159b3a24f401312c`
+  and artifact hash
+  `sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93`.
+- Live installed-daemon missing-auth-host negative: the final counted session
+  `00a83203-06d9-40c6-8808-eabf120900ef` used only an in-memory near-expiry
+  credential copy and omitted only `auth.openai.com`. It failed exit 1 at
+  sequence 136 with exact terminal attribution `restricted_egress:
+  egress_denied: egress_denied: CONNECT host "auth.openai.com"`, with no
+  context-deadline substitution. A first 90-second attempt reached the same
+  denied-host attribution just as its caller timeout settled; a later retry
+  failed preflight when OrbStack's Docker socket disappeared. OrbStack
+  automatically restarted its VM and unrelated containers; AgentD changed its
+  cached Docker snapshot to unavailable/HTTP 503, kept local fresh, and
+  self-recovered to HTTP 200 without an AgentD restart once Docker returned.
+- Port 38094 dashboard handoff is running as launchd job
+  `com.agentruntime.dashboard-dev`, PID 24751 at verification, from the exact
+  final installed binary. `/dashboard/` and `/health` are HTTP 200. A T3 browser
+  DOM check loaded both dashboard scripts and proved the Console exposes
+  Codex/Claude, model choices, all effort tiers, Docker/local, timeouts, trace,
+  advanced controls, streaming activity, steering, cancellation, and History.
+  Port 38094 authentication uses
+  `.artifacts/dashboard-dev/data/auth.token` (the installed 38093 daemon uses
+  `~/.agentd/auth.token`); the browser retains it only in that tab's session
+  storage.
+- Daily provider CLI policy: do not clone mutable running containers. Keep
+  independently tested, content-addressed Codex and Claude base layers and
+  promote only the provider whose CLI/sandbox inputs changed; AgentD release
+  images should remain thin digest-pinned provenance wrappers. v2.2.5 already
+  makes daemon-only restamps reuse all heavy content. Fully independent daily
+  provider-base publishing remains a separately reviewed release pipeline.
+- Remaining Trading Floor promotion blocker: the installed floor health
+  endpoint is HTTP 200 but reports `agent_runtime=unavailable` because its
+  installed adapter still intentionally pins exact
+  `2.2.4@a5d0560c68c2b9f60629b623e137146f9d1149ca`. The Trading Floor worktree has
+  an existing overlapping `IN_PROGRESS` Slice 042 with uncommitted changes and
+  a contract that forbids silent scope expansion. No floor source, installed
+  package, or service was modified. A reviewed v2.2.5 consumer-pin slice and
+  service promotion are required before the floor can truthfully report
+  `agent_runtime=healthy`.
+- **AgentD readiness attestation (floor promotion pending):** installed AgentD
+  `2.2.5@4e316f2619d58732d15c95b272b07df9d90d6bd2`; runtime digests
+  `all=sha256:32ef3b7e...`, `codex=sha256:6b1a2844...`,
+  `claude=sha256:9c057112...`, proxy `sha256:b999f29f...`; live `/health` is
+  HTTP 200 in under 2 ms with `status=ok`, Docker/local `ready`, exact fresh
+  image stamps, and `stale=false`.
 
 ## Embedded live-agent console scaffold
 

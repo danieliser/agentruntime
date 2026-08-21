@@ -43,10 +43,18 @@ type SessionRequest struct {
 	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"` // duration string: "5m", "1h30m" (default: "5m")
 
 	// Session behavior
-	PTY            bool   `json:"pty,omitempty"            yaml:"pty,omitempty"`              // allocate PTY for interactive agents
-	Interactive    bool   `json:"interactive,omitempty"    yaml:"interactive,omitempty"`      // keep stdin open and steer via WS stdin frames
-	ResumeSession  string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"`   // session ID to resume
+	PTY           bool   `json:"pty,omitempty"            yaml:"pty,omitempty"`            // allocate PTY for interactive agents
+	Interactive   bool   `json:"interactive,omitempty"    yaml:"interactive,omitempty"`    // keep stdin open and steer via WS stdin frames
+	ResumeSession string `json:"resume_session,omitempty" yaml:"resume_session,omitempty"` // session ID to resume
+	// ResumeStateID imports a content-addressed portable provider-state bundle.
+	// It is mutually exclusive with ResumeSession; current WorkDir and mounts
+	// are supplied independently by this request.
+	ResumeStateID  string `json:"resume_state_id,omitempty" yaml:"resume_state_id,omitempty"`
 	PersistSession bool   `json:"persist_session,omitempty" yaml:"persist_session,omitempty"` // create named Docker volume for session persistence
+	// ContainerLease controls whether an unrestricted native Docker provider
+	// stays live between completed turns. A maintained lease makes the logical
+	// session a multi-turn conversation until idle_ttl expires or it is stopped.
+	ContainerLease *ContainerLease `json:"container_lease,omitempty" yaml:"container_lease,omitempty"`
 	// Trace optionally selects an external observer and whether its compatible,
 	// healthy presence is required before first admission.
 	Trace *TraceConfig `json:"trace,omitempty" yaml:"trace,omitempty"`
@@ -123,6 +131,17 @@ type SessionRequest struct {
 	// flags and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 env var.
 	// The orchestrator must scaffold the team directory before spawning.
 	Team *TeamConfig `json:"team,omitempty" yaml:"team,omitempty"`
+}
+
+// ContainerLease is an explicit lifecycle contract for a native Docker
+// conversation. Mode "delete" releases the container at the terminal receipt;
+// mode "maintain" keeps the provider transport live between turns until the
+// bounded idle TTL expires. PortableResume requests a provider-state snapshot
+// before terminal container deletion; credentials and host mounts are excluded.
+type ContainerLease struct {
+	Mode           string `json:"mode" yaml:"mode"` // "delete" | "maintain"
+	IdleTTL        string `json:"idle_ttl,omitempty" yaml:"idle_ttl,omitempty"`
+	PortableResume bool   `json:"portable_resume,omitempty" yaml:"portable_resume,omitempty"`
 }
 
 // ExecutionPolicy is the caller's enforceable runtime authority grant.

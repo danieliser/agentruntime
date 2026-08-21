@@ -111,7 +111,7 @@ func TestEmbeddedDashboardProvidesLiveAgentConsole(t *testing.T) {
 		[]byte(`execution_policy`),
 		[]byte(`agentd.auth.`),
 		[]byte(`content.delta`),
-		[]byte(`kind: 'steer'`),
+		[]byte(`kind, text`),
 		[]byte(`effortsByModel`),
 		[]byte(`resume_session`),
 		[]byte(`Send follow-up`),
@@ -122,6 +122,9 @@ func TestEmbeddedDashboardProvidesLiveAgentConsole(t *testing.T) {
 		[]byte(`session.resumable`),
 		[]byte(`request.resume_session = previousSessionID`),
 		[]byte(`session.progress`),
+		[]byte(`container_lease`),
+		[]byte(`Send warm prompt`),
+		[]byte(`/resume-state`),
 	} {
 		if !bytes.Contains(console, required) {
 			t.Fatalf("dashboard console behavior missing %q", required)

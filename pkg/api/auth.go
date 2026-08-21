@@ -126,7 +126,11 @@ func (s *Server) requireAuth() gin.HandlerFunc {
 			return
 		}
 		if c.Request.Body != nil {
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
+			limit := int64(maxRequestBodyBytes)
+			if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/api/v1/resume-states" {
+				limit = maxPortableBundleBytes + 1
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		}
 		c.Next()
 	}

@@ -3,6 +3,7 @@
 package eventstream
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -63,6 +64,11 @@ type ControlParams struct {
 
 type ControlBeginResult struct {
 	Requested         durable.Event
+	AlreadyDispatched bool
+}
+
+type ControlProbeResult struct {
+	Exists            bool
 	AlreadyDispatched bool
 }
 
@@ -284,6 +290,47 @@ func (broker *Broker) BeginControl(ctx context.Context, params ControlParams) (C
 	return ControlBeginResult{}, err
 }
 
+// ProbeControl performs a read-only idempotency check before a caller claims
+// provider transport state. It distinguishes a new control from an exact
+// dispatched retry and preserves the requested-without-proof ambiguity rule.
+func (broker *Broker) ProbeControl(ctx context.Context, params ControlParams) (ControlProbeResult, error) {
+	if err := validateControlParams(params); err != nil {
+		return ControlProbeResult{}, err
+	}
+	state := broker.session(params.SessionID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	wantRequested, err := controlPayload(params, "requested")
+	if err != nil {
+		return ControlProbeResult{}, err
+	}
+	requested, err := broker.store.GetEventByID(ctx, controlEventID(params, "requested"))
+	if durable.IsCode(err, durable.CodeNotFound) {
+		return ControlProbeResult{}, nil
+	}
+	if err != nil {
+		return ControlProbeResult{}, err
+	}
+	if !bytes.Equal(requested.Raw, wantRequested) {
+		return ControlProbeResult{}, durable.NewError(durable.CodeImmutableConflict, "probe_control", "idempotency key already identifies a different control", nil)
+	}
+	wantDispatched, err := controlPayload(params, "dispatched")
+	if err != nil {
+		return ControlProbeResult{}, err
+	}
+	dispatched, err := broker.store.GetEventByID(ctx, controlEventID(params, "dispatched"))
+	if err == nil {
+		if !bytes.Equal(dispatched.Raw, wantDispatched) {
+			return ControlProbeResult{}, durable.NewError(durable.CodeImmutableConflict, "probe_control", "idempotency key already identifies a different dispatch", nil)
+		}
+		return ControlProbeResult{Exists: true, AlreadyDispatched: true}, nil
+	}
+	if durable.IsCode(err, durable.CodeNotFound) {
+		return ControlProbeResult{}, durable.NewError(durable.CodeIndeterminate, "probe_control", "control intent exists without durable dispatch proof", nil)
+	}
+	return ControlProbeResult{}, err
+}
+
 // CompleteControl commits proof that the command was written to provider
 // transport. It must only be called after the write succeeds.
 func (broker *Broker) CompleteControl(ctx context.Context, params ControlParams) (durable.Event, error) {
@@ -298,10 +345,7 @@ func (broker *Broker) CompleteControl(ctx context.Context, params ControlParams)
 }
 
 func (broker *Broker) appendControlLocked(ctx context.Context, state *sessionState, params ControlParams, phase string) (durable.Event, bool, error) {
-	payload, err := json.Marshal(map[string]any{
-		"idempotency_key": params.IdempotencyKey, "kind": params.Kind,
-		"phase": phase, "command": json.RawMessage(params.Payload),
-	})
+	payload, err := controlPayload(params, phase)
 	if err != nil {
 		return durable.Event{}, false, durable.NewError(durable.CodeInvalidArgument, "append_control", "encode control event", err)
 	}
@@ -323,6 +367,17 @@ func (broker *Broker) appendControlLocked(ctx context.Context, state *sessionSta
 		broker.publishLocked(state, result.Event)
 	}
 	return result.Event, result.Created, nil
+}
+
+func controlPayload(params ControlParams, phase string) ([]byte, error) {
+	payload, err := json.Marshal(map[string]any{
+		"idempotency_key": params.IdempotencyKey, "kind": params.Kind,
+		"phase": phase, "command": json.RawMessage(params.Payload),
+	})
+	if err != nil {
+		return nil, durable.NewError(durable.CodeInvalidArgument, "encode_control", "encode control event", err)
+	}
+	return payload, nil
 }
 
 func validateControlParams(params ControlParams) error {
