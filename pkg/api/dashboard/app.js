@@ -10,6 +10,7 @@ const state = {
     historyRefreshInterval: null,
     eventLogs: {}, // keyed by sessionId
     eventSequences: {}, // durable sequence pointer keyed by sessionId
+	 detailTrigger: null,
 	 authToken: sessionStorage.getItem('agentd.dashboard.token') || '',
 };
 
@@ -41,15 +42,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function initializeAuthenticatedDashboard() {
 	if (!state.authToken) await requestDashboardToken();
+	let authRejected = false;
 	try {
 		const response = await apiFetch('/api/v1/capabilities');
-		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		if (!response.ok) {
+			authRejected = response.status === 401;
+			throw new Error(`HTTP ${response.status}`);
+		}
 		sessionStorage.setItem('agentd.dashboard.token', state.authToken);
 		await Promise.all([fetchSessions(), fetchHistory()]);
 	} catch (error) {
 		sessionStorage.removeItem('agentd.dashboard.token');
 		state.authToken = '';
-		document.getElementById('dashboard-auth-error').classList.remove('hidden');
+		const authError = document.getElementById('dashboard-auth-error');
+		authError.textContent = authRejected
+			? 'That token was not accepted.'
+			: 'AgentD is not reachable. Your token was not rejected.';
+		authError.classList.remove('hidden');
 		await requestDashboardToken();
 		return initializeAuthenticatedDashboard();
 	}
@@ -84,28 +93,15 @@ function apiFetch(path, options = {}) {
 function setupEventListeners() {
     const closeBtn = document.getElementById('close-detail');
     closeBtn.addEventListener('click', closeDetailPanel);
+	document.addEventListener('keydown', (event) => {
+		if (event.key === 'Escape' && state.currentSessionId) closeDetailPanel();
+	});
 
-    const table = document.getElementById('sessions-table');
-    table.addEventListener('click', (e) => {
-        const row = e.target.closest('tbody tr');
-        if (row && !e.target.closest('.action-buttons')) {
-            const sessionId = row.dataset.sessionId;
-            if (sessionId) {
-                showDetailPanel(sessionId);
-            }
-        }
-    });
-
-    const historyTable = document.getElementById('history-table');
-    historyTable.addEventListener('click', (e) => {
-        const row = e.target.closest('tbody tr');
-        if (row && !e.target.closest('.action-buttons')) {
-            const sessionId = row.dataset.sessionId;
-            if (sessionId) {
-                showDetailPanel(sessionId);
-            }
-        }
-    });
+	for (const tableID of ['sessions-table', 'history-table']) {
+		const table = document.getElementById(tableID);
+		table.addEventListener('click', openSessionFromRow);
+		table.addEventListener('keydown', openSessionFromRow);
+	}
 
     // Tab switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -114,6 +110,15 @@ function setupEventListeners() {
             switchTab(tabName);
         });
     });
+}
+
+function openSessionFromRow(event) {
+	if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+	if (event.target.closest('.session-row-actions')) return;
+	const row = event.target.closest('tbody tr[data-session-id]');
+	if (!row) return;
+	if (event.type === 'keydown') event.preventDefault();
+	showDetailPanel(row.dataset.sessionId, row);
 }
 
 // Switch between tabs
@@ -202,7 +207,7 @@ function updateSessionsTable() {
     const tbody = document.getElementById('sessions-body');
 
     if (!state.sessions || state.sessions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-message">No sessions</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-message">No sessions</td></tr>';
         return;
     }
 
@@ -211,8 +216,14 @@ function updateSessionsTable() {
         const sessionIdShort = session.session_id.substring(0, 8);
 
         return `
-            <tr data-session-id="${escapeAttr(session.session_id)}">
-                <td><span class="session-id">${escapeHtml(sessionIdShort)}…</span></td>
+            <tr data-session-id="${escapeAttr(session.session_id)}" tabindex="0">
+                <td class="session-primary-cell">
+                    <span class="session-id">${escapeHtml(sessionIdShort)}…</span>
+                    <div class="session-row-actions">
+                        <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(session.session_id)}">View</button>
+                        <button class="btn btn-delete" data-action="delete" data-session-id="${escapeAttr(session.session_id)}">Cancel</button>
+                    </div>
+                </td>
                 <td>${escapeHtml(session.agent)}</td>
                 <td>${escapeHtml(session.runtime)}</td>
                 <td>
@@ -223,12 +234,6 @@ function updateSessionsTable() {
                 <td>-</td>
                 <td>-</td>
                 <td>-</td>
-                <td>
-                    <div class="action-buttons">
-                        <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(session.session_id)}">Info</button>
-                        <button class="btn btn-delete" data-action="delete" data-session-id="${escapeAttr(session.session_id)}">Cancel</button>
-                    </div>
-                </td>
             </tr>
         `;
     }).join('');
@@ -240,7 +245,7 @@ function updateSessionsTable() {
             const action = btn.dataset.action;
             const sessionId = btn.dataset.sessionId;
             if (action === 'info') {
-                showDetailPanel(sessionId);
+                showDetailPanel(sessionId, btn);
             } else if (action === 'delete') {
                 deleteSession(sessionId);
             }
@@ -269,7 +274,7 @@ function updateHistoryTable() {
     const tbody = document.getElementById('history-body');
 
     if (!state.history || state.history.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="empty-message">No history</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-message">No history</td></tr>';
         return;
     }
 
@@ -284,8 +289,14 @@ function updateHistoryTable() {
             : '-';
 
         return `
-            <tr data-session-id="${escapeAttr(entry.session_id)}">
-                <td><span class="session-id">${escapeHtml(sessionIdShort)}…</span></td>
+            <tr data-session-id="${escapeAttr(entry.session_id)}" tabindex="0">
+                <td class="session-primary-cell">
+                    <span class="session-id">${escapeHtml(sessionIdShort)}…</span>
+                    <div class="session-row-actions">
+                        <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(entry.session_id)}">View</button>
+						<button class="btn btn-view" data-action="resume" data-session-id="${escapeAttr(entry.session_id)}" ${entry.resumable ? '' : 'disabled title="Provider state was not retained"'}>Continue</button>
+                    </div>
+                </td>
                 <td>${escapeHtml(entry.agent || '-')}</td>
                 <td>
                     <span class="session-status ${statusClass}">
@@ -298,12 +309,6 @@ function updateHistoryTable() {
                 <td>-</td>
                 <td>-</td>
                 <td><span class="date-small">${escapeHtml(date)}</span></td>
-                <td>
-                    <div class="action-buttons">
-                        <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(entry.session_id)}">View</button>
-						<button class="btn btn-view" data-action="resume" data-session-id="${escapeAttr(entry.session_id)}" ${entry.resumable ? '' : 'disabled title="Provider state was not retained"'}>Continue</button>
-                    </div>
-                </td>
             </tr>
         `;
     }).join('');
@@ -315,7 +320,7 @@ function updateHistoryTable() {
             const action = btn.dataset.action;
             const sessionId = btn.dataset.sessionId;
             if (action === 'info') {
-                showDetailPanel(sessionId);
+                showDetailPanel(sessionId, btn);
             } else if (action === 'resume') {
                 const session = state.history.find(entry => entry.session_id === sessionId);
                 if (session) resumeConsoleSession(session);
@@ -344,8 +349,9 @@ function getStatusClass(status) {
 }
 
 // Show detail panel
-async function showDetailPanel(sessionId) {
+async function showDetailPanel(sessionId, trigger = document.activeElement) {
     state.currentSessionId = sessionId;
+	state.detailTrigger = trigger;
 
     // Disconnect old WS if any
     if (state.ws) {
@@ -353,12 +359,16 @@ async function showDetailPanel(sessionId) {
         state.ws = null;
     }
 
-    // Fetch session info
+	renderDetailLoading(sessionId);
+	setDetailPanelOpen(true);
+
+	// Fetch session info
     try {
 		const res = await apiFetch(`/api/v1/sessions/${sessionId}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const envelope = await res.json();
         const info = envelope.data;
+		if (state.currentSessionId !== sessionId) return;
         renderDetailPanel(info);
 		const transcript = await fetchConversationTranscript(sessionId);
 		if (state.currentSessionId !== sessionId) return;
@@ -371,6 +381,20 @@ async function showDetailPanel(sessionId) {
 			renderConversationTranscript(document.getElementById('event-log'), [], 'Conversation history could not be loaded.');
 		}
     }
+}
+
+function renderDetailLoading(sessionId) {
+	const content = document.getElementById('detail-content');
+	content.innerHTML = '';
+	content.appendChild(createDetailField('Session ID', sessionId));
+	renderConversationTranscript(document.getElementById('event-log'), [], 'Loading conversation...');
+}
+
+function setDetailPanelOpen(open) {
+	const panel = document.getElementById('detail-panel');
+	panel.classList.toggle('is-open', open);
+	panel.setAttribute('aria-hidden', String(!open));
+	panel.inert = !open;
 }
 
 // Create detail field element
@@ -394,7 +418,6 @@ function createDetailField(label, value) {
 
 // Render detail panel
 function renderDetailPanel(info) {
-    const panel = document.getElementById('detail-panel');
     const content = document.getElementById('detail-content');
 
     // Clear previous content
@@ -447,7 +470,7 @@ function renderDetailPanel(info) {
 
     state.eventLogs[state.currentSessionId] = [];
 
-    panel.style.display = 'block';
+	setDetailPanelOpen(true);
 }
 
 // Connect to WebSocket
@@ -518,7 +541,9 @@ function closeDetailPanel() {
         state.ws = null;
     }
     state.currentSessionId = null;
-    document.getElementById('detail-panel').style.display = 'none';
+	setDetailPanelOpen(false);
+	if (state.detailTrigger?.isConnected) state.detailTrigger.focus({preventScroll: true});
+	state.detailTrigger = null;
 }
 
 // Delete session

@@ -1,5 +1,30 @@
 # AgentD overnight qualification worklog
 
+## v2.3.3 session view drawer and inline row actions
+
+- Started: 2026-08-21 (America/New_York), from immutable signed v2.3.2 commit
+  `cc5e67734dbda010be40d231747d4a90e9d761c5`. This is a reviewed patch release;
+  no existing signed tag or image is being changed.
+- Live-history clarification: the newest failed dashboard row,
+  `d412d686-026d-4aee-893f-ed7f330baeca`, is the intentional installed-daemon
+  missing-auth-host negative qualification. Its exact terminal event is
+  `restricted_egress: egress_denied: egress_denied: CONNECT host
+  "auth.openai.com"` at sequence 136 and exit 1. The immediately preceding
+  installed restricted positive `77ef5504-b5fc-448c-a3fc-75d4a6c2e6f8`
+  completed exit 0 with exact output `{"ok":true}`.
+- UI contract: **View** is a non-modal right-side drawer so the session table
+  remains interactive. Clicking another active/history row while open replaces
+  the drawer contents immediately, and request ordering prevents a slower prior
+  fetch from overwriting the newest selection. View/Continue/Cancel actions sit
+  beneath the ID and appear on row hover or keyboard focus; touch layouts keep
+  them visible. The redundant Actions columns are removed.
+- TDD red: `TestEmbeddedDashboardUsesSessionDrawerAndInlineRowActions` failed
+  first on missing drawer markup, and
+  `TestEmbeddedDashboardDistinguishesRejectedTokenFromUnavailableDaemon`
+  failed first on missing HTTP-401/network classification. Both focused tests,
+  the existing transcript/authentication regressions, JavaScript syntax, and
+  `git diff --check` now pass.
+
 ## v2.3.2 restricted dashboard admission correction
 
 - The signed v2.3.1 tag remains immutable at
@@ -23,6 +48,16 @@
   The minimal v2.3.2 fix emits the provider override only for unrestricted
   Codex launches; restricted authority remains exclusively in the validated
   execution policy.
+- Final v2.3.2 images were rebuilt/stamped at exact commit
+  `cc5e67734dbda010be40d231747d4a90e9d761c5`: all
+  `sha256:97e339992fa32c218289d361f5a1bfea3ddd87cb1757651c9d9bd518f6f120a1`,
+  Codex `sha256:e8e37d1255377bd9777372035d95f0d1cdf0e0593a1b6b51c0e4b7fa438d6427`,
+  Claude `sha256:a6f68f2734df8ffa0b192dba34862f8da46fd8d6ebadff17f3c68e8615795e83`,
+  and proxy
+  `sha256:64e0f878e7cc6d9dd52fdfb3d2098ed04688e2efd5fb873486d6a78c65ca83ce`.
+  Exact-tag release verification, full tests/race/vet, and installed build
+  identity verification passed. Live `/health` was HTTP 200 with `status=ok`,
+  Docker/local ready, all four exact fresh stamps, and `stale=false`.
 
 ## v2.3.1 dashboard conversation replay
 

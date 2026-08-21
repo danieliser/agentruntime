@@ -207,6 +207,79 @@ func TestEmbeddedDashboardRestrictedCodexDoesNotWidenPolicy(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDashboardUsesSessionDrawerAndInlineRowActions(t *testing.T) {
+	index, err := dashboardFS.ReadFile("dashboard/index.html")
+	if err != nil {
+		t.Fatalf("read embedded dashboard index: %v", err)
+	}
+	app, err := dashboardFS.ReadFile("dashboard/app.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard app: %v", err)
+	}
+	style, err := dashboardFS.ReadFile("dashboard/style.css")
+	if err != nil {
+		t.Fatalf("read embedded dashboard style: %v", err)
+	}
+
+	for _, required := range [][]byte{
+		[]byte(`<aside class="detail-panel" id="detail-panel"`),
+		[]byte(`aria-modal="false"`),
+	} {
+		if !bytes.Contains(index, required) {
+			t.Fatalf("dashboard session drawer markup missing %q", required)
+		}
+	}
+	if bytes.Contains(index, []byte(`<th>Actions</th>`)) {
+		t.Fatal("dashboard must keep row actions below the session ID, not in an Actions column")
+	}
+
+	for _, required := range [][]byte{
+		[]byte(`class="session-primary-cell"`),
+		[]byte(`class="session-row-actions"`),
+		[]byte(`function setDetailPanelOpen(open)`),
+		[]byte(`if (state.currentSessionId !== sessionId) return;`),
+	} {
+		if !bytes.Contains(app, required) {
+			t.Fatalf("dashboard session drawer behavior missing %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{
+		[]byte(`class="action-buttons"`),
+		[]byte(`panel.style.display = 'block'`),
+		[]byte(`style.display = 'none'`),
+	} {
+		if bytes.Contains(app, forbidden) {
+			t.Fatalf("dashboard retains obsolete detail-panel behavior %q", forbidden)
+		}
+	}
+
+	for _, required := range [][]byte{
+		[]byte(`.detail-panel.is-open`),
+		[]byte(`transform: translateX(100%)`),
+		[]byte(`tr:hover .session-row-actions`),
+		[]byte(`tr:focus-within .session-row-actions`),
+	} {
+		if !bytes.Contains(style, required) {
+			t.Fatalf("dashboard session drawer styling missing %q", required)
+		}
+	}
+}
+
+func TestEmbeddedDashboardDistinguishesRejectedTokenFromUnavailableDaemon(t *testing.T) {
+	app, err := dashboardFS.ReadFile("dashboard/app.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard app: %v", err)
+	}
+	for _, required := range [][]byte{
+		[]byte(`response.status === 401`),
+		[]byte(`AgentD is not reachable. Your token was not rejected.`),
+	} {
+		if !bytes.Contains(app, required) {
+			t.Fatalf("dashboard authentication error handling missing %q", required)
+		}
+	}
+}
+
 func TestAPIPrioritizesOverDashboard(t *testing.T) {
 	ts, _ := newTestServer(t)
 

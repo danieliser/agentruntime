@@ -2,6 +2,20 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.3.3] — 2026-08-21
+
+- Session **View** now opens in a non-modal right-side drawer. Clicking another
+  active or historical row while the drawer is open replaces its metadata and
+  readable conversation in place; stale fetches cannot overwrite the newest
+  selection. Escape and the labeled close control dismiss the drawer.
+- Active and History row actions now sit beneath the session ID and appear on
+  row hover or keyboard focus, following the compact WordPress editor pattern.
+  The redundant Actions columns were removed, while touch layouts keep the
+  controls visible.
+- The dashboard authentication gate now distinguishes a rejected bearer token
+  from a daemon/network failure instead of claiming every capability-fetch
+  error means the token is invalid.
+
 ## [2.3.2] — 2026-08-21
 
 - Restricted Codex launches from the dashboard now omit the unrestricted
