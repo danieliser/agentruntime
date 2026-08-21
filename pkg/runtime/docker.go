@@ -365,20 +365,23 @@ func (r *DockerRuntime) ImportProviderState(ctx context.Context, agent, volumeNa
 			_ = r.RemoveSessionVolume(context.Background(), volumeName)
 		}
 	}()
+	// A fresh Docker volume is root-owned. Give only its mount root to the
+	// unprivileged agent before extraction so tar never needs ownership
+	// capabilities while handling caller-supplied archive contents.
+	if err := r.initVolumePermissions(ctx, image, []apischema.Mount{{Host: volumeName, Container: "/state", Mode: "rw", Type: "volume"}}); err != nil {
+		return fmt.Errorf("import provider state permissions: %w", err)
+	}
 	cmd := r.dockerCmd(ctx,
 		"run", "--rm", "--network", "none",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-		"--user", "root", "-i", "-v", volumeName+":/state:rw",
-		"--entrypoint", "tar", image, "-C", "/state", "-xf", "-",
+		"--user", "agent", "-i", "-v", volumeName+":/state:rw",
+		"--entrypoint", "tar", image, "--no-same-owner", "-C", "/state", "-xf", "-",
 	)
 	var stderr bytes.Buffer
 	cmd.Stdin = reader
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("import provider state: %w", dockerCommandError(err, stderr.String()))
-	}
-	if err := r.initVolumePermissions(ctx, image, []apischema.Mount{{Host: volumeName, Container: "/state", Mode: "rw", Type: "volume"}}); err != nil {
-		return fmt.Errorf("import provider state permissions: %w", err)
 	}
 	cleanup = false
 	return nil
@@ -633,9 +636,9 @@ func (r *DockerRuntime) RemoveSessionVolume(ctx context.Context, volumeName stri
 	return nil
 }
 
-// initVolumePermissions runs a short-lived container as root to chown volume
-// mount points so the non-root agent user can write to them. Only processes
-// volume-type mounts; bind mounts already have host-side permissions.
+// initVolumePermissions runs a networkless helper with only CAP_CHOWN to give
+// volume mount roots to the non-root agent user. Only volume mounts are
+// processed; bind mounts already have host-side permissions.
 // Idempotent — safe to call on volumes that are already correctly owned.
 func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string, mounts []apischema.Mount) error {
 	var volumeMounts []apischema.Mount
@@ -651,8 +654,10 @@ func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string,
 	// Build a single init container that mounts all volumes at /mnt/0, /mnt/1, ...
 	// and chowns them to agent:agent in one pass.
 	args := []string{
-		"run", "--rm", "--user", "root",
-		"--entrypoint", "sh",
+		"run", "--rm", "--network", "none",
+		"--cap-drop", "ALL", "--cap-add", "CHOWN",
+		"--security-opt", "no-new-privileges:true",
+		"--user", "root", "--entrypoint", "chown",
 	}
 	var chownPaths []string
 	for i, m := range volumeMounts {
@@ -660,7 +665,8 @@ func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string,
 		args = append(args, "-v", fmt.Sprintf("%s:%s:rw", m.Host, mountPoint))
 		chownPaths = append(chownPaths, mountPoint)
 	}
-	args = append(args, image, "-c", "chown agent:agent "+strings.Join(chownPaths, " "))
+	args = append(args, image, "agent:agent")
+	args = append(args, chownPaths...)
 
 	cmd := r.dockerCmd(ctx, args...)
 	var stderr bytes.Buffer

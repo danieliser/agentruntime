@@ -96,6 +96,23 @@
   the mismatch; validation now drains the already size-bounded ZIP entry after
   member validation so the exact full stream is hashed. Targeted portable,
   maintained-session, and API tests pass; RC1 is superseded by RC2.
+- RC2 exported a valid 72,443-byte content-addressed state bundle, then the
+  maintained source disappeared independently of either lease timer. Actual
+  host cause verbatim from OrbStack at the boundary: `restarting container
+  container=docker` followed by `stopping container container=docker` at
+  08:10:35Z. The Docker service was unavailable until 08:10:41Z, all running
+  containers were torn down, and AgentD correctly committed an indeterminate
+  receipt instead of claiming completion. OrbStack remained running and later
+  recovered; the host retained 195 GiB disk headroom and 68% free memory.
+- The resulting daemon-loss archive then exposed an independent RC2 cold-import
+  defect. Actual GNU tar error verbatim: `Cannot change ownership to uid 501,
+  gid 20: Operation not permitted`. Import correctly dropped all capabilities,
+  but it ran tar as root and asked tar to restore OrbStack-exported ownership;
+  its later non-recursive ownership initialization could not make that succeed.
+  A red Docker command-order regression now requires a fresh volume root to be
+  initialized first by a networkless helper with only `CAP_CHOWN`, followed by
+  extraction as the unprivileged `agent` user with `--no-same-owner`, no
+  network, no capabilities, and `no-new-privileges`.
 
 ## v2.2.5 readiness, startup, and Docker continuation
 

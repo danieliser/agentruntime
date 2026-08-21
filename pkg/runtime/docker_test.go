@@ -1101,9 +1101,32 @@ exit 2
 	if err != nil {
 		t.Fatal(err)
 	}
+	commandLog := string(commands)
 	for _, required := range []string{"--network none", "--cap-drop ALL", "--security-opt no-new-privileges:true", "agent:codex"} {
-		if !strings.Contains(string(commands), required) {
+		if !strings.Contains(commandLog, required) {
 			t.Errorf("portable state helper missing %q: %s", required, commands)
+		}
+	}
+	permissionAt := strings.Index(commandLog, ":/mnt/0:rw")
+	importAt := strings.Index(commandLog, ":/state:rw")
+	if permissionAt < 0 || importAt < 0 || permissionAt > importAt {
+		t.Fatalf("fresh volume ownership must be initialized before import: %s", commands)
+	}
+	for _, required := range []string{"--cap-add CHOWN", "--entrypoint chown", "agent:agent /mnt/0"} {
+		if !strings.Contains(commandLog, required) {
+			t.Errorf("volume permission helper missing %q: %s", required, commands)
+		}
+	}
+	importCommand := ""
+	for _, command := range strings.Split(commandLog, "\n") {
+		if strings.Contains(command, ":/state:rw") {
+			importCommand = command
+			break
+		}
+	}
+	for _, required := range []string{"--user agent", "--entrypoint tar", "--no-same-owner"} {
+		if !strings.Contains(importCommand, required) {
+			t.Errorf("portable import helper missing %q: %s", required, importCommand)
 		}
 	}
 }
