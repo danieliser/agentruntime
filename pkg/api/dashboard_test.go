@@ -197,6 +197,16 @@ func TestEmbeddedDashboardReplaysConversationForViewAndContinue(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDashboardRestrictedCodexDoesNotWidenPolicy(t *testing.T) {
+	console, err := dashboardFS.ReadFile("dashboard/console.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard console: %v", err)
+	}
+	if !bytes.Contains(console, []byte(`} else if (!restricted) {`)) {
+		t.Fatal("dashboard must omit Codex approval overrides from restricted requests")
+	}
+}
+
 func TestAPIPrioritizesOverDashboard(t *testing.T) {
 	ts, _ := newTestServer(t)
 

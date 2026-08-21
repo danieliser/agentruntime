@@ -1,5 +1,29 @@
 # AgentD overnight qualification worklog
 
+## v2.3.2 restricted dashboard admission correction
+
+- The signed v2.3.1 tag remains immutable at
+  `f96e8489593e5385abea459a988a00fc486a4f4c`. Its four images passed exact
+  release verification and it was installed on port 38093 with Docker ready.
+  Live warm session `b3576d9d-bd62-405b-a8cd-bd846537add9` produced two exact
+  turns in one container; cold continuation
+  `f4667ad1-a7b4-44bf-a382-dfae678b9930` resumed the same provider context and
+  produced `V231-FIRST/V231-SECOND`. The installed dashboard replayed the full
+  six-message continuation lineage through port 38094 and rendered it as
+  readable You/Agent turns.
+- The first installed restricted-egress qualification was rejected before a
+  provider turn with exact error `execution_policy_unsupported: Codex provider
+  configuration cannot widen the execution policy`. Root cause: the dashboard
+  request builder unconditionally set the unrestricted Codex
+  `approval_mode=full-auto` before adding its restricted execution policy;
+  AgentD correctly rejected the widening provider override.
+- Per the no-hotfix boundary, v2.3.1 was not moved. TDD red
+  `TestEmbeddedDashboardRestrictedCodexDoesNotWidenPolicy` first failed with
+  `dashboard must omit Codex approval overrides from restricted requests`.
+  The minimal v2.3.2 fix emits the provider override only for unrestricted
+  Codex launches; restricted authority remains exclusively in the validated
+  execution policy.
+
 ## v2.3.1 dashboard conversation replay
 
 - Started: 2026-08-21 (America/New_York), from released and installed v2.3.0

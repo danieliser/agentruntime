@@ -227,7 +227,7 @@ function buildConsoleRequest() {
     if (tracePolicy !== 'off') request.trace = {plugin: 'opentraces', policy: tracePolicy};
     if (agent === 'claude') {
         request.claude = {max_turns: Number(document.getElementById('console-max-turns').value)};
-    } else {
+    } else if (!restricted) {
         request.codex = {approval_mode: 'full-auto'};
     }
 	if (schemaText) {

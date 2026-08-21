@@ -2,6 +2,13 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.3.2] — 2026-08-21
+
+- Restricted Codex launches from the dashboard now omit the unrestricted
+  `approval_mode` provider override. The request is governed exclusively by
+  the validated execution policy instead of being correctly rejected as a
+  potential policy widening.
+
 ## [2.3.1] — 2026-08-21
 
 - Dashboard **View** now reconstructs a readable user/assistant transcript from
