@@ -79,6 +79,23 @@
   and 9.459 GB of build cache, so no pre-build cleanup is required. Installed
   v2.2.5 `/health` remains `ok` with exact `4e316f2...` image stamps and no
   durable sessions in `created`, `starting`, or `running` state.
+- RC1 live qualification on an isolated v2.3.0 daemon proved `/health`, exact
+  image stamps, the capability contract, embedded dashboard assets, a complete
+  cold Codex turn, and a second warm prompt. The warm input returned HTTP 202
+  in 3.511 ms; the durable prompt request reached provider `turn.started` in
+  8.292 ms without Docker/bootstrap work, produced exact `WARM-TWO`, and
+  completed in the same generation. Provider inference took 9.198 s to first
+  content in this sample and is outside the warm dispatch path.
+- RC1 portable export then found a code defect before installation. Actual
+  cause verbatim: `provider-state hash
+  "sha256:d5091c90a0a36f04a777c20b035a3dcd0f3e6fb46b5b48866839eff83423ebf2"
+  does not match manifest
+  "sha256:1cc1b15eaab1bae62a57bcff6de314376aae47b49b5afa31f40cb015c14b9aab"`.
+  Docker GNU tar pads output to a 10 KiB record, but validation stopped hashing
+  at the logical two-block tar EOF. A failing padded-tar regression reproduced
+  the mismatch; validation now drains the already size-bounded ZIP entry after
+  member validation so the exact full stream is hashed. Targeted portable,
+  maintained-session, and API tests pass; RC1 is superseded by RC2.
 
 ## v2.2.5 readiness, startup, and Docker continuation
 

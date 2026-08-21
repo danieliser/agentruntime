@@ -64,6 +64,25 @@ func TestResumeStateStoreRejectsUnsafeTarMember(t *testing.T) {
 	}
 }
 
+func TestResumeStateStoreAcceptsTarRecordPadding(t *testing.T) {
+	store := newResumeStateStore(t.TempDir())
+	stateTar := testProviderStateTar(t, "rollout/session.jsonl", []byte("provider conversation"))
+	stateTar = append(stateTar, make([]byte, 9*512)...)
+	_, _, err := store.Export(context.Background(), portableResumeManifest{
+		SchemaVersion: "1.0", Agent: "codex", ProviderSessionID: "thread-padded",
+		SourceSessionID: "session-padded", ProviderStateTarget: "/home/agent/.codex/sessions",
+		ImageReference: "agentruntime-agent-codex:2.3.0",
+		ImageDigest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CreatedAt:      time.Now().UTC(),
+	}, func(_ context.Context, writer io.Writer) error {
+		_, err := writer.Write(stateTar)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("padded provider-state tar: %v", err)
+	}
+}
+
 func TestResumeStateStoreUploadIsContentAddressed(t *testing.T) {
 	source := newResumeStateStore(t.TempDir())
 	stateTar := testProviderStateTar(t, "session.jsonl", []byte("portable"))

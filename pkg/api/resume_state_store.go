@@ -388,6 +388,13 @@ func validateResumeStateBundle(ctx context.Context, path string) (portableResume
 		_ = stateReader.Close()
 		return portableResumeManifest{}, err
 	}
+	// archive/tar stops at the logical two-block EOF marker. GNU tar pads the
+	// stream to its record size, and the manifest covers those exact exported
+	// bytes too, so drain the validated entry before comparing its digest.
+	if _, err := io.Copy(io.Discard, tee); err != nil {
+		_ = stateReader.Close()
+		return portableResumeManifest{}, fmt.Errorf("hash provider-state tar padding: %w", err)
+	}
 	if err := stateReader.Close(); err != nil {
 		return portableResumeManifest{}, fmt.Errorf("close provider-state archive: %w", err)
 	}
