@@ -30,6 +30,26 @@ func TestReleaseVersionMetadataIsConsistent(t *testing.T) {
 	}
 }
 
+func TestPyPIWorkflowSupportsImmutableTagRecovery(t *testing.T) {
+	workflowPath := filepath.Join("..", "..", ".github", "workflows", "release-pypi.yml")
+	content, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(content)
+	for _, required := range []string{
+		"workflow_dispatch:",
+		"resolve-release:",
+		`ref: ${{ env.RELEASE_TAG }}`,
+		"git rev-parse HEAD",
+		`COMMIT: ${{ needs.resolve-release.outputs.commit }}`,
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Fatalf("PyPI workflow missing immutable-tag recovery contract %q", required)
+		}
+	}
+}
+
 func TestVerifyRejectsArtifactDriftAndUnverifiableBuilds(t *testing.T) {
 	tests := []struct {
 		name     string

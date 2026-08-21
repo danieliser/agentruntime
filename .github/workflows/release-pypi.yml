@@ -4,13 +4,51 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing immutable release tag to publish (for missed tag events)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
 jobs:
+  resolve-release:
+    name: Resolve immutable release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Validate release identity
+        id: release
+        shell: bash
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tag must use vMAJOR.MINOR.PATCH form" >&2
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          commit="$(git rev-parse HEAD)"
+          test "$(git rev-list -n1 "${RELEASE_TAG}")" = "${commit}"
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' packages/agentd-py/pyproject.toml | head -1)" = "${version}"
+          echo "tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+
   build-wheels:
     name: Build wheel (${{ matrix.goos }}-${{ matrix.goarch }})
+    needs: resolve-release
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -35,6 +73,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.tag }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -46,13 +86,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Verify committed wrapper version
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
         run: test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' packages/agentd-py/pyproject.toml | head -1)" = "${VERSION}"
 
       - name: Build agentd binary
@@ -60,16 +96,16 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          VERSION: ${{ steps.version.outputs.version }}
-          COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          COMMIT: ${{ needs.resolve-release.outputs.commit }}
         run: |
           go build -trimpath -ldflags="-s -w -X github.com/danieliser/agentruntime/pkg/buildinfo.Version=${VERSION} -X github.com/danieliser/agentruntime/pkg/buildinfo.Commit=${COMMIT}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 
       - name: Verify embedded version
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          COMMIT: ${{ needs.resolve-release.outputs.commit }}
         run: |
           test "$(packages/agentd-py/agentruntime_agentd/bin/agentd --version)" = "${VERSION}"
           packages/agentd-py/agentruntime_agentd/bin/agentd --require-build "${VERSION}@${COMMIT}"
@@ -101,6 +137,7 @@ jobs:
   # Also build musl variants for Linux
   build-wheels-musl:
     name: Build wheel (linux-${{ matrix.goarch }}-musl)
+    needs: resolve-release
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -113,6 +150,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.tag }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -124,13 +163,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Verify committed wrapper version
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
         run: test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' packages/agentd-py/pyproject.toml | head -1)" = "${VERSION}"
 
       - name: Build agentd binary
@@ -138,8 +173,8 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          VERSION: ${{ steps.version.outputs.version }}
-          COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          COMMIT: ${{ needs.resolve-release.outputs.commit }}
         run: |
           go build -trimpath -ldflags="-s -w -X github.com/danieliser/agentruntime/pkg/buildinfo.Version=${VERSION} -X github.com/danieliser/agentruntime/pkg/buildinfo.Commit=${COMMIT}" -o packages/agentd-py/agentruntime_agentd/bin/agentd ./cmd/agentd
 

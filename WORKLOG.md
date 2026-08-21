@@ -1,5 +1,23 @@
 # AgentD overnight qualification worklog
 
+## v2.3.3 PyPI publication recovery
+
+- Resumed: 2026-08-21 (America/New_York), after the public GitHub release and
+  exact installed deployment were independently verified. Trading Floor Slice
+  043 correctly stopped at Step 0: PyPI and `pip index` exposed only 2.2.4,
+  and GitHub Actions had no `Release PyPI` run for any v2.2.5/v2.3.x tag.
+- **Actual cause before repair:** final tags v2.2.5, v2.3.0, v2.3.1, v2.3.2,
+  and v2.3.3 were pushed together in one `git push`. GitHub's documented push
+  event limit is verbatim: `An event will not be created when you push more
+  than three tags at once.` Therefore the tag-only `Release PyPI` workflow
+  received no event. The main-branch CI run exists and passed, but it cannot
+  publish because the PyPI workflow intentionally listens only for tag pushes.
+- Recovery boundary: the signed `v2.3.3` tag and release commit remain
+  immutable. Deleting, moving, or force-repushing the tag is not an acceptable
+  trigger mechanism. A reviewed manual-dispatch path must resolve and checkout
+  the requested existing tag, derive the embedded commit from that checkout,
+  and then use the same trusted-publisher jobs as a normal tag event.
+
 ## v2.3.3 session view drawer and inline row actions
 
 - Started: 2026-08-21 (America/New_York), from immutable signed v2.3.2 commit
