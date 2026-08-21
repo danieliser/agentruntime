@@ -93,6 +93,36 @@
   the already-qualified provider/sandbox layers byte-for-byte and changes only
   OCI provenance. Fully independent daily provider-base promotion remains a
   later release concern.
+- Final candidate `v2.2.5` is commit
+  `40a00ef91869fd4922fe8cc81b89e1c4c28f076f`. Its real cache-transition build
+  completed without exit 137 or ENOSPC; a second identical four-image build
+  showed every provider/package/bubblewrap layer as `CACHED` and completed in
+  21.63 seconds. Final image IDs are compatibility
+  `sha256:acb203c893b8aebc2fa400a9f88682d8b6ca0604fed03733c4dc1fa8d52b7743`,
+  Codex `sha256:0149bac5be1abcd6abac5c1f67b4b3bc4984fbef3087d0b4c7e0e5bd63d572f7`,
+  Claude `sha256:c0cd7f581693c0f639ab777934d46a49ff462cfa844b1c8107ce43e90e24d7f2`,
+  and proxy
+  `sha256:43889d69cae09c193c2b2aad744f427415df6afd486a341a0876e9975545d90d`.
+  All four carry the exact final version/commit OCI stamps, the tag-required
+  release verifier passed with Docker image verification enabled, and host
+  data-volume headroom remained 220 GiB.
+- The first run of the replacement-style installer correctly stopped the old
+  job but immediate bootstrap failed verbatim with `Bootstrap failed: 5:
+  Input/output error`; launchd no longer listed the service and port 38093 had
+  no listener. The plist passed `plutil -lint`, and the same bootstrap command
+  succeeded after launchd's asynchronous teardown completed, proving a bounded
+  bootout/bootstrap race. A red installer regression now requires a named
+  bounded retry; bootstrap retries once per second for at most 30 attempts,
+  preserves fail-loud behavior after the bound, and only then kickstarts.
+- Live health after manual service restoration found
+  `"docker":"unavailable","local":"stale"` with Docker's exact error
+  `docker proxy did not become ready: context deadline exceeded`. The earlier
+  passive-local fix was correct in isolation, but the monitor still ran all
+  runtimes as one batch and waited for the 60-second Docker probe before its
+  next interval; local therefore aged past 45 seconds behind Docker. A red
+  concurrency regression reproduced this. Each runtime now owns an independent
+  supervised refresh loop, so Docker latency cannot block local freshness or
+  monitor shutdown.
 - The first installed v2.2.5 candidate at `de173ab...` was rejected by the live
   gate and preserved as an RC rather than attested. The installer replaced the
   executable and plist but `launchctl load` returned verbatim `Load failed: 5:

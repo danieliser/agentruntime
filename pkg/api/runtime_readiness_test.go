@@ -125,6 +125,35 @@ func TestRuntimeReadinessRefreshesPassiveRuntimeTimestamp(t *testing.T) {
 	}
 }
 
+func TestSlowAdmissionProbeDoesNotStalePassiveRuntime(t *testing.T) {
+	probeStarted := make(chan struct{})
+	docker := &snapshotTestRuntime{name: "docker"}
+	docker.setCheck(func(ctx context.Context) error {
+		select {
+		case <-probeStarted:
+		default:
+			close(probeStarted)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	monitor := newRuntimeReadinessMonitor(map[string]runtime.Runtime{
+		"docker": docker,
+		"local":  &passiveSnapshotTestRuntime{name: "local"},
+	}, runtimeReadinessConfig{
+		interval: 5 * time.Millisecond, timeout: time.Second, staleAfter: 30 * time.Millisecond,
+	})
+	monitor.start()
+	t.Cleanup(monitor.stop)
+	<-probeStarted
+	time.Sleep(50 * time.Millisecond)
+
+	local := monitor.snapshot(time.Now())["local"]
+	if local.Status != "ready" || local.Stale {
+		t.Fatalf("slow Docker probe stalled passive runtime refresh: %+v", local)
+	}
+}
+
 func TestSessionAdmissionUsesPassiveRuntimeSnapshot(t *testing.T) {
 	rt := &snapshotTestRuntime{name: "docker"}
 	rt.setCheck(func(context.Context) error { return nil })

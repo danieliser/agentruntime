@@ -9,7 +9,8 @@ All notable changes to agentruntime are documented in this file.
   and includes verified Docker daemon, image digest, version, commit, and
   provider stamp details without running Docker CLI calls on the request path.
   Passive runtimes refresh their ready timestamp on every monitor interval so
-  they cannot become spuriously stale.
+  they cannot become spuriously stale, and each runtime has an independent
+  supervised loop so a slow Docker probe cannot delay another runtime.
 - AgentD prewarms the shared Docker proxy at startup. Transient proxy startup
   failures are retryable without a daemon restart, successful state is
   revalidated against the configured image ID, the readiness allowance covers
@@ -33,7 +34,9 @@ All notable changes to agentruntime are documented in this file.
   stamp-only AgentD release reuses the exact tested CLI and sandbox contents.
 - The macOS installer replaces an already-loaded launchd job with
   bootout/bootstrap/kickstart, preventing an upgraded binary and plist from
-  leaving the previous in-memory daemon running.
+  leaving the previous in-memory daemon running. Bootstrap retries cover
+  launchd's bounded asynchronous teardown window while persistent failure still
+  aborts installation.
 
 ## [2.2.4] — 2026-08-20
 

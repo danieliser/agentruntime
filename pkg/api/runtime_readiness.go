@@ -106,19 +106,31 @@ func (monitor *runtimeReadinessMonitor) start() {
 		monitor.mu.Unlock()
 		go func() {
 			defer close(monitor.done)
-			monitor.refresh(ctx)
-			ticker := time.NewTicker(monitor.config.interval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					monitor.refresh(ctx)
-				}
+			var wait sync.WaitGroup
+			for name, rt := range monitor.runtimes {
+				wait.Add(1)
+				go func(name string, rt runtime.Runtime) {
+					defer wait.Done()
+					monitor.runRuntime(ctx, name, rt)
+				}(name, rt)
 			}
+			wait.Wait()
 		}()
 	})
+}
+
+func (monitor *runtimeReadinessMonitor) runRuntime(ctx context.Context, name string, rt runtime.Runtime) {
+	monitor.refreshRuntime(ctx, name, rt)
+	ticker := time.NewTicker(monitor.config.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			monitor.refreshRuntime(ctx, name, rt)
+		}
+	}
 }
 
 func (monitor *runtimeReadinessMonitor) admission(name string, now time.Time) (bool, error) {
@@ -159,48 +171,53 @@ func (monitor *runtimeReadinessMonitor) stop() {
 func (monitor *runtimeReadinessMonitor) refresh(parent context.Context) {
 	var wait sync.WaitGroup
 	for name, rt := range monitor.runtimes {
-		checker, checked := rt.(runtime.AdmissionChecker)
-		if !checked {
-			monitor.mu.Lock()
-			monitor.snapshots[name] = runtimeReadinessSnapshot{
-				Status:    "ready",
-				CheckedAt: time.Now().UTC(),
-			}
-			monitor.mu.Unlock()
-			continue
-		}
 		wait.Add(1)
-		go func(name string, rt runtime.Runtime, checker runtime.AdmissionChecker) {
+		go func(name string, rt runtime.Runtime) {
 			defer wait.Done()
-			ctx, cancel := context.WithTimeout(parent, monitor.config.timeout)
-			defer cancel()
-			var err error
-			if prewarmer, ok := rt.(runtime.Prewarmer); ok {
-				err = prewarmer.Prewarm(ctx)
-			}
-			var details *runtime.AdmissionReport
-			if err == nil {
-				if reporter, ok := rt.(runtime.AdmissionReporter); ok {
-					report, reportErr := reporter.CheckAdmissionReport(ctx)
-					err = reportErr
-					if reportErr == nil {
-						details = &report
-					}
-				} else {
-					err = checker.CheckAdmission(ctx)
-				}
-			}
-			snapshot := runtimeReadinessSnapshot{Status: "ready", CheckedAt: time.Now().UTC(), Details: details}
-			if err != nil {
-				snapshot.Status = "unavailable"
-				snapshot.LastError = err.Error()
-			}
-			monitor.mu.Lock()
-			monitor.snapshots[name] = snapshot
-			monitor.mu.Unlock()
-		}(name, rt, checker)
+			monitor.refreshRuntime(parent, name, rt)
+		}(name, rt)
 	}
 	wait.Wait()
+}
+
+func (monitor *runtimeReadinessMonitor) refreshRuntime(parent context.Context, name string, rt runtime.Runtime) {
+	checker, checked := rt.(runtime.AdmissionChecker)
+	if !checked {
+		monitor.mu.Lock()
+		monitor.snapshots[name] = runtimeReadinessSnapshot{
+			Status:    "ready",
+			CheckedAt: time.Now().UTC(),
+		}
+		monitor.mu.Unlock()
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(parent, monitor.config.timeout)
+	defer cancel()
+	var err error
+	if prewarmer, ok := rt.(runtime.Prewarmer); ok {
+		err = prewarmer.Prewarm(ctx)
+	}
+	var details *runtime.AdmissionReport
+	if err == nil {
+		if reporter, ok := rt.(runtime.AdmissionReporter); ok {
+			report, reportErr := reporter.CheckAdmissionReport(ctx)
+			err = reportErr
+			if reportErr == nil {
+				details = &report
+			}
+		} else {
+			err = checker.CheckAdmission(ctx)
+		}
+	}
+	snapshot := runtimeReadinessSnapshot{Status: "ready", CheckedAt: time.Now().UTC(), Details: details}
+	if err != nil {
+		snapshot.Status = "unavailable"
+		snapshot.LastError = err.Error()
+	}
+	monitor.mu.Lock()
+	monitor.snapshots[name] = snapshot
+	monitor.mu.Unlock()
 }
 
 func (monitor *runtimeReadinessMonitor) snapshot(now time.Time) map[string]runtimeReadinessSnapshot {

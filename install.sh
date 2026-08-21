@@ -32,6 +32,28 @@ PORT=8090
 CREDENTIAL_SYNC=true
 DOCKER_DEFAULT=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAUNCHD_BOOTSTRAP_ATTEMPTS=30
+
+launchctl_bootstrap_retry() {
+    local domain="$1"
+    local plist="$2"
+    local privileged="$3"
+    local attempt output=""
+    for ((attempt = 1; attempt <= LAUNCHD_BOOTSTRAP_ATTEMPTS; attempt++)); do
+        if [ "$privileged" = true ]; then
+            if output="$(sudo launchctl bootstrap "$domain" "$plist" 2>&1)"; then
+                return 0
+            fi
+        elif output="$(launchctl bootstrap "$domain" "$plist" 2>&1)"; then
+            return 0
+        fi
+        if [ "$attempt" -lt "$LAUNCHD_BOOTSTRAP_ATTEMPTS" ]; then
+            sleep 1
+        fi
+    done
+    printf '%s\n' "$output" >&2
+    return 1
+}
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -239,7 +261,10 @@ EOF
         if sudo launchctl print "$LAUNCHD_SERVICE" &> /dev/null; then
             sudo launchctl bootout "$LAUNCHD_SERVICE"
         fi
-        sudo launchctl bootstrap "$LAUNCHD_DOMAIN" "$SERVICE_PLIST"
+        if ! launchctl_bootstrap_retry "$LAUNCHD_DOMAIN" "$SERVICE_PLIST" true; then
+            echo "error: launchd did not accept the system service after ${LAUNCHD_BOOTSTRAP_ATTEMPTS} attempts" >&2
+            exit 1
+        fi
         sudo launchctl kickstart -k "$LAUNCHD_SERVICE"
         echo "✓ replaced and started system service with launchctl"
     else
@@ -248,7 +273,10 @@ EOF
         if launchctl print "$LAUNCHD_SERVICE" &> /dev/null; then
             launchctl bootout "$LAUNCHD_SERVICE"
         fi
-        launchctl bootstrap "$LAUNCHD_DOMAIN" "$SERVICE_PLIST"
+        if ! launchctl_bootstrap_retry "$LAUNCHD_DOMAIN" "$SERVICE_PLIST" false; then
+            echo "error: launchd did not accept the user service after ${LAUNCHD_BOOTSTRAP_ATTEMPTS} attempts" >&2
+            exit 1
+        fi
         launchctl kickstart -k "$LAUNCHD_SERVICE"
         echo "✓ replaced and started user service with launchctl"
     fi
