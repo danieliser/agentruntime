@@ -231,13 +231,26 @@ EOF
     touch "$HOME/Library/Logs/agentruntime/agentd.log"
     chmod 600 "$HOME/Library/Logs/agentruntime/agentd.log"
 
-    # Load the service
+    # Replace the loaded job so an upgrade cannot leave the previous binary
+    # running from memory after the plist and executable have been replaced.
     if [ "$SYSTEM_INSTALL" = true ]; then
-        sudo launchctl load "$SERVICE_PLIST"
-        echo "✓ loaded system service with launchctl"
+        LAUNCHD_DOMAIN="system"
+        LAUNCHD_SERVICE="${LAUNCHD_DOMAIN}/com.agentruntime.agentd"
+        if sudo launchctl print "$LAUNCHD_SERVICE" &> /dev/null; then
+            sudo launchctl bootout "$LAUNCHD_SERVICE"
+        fi
+        sudo launchctl bootstrap "$LAUNCHD_DOMAIN" "$SERVICE_PLIST"
+        sudo launchctl kickstart -k "$LAUNCHD_SERVICE"
+        echo "✓ replaced and started system service with launchctl"
     else
-        launchctl load "$SERVICE_PLIST"
-        echo "✓ loaded user service with launchctl"
+        LAUNCHD_DOMAIN="gui/$(id -u)"
+        LAUNCHD_SERVICE="${LAUNCHD_DOMAIN}/com.agentruntime.agentd"
+        if launchctl print "$LAUNCHD_SERVICE" &> /dev/null; then
+            launchctl bootout "$LAUNCHD_SERVICE"
+        fi
+        launchctl bootstrap "$LAUNCHD_DOMAIN" "$SERVICE_PLIST"
+        launchctl kickstart -k "$LAUNCHD_SERVICE"
+        echo "✓ replaced and started user service with launchctl"
     fi
 
 else

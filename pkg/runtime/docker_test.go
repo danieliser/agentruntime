@@ -470,7 +470,7 @@ case "$1" in
   inspect)
     if [ "$3" = "{{json .State}}" ]; then
       printf '%%s\n' '{"Status":"exited","Running":false,"OOMKilled":false,"Dead":false,"ExitCode":0,"Error":"","StartedAt":"2026-08-09T12:00:00Z","FinishedAt":"2026-08-09T12:00:01Z"}'
-    elif [ "$3" = "{{.Image}}" ]; then
+    elif [ "${5-}" = "{{.Image}}" ] || [ "$3" = "{{.Image}}" ]; then
       printf 'sha256:native-image\n'
     else
       printf 'true\n'

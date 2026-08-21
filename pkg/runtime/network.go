@@ -142,8 +142,11 @@ func (m *NetworkManager) EnsureProxy(ctx context.Context) error {
 	if m.proxyReady {
 		running, err := dockerInspectRunningHost(ctx, m.dockerHost(), dockerProxyContainerName)
 		if err == nil && running {
-			if err := m.prepareRunningProxy(ctx); err == nil {
-				return nil
+			matches, matchErr := dockerContainerUsesImageHost(ctx, m.dockerHost(), dockerProxyContainerName, m.proxyImage())
+			if matchErr == nil && matches {
+				if err := m.prepareRunningProxy(ctx); err == nil {
+					return nil
+				}
 			}
 		}
 		m.proxyReady = false
@@ -171,7 +174,13 @@ func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
 	state, err := dockerInspectRunningHost(ctx, host, dockerProxyContainerName)
 	if err == nil {
 		if state {
-			return m.prepareRunningProxy(ctx)
+			matches, matchErr := dockerContainerUsesImageHost(ctx, host, dockerProxyContainerName, m.proxyImage())
+			if matchErr != nil {
+				return fmt.Errorf("verify docker proxy image: %w", matchErr)
+			}
+			if matches {
+				return m.prepareRunningProxy(ctx)
+			}
 		}
 		if err := dockerRemoveContainerHost(ctx, host, dockerProxyContainerName); err != nil {
 			return err
@@ -326,6 +335,18 @@ func dockerInspectRunningHost(ctx context.Context, host, name string) (bool, err
 		return false, err
 	}
 	return strings.TrimSpace(out) == "true", nil
+}
+
+func dockerContainerUsesImageHost(ctx context.Context, host, containerName, image string) (bool, error) {
+	containerImageID, err := dockerOutputHost(ctx, host, "inspect", "--type", "container", "--format", "{{.Image}}", containerName)
+	if err != nil {
+		return false, err
+	}
+	desiredImageID, err := dockerOutputHost(ctx, host, "image", "inspect", "--format", "{{.Id}}", image)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(containerImageID) == strings.TrimSpace(desiredImageID), nil
 }
 
 func dockerRemoveContainerHost(ctx context.Context, host, name string) error {

@@ -161,6 +161,12 @@ func (monitor *runtimeReadinessMonitor) refresh(parent context.Context) {
 	for name, rt := range monitor.runtimes {
 		checker, checked := rt.(runtime.AdmissionChecker)
 		if !checked {
+			monitor.mu.Lock()
+			monitor.snapshots[name] = runtimeReadinessSnapshot{
+				Status:    "ready",
+				CheckedAt: time.Now().UTC(),
+			}
+			monitor.mu.Unlock()
 			continue
 		}
 		wait.Add(1)

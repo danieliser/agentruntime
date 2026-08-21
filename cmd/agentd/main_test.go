@@ -94,7 +94,7 @@ func TestInstallerLaunchdPathCoversDockerLocations(t *testing.T) {
 		t.Fatalf("read installer: %v", err)
 	}
 	content := string(installer)
-	for _, required := range []string{"<key>EnvironmentVariables</key>", "/usr/local/bin", "/opt/homebrew/bin"} {
+	for _, required := range []string{"<key>EnvironmentVariables</key>", "/usr/local/bin", "/opt/homebrew/bin", "launchctl bootout", "launchctl bootstrap", "launchctl kickstart -k"} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("launchd installer is missing %q", required)
 		}

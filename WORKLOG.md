@@ -60,19 +60,64 @@
 - Pre-image release gates pass: `go test ./...`, `go test -race ./...`,
   `go vet ./...`, JavaScript syntax checks, shell syntax checks, and
   `git diff --check`.
+- Release candidate committed and annotated as `v2.2.5` at
+  `de173ab0d23ac1214461c986613faa1de26a7258`. A real four-image build
+  completed without exit 137 or ENOSPC, with 224 GiB host data-volume
+  headroom remaining. Exact image IDs are: compatibility runtime
+  `sha256:8ff8d5ccba6be0131fed76b9430bded33e1ee89d1b7a1856b2a4d4025542361f`,
+  Codex runtime
+  `sha256:400b0ad61ee7e1e3ff2ead9fc169caeeea798dabdc59b7c0c98427929ea9237f`,
+  Claude runtime
+  `sha256:182d1374e9d283ee09e5b554dc8baf8aaf1a3fd796b4e8cc1f205cbd8632c5ce`,
+  and proxy
+  `sha256:e48a6ae09de3136cea955c8e6ecb36d88615c74d32e8a410388eb327d3831b86`.
+  All four carry exact `2.2.5`/release-commit OCI stamps; runtime provider
+  labels are `all`, `codex`, and `claude` respectively.
+- Image-content qualification confirms the compatibility image contains Codex
+  0.149.0, Claude Code 2.1.238, and `/usr/bin/bwrap`; the 727.3 MB Codex image
+  contains Codex and bubblewrap but no Claude CLI; the 779.6 MB Claude image
+  contains Claude but neither Codex nor bubblewrap. The compatibility runtime
+  is 1.063 GB and the proxy is 236.4 MB. The release verifier passed with both
+  `REQUIRE_RELEASE_TAG=1` and `VERIFY_DOCKER_IMAGES=1` before installation.
+- Follow-up packaging decision: provider CLIs release independently and often
+  daily, so future images should use content-addressed provider base images
+  promoted on their own tested cadence. AgentD releases should add only a thin
+  ABI/provenance layer pinned to a provider digest; heavy toolchain layers must
+  rebuild only when provider or sandbox inputs change, with the previous
+  digest retained for rollback. This is not being added after the v2.2.5 tag.
+- The first installed v2.2.5 candidate at `de173ab...` was rejected by the live
+  gate and preserved as an RC rather than attested. The installer replaced the
+  executable and plist but `launchctl load` returned verbatim `Load failed: 5:
+  Input/output error`; PID 34416 remained the in-memory v2.2.4 process and
+  `/health` still reported `"version":"2.2.4"` until an explicit kickstart.
+  Installer regression coverage now requires bootout/bootstrap/kickstart so an
+  upgrade replaces an already-loaded job instead of printing false success.
+- After the restart, the passive monitor exposed a second exact failure:
+  `/health` returned HTTP 503 with `"docker":"ready","local":"stale"`.
+  Root cause: `runtimeReadinessMonitor.refresh` skipped runtimes that do not
+  implement `AdmissionChecker`, so local's constructor timestamp was never
+  refreshed and crossed the 45-second stale threshold. A red test reproduced
+  the unchanged timestamp; the monitor now republishes a fresh ready snapshot
+  for passive runtimes on every interval.
+- The live upgrade also found `agentruntime-proxy` still running the v2.2.4
+  image ID `sha256:a21efddc...` under the mutable `:latest` reference. The new
+  manager revalidated liveness/readiness but not provenance, so it accepted the
+  old process while `/health` correctly described only the installed v2.2.5
+  image. A red test now requires replacement when the running container's
+  immutable image ID differs from the configured proxy image ID. The sole
+  AgentD-owned stale proxy container was removed and recreated from stamped
+  v2.2.5; no unrelated container, host file, or cache was deleted.
 
 ## Embedded live-agent console scaffold
 
 - Console activity now renders expandable normalized tool/provider items with
   method, item kind, status, optional duration, and the full JSON payload.
   Terminal local sessions can be continued from either the composer or a new
-  History `Continue` action. Docker terminal continuation is intentionally
-  disabled with an explicit v2.2.5 message: two Docker proofs showed that a new
-  logical session completed successfully but received a different Codex thread
-  ID even when supplied the prior logical ID or native thread ID. The old
-  rollout remains in its per-session mount while the new container receives a
-  fresh mount, so claiming provider continuity would be false. v2.2.5 must
-  preserve/reuse provider state for Docker before enabling this control.
+  History `Continue` action. The initial scaffold deliberately disabled Docker
+  continuation after two false-continuation proofs exposed fresh per-session
+  mounts; the v2.2.5 persistence and lineage implementation above supersedes
+  that safeguard and re-enables the control only when the backend reports the
+  session as resumable.
 - Docker cold-path measurements: the runtime image is 1.048 GB and the proxy
   image is 236 MB. The observed first failure was dominated by Squid readiness
   (33 seconds), while subsequent proxy-warm Docker creates still took roughly

@@ -105,6 +105,26 @@ func TestHealthRejectsStaleRuntimeSnapshot(t *testing.T) {
 	}
 }
 
+func TestRuntimeReadinessRefreshesPassiveRuntimeTimestamp(t *testing.T) {
+	monitor := newRuntimeReadinessMonitor(map[string]runtime.Runtime{
+		"local": &passiveSnapshotTestRuntime{name: "local"},
+	}, runtimeReadinessConfig{
+		interval: time.Hour, timeout: time.Second, staleAfter: time.Hour,
+	})
+	initial := monitor.snapshot(time.Now())["local"].CheckedAt
+	time.Sleep(5 * time.Millisecond)
+
+	monitor.refresh(context.Background())
+
+	refreshed := monitor.snapshot(time.Now())["local"]
+	if !refreshed.CheckedAt.After(initial) {
+		t.Fatalf("passive runtime timestamp was not refreshed: initial=%s refreshed=%s", initial, refreshed.CheckedAt)
+	}
+	if refreshed.Status != "ready" || refreshed.Stale {
+		t.Fatalf("passive runtime snapshot = %+v, want fresh ready", refreshed)
+	}
+}
+
 func TestSessionAdmissionUsesPassiveRuntimeSnapshot(t *testing.T) {
 	rt := &snapshotTestRuntime{name: "docker"}
 	rt.setCheck(func(context.Context) error { return nil })
@@ -151,3 +171,16 @@ func (*snapshotTestRuntime) Recover(context.Context) ([]runtime.ProcessHandle, e
 	return nil, nil
 }
 func (*snapshotTestRuntime) Cleanup(context.Context) error { return nil }
+
+type passiveSnapshotTestRuntime struct {
+	name string
+}
+
+func (rt *passiveSnapshotTestRuntime) Name() string { return rt.name }
+func (*passiveSnapshotTestRuntime) Spawn(context.Context, runtime.SpawnConfig) (runtime.ProcessHandle, error) {
+	panic("not used")
+}
+func (*passiveSnapshotTestRuntime) Recover(context.Context) ([]runtime.ProcessHandle, error) {
+	return nil, nil
+}
+func (*passiveSnapshotTestRuntime) Cleanup(context.Context) error { return nil }

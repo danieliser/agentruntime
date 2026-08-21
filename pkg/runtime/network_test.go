@@ -102,12 +102,13 @@ case "$1 $2" in
     ;;
   "inspect --type")
     if [ -f "$PROXY_STATE" ]; then
-      printf 'true\n'
+      if [ "$5" = "{{.Image}}" ]; then printf 'sha256:proxy\n'; else printf 'true\n'; fi
       exit 0
     fi
     echo "Error: No such object: agentruntime-proxy" >&2
     exit 1
     ;;
+  "image inspect") printf 'sha256:proxy\n'; exit 0 ;;
   "run -d")
     : > "$PROXY_STATE"
     printf 'proxy-container\n'
@@ -158,7 +159,11 @@ READY_FILE="`+readyFile+`"
 case "$1 $2" in
   "network inspect") exit 0 ;;
   "network connect") exit 0 ;;
-  "inspect --type") printf 'true\n'; exit 0 ;;
+  "inspect --type")
+    if [ "$5" = "{{.Image}}" ]; then printf 'sha256:proxy\n'; else printf 'true\n'; fi
+    exit 0
+    ;;
+  "image inspect") printf 'sha256:proxy\n'; exit 0 ;;
   "exec agentruntime-proxy")
     if [ -f "$READY_FILE" ]; then exit 0; fi
     exit 1
@@ -179,5 +184,50 @@ exit 2
 	}
 	if err := manager.EnsureProxy(context.Background()); err != nil {
 		t.Fatalf("EnsureProxy did not retry after transient readiness failure: %v", err)
+	}
+}
+
+func TestNetworkManager_EnsureProxyReplacesMismatchedImage(t *testing.T) {
+	tempDir := t.TempDir()
+	logFile := filepath.Join(tempDir, "docker.log")
+	proxyImageState := filepath.Join(tempDir, "proxy.image")
+	if err := os.WriteFile(proxyImageState, []byte("sha256:old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installFakeDockerWithReadinessControl(t, `#!/bin/sh
+set -eu
+LOG_FILE="`+logFile+`"
+PROXY_IMAGE_STATE="`+proxyImageState+`"
+printf '%s\n' "$*" >> "$LOG_FILE"
+case "$1 $2" in
+  "network inspect"|"network connect") exit 0 ;;
+  "inspect --type")
+    if [ "$5" = "{{.State.Running}}" ]; then printf 'true\n'; exit 0; fi
+    if [ "$5" = "{{.Image}}" ]; then cat "$PROXY_IMAGE_STATE"; exit 0; fi
+    ;;
+  "image inspect") printf 'sha256:new\n'; exit 0 ;;
+  "rm -f") rm -f "$PROXY_IMAGE_STATE"; exit 0 ;;
+  "run -d") printf 'sha256:new\n' > "$PROXY_IMAGE_STATE"; printf 'proxy-container\n'; exit 0 ;;
+  "exec agentruntime-proxy") exit 0 ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+
+	manager := &NetworkManager{ProxyImage: "agentruntime-proxy:2.2.5"}
+	if err := manager.EnsureProxy(context.Background()); err != nil {
+		t.Fatalf("EnsureProxy failed: %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logContent := string(data)
+	if !strings.Contains(logContent, "rm -f "+dockerProxyContainerName+"\n") {
+		t.Fatalf("mismatched proxy image was not removed; log=%q", logContent)
+	}
+	if !strings.Contains(logContent, "run -d --name "+dockerProxyContainerName+" --network "+defaultDockerNetworkName+" agentruntime-proxy:2.2.5\n") {
+		t.Fatalf("stamped proxy image was not started; log=%q", logContent)
 	}
 }
