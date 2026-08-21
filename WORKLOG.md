@@ -17,6 +17,34 @@
   trigger mechanism. A reviewed manual-dispatch path must resolve and checkout
   the requested existing tag, derive the embedded commit from that checkout,
   and then use the same trusted-publisher jobs as a normal tag event.
+- TDD red `TestPyPIWorkflowSupportsImmutableTagRecovery` first failed on the
+  absent `workflow_dispatch` contract. The green implementation adds one
+  strict `vMAJOR.MINOR.PATCH` input and a canonical resolver job that checks out
+  the tag, verifies its committed wrapper version, derives `git rev-parse HEAD`,
+  and supplies that tag/version/commit to both wheel matrices. Full tests,
+  race, vet, and diff checks pass. PR #12 passed both supported-Go CI jobs and
+  merged as original SSH-signed commit
+  `e6fd8a502d8eb32a2f5f8c3f32a7ae7f29da0719` without rewriting the release tag.
+- Manual trusted-publisher run
+  `https://github.com/danieliser/agentruntime/actions/runs/32471312683`
+  completed successfully: immutable-release resolution, all six build jobs,
+  embedded Linux identity verification, artifact collection, PyPI trusted
+  publication, and digital attestations passed. PyPI accepted the two macOS
+  and two manylinux wheels. It skipped the two musllinux names as
+  duplicate-content files; this is the same four-public-wheel result exposed by
+  2.2.4, 2.2.3, and 2.1.2, and does not remove either supported architecture.
+- Independent post-publication proof: direct PyPI JSON reports
+  `agentruntime-agentd==2.3.3`; uncached `pip index` reports latest/available
+  2.3.3; and a clean macOS arm64 virtual environment installed the public wheel,
+  reported `{"agentd_version":"2.3.3","commit_hash":"ae8c8b03..."}`, and passed
+  exact `--require-build
+  2.3.3@ae8c8b03a7aa329fc73efdc14443263b5b36f6b2`. The temporary environment was
+  moved to Trash.
+- **PyPI readiness attestation:** the public distribution
+  `agentruntime-agentd` now resolves at 2.3.3, its installed binary is exact
+  `2.3.3@ae8c8b03a7aa329fc73efdc14443263b5b36f6b2`, and the successful trusted
+  publisher run is linked above. Trading Floor Slice 043 Step 0 may resume; no
+  Floor source, Red test, or canary session was touched during this repair.
 
 ## v2.3.3 session view drawer and inline row actions
 
