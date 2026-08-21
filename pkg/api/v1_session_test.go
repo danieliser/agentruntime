@@ -18,10 +18,12 @@ import (
 
 	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/durable"
+	durablememory "github.com/danieliser/agentruntime/pkg/durable/memory"
 	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
+	"github.com/gorilla/websocket"
 )
 
 func TestV1CreateSessionIsConcurrentAndRestartIdempotent(t *testing.T) {
@@ -749,6 +751,132 @@ func TestV1CodexAppServerBootstrapsAndPersistsNativeLedger(t *testing.T) {
 	if err != nil || generation.ProviderID != "codex-fixture-thread" {
 		t.Fatalf("Codex provider identity = %+v err=%v", generation, err)
 	}
+	inspect, err := http.Get(ts.URL + "/api/v1/sessions/" + created.Data.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspect.Body.Close()
+	var public struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, inspect.Body, &public)
+	if public.Data.ProviderSessionID != "codex-fixture-thread" || !public.Data.Resumable {
+		t.Fatalf("public provider continuation metadata = %+v", public.Data)
+	}
+}
+
+func TestV1CodexFollowUpUsesDurableProviderIdentity(t *testing.T) {
+	store := durablememory.New()
+	ctx := context.Background()
+	root, err := store.CreateSession(ctx, durable.CreateSessionParams{
+		SessionID: "root-codex-session", IdempotencyKey: "root-codex-job", RequestHash: "sha256:root",
+		RequestManifest: json.RawMessage(`{"agent":"codex","runtime":"test"}`),
+		Agent:           "codex", Runtime: "test", CreatedAt: time.Now().UTC(),
+	})
+	if err != nil || !root.Created {
+		t.Fatalf("create root session: %+v err=%v", root, err)
+	}
+	if _, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{
+		SessionID: root.Session.ID, Runtime: "test", ContainerID: "root-container",
+		ProviderID: "provider-original-thread", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := &atomic.Int32{}
+	rt := &countingRuntime{Runtime: runtime.NewLocalRuntime(), count: counter}
+	registry := agent.NewRegistry()
+	registry.Register(&resumingCodexFixtureAgent{})
+	server := NewServer(session.NewManager(), rt, registry, ServerConfig{
+		DataDir: t.TempDir(), LogDir: filepath.Join(t.TempDir(), "logs"),
+		DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+
+	response := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "followup-codex-job", "agent": "codex", "runtime": "test",
+		"prompt": "continue", "resume_session": root.Session.ID,
+	})
+	defer response.Body.Close()
+	var created struct {
+		Data  v1SessionData    `json:"data"`
+		Error apiErrorEnvelope `json:"error"`
+	}
+	decodeJSON(t, response.Body, &created)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("follow-up status=%d error=%+v", response.StatusCode, created.Error)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	generation, err := store.GetGeneration(ctx, created.Data.SessionID, 1)
+	if err != nil || generation.ProviderID != "provider-original-thread" {
+		t.Fatalf("follow-up provider identity = %+v err=%v", generation, err)
+	}
+}
+
+func TestV1NativeCreateReturnsBeforeRuntimeSpawnCompletes(t *testing.T) {
+	store := durablememory.New()
+	rt := &blockingSpawnTestRuntime{
+		Runtime: runtime.NewLocalRuntime(), started: make(chan struct{}), release: make(chan struct{}),
+	}
+	registry := agent.NewRegistry()
+	registry.Register(&nativeCodexFixtureAgent{})
+	server := NewServer(session.NewManager(), rt, registry, ServerConfig{
+		DataDir: t.TempDir(), LogDir: filepath.Join(t.TempDir(), "logs"),
+		DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	defer rt.releaseSpawn()
+
+	payload, err := json.Marshal(map[string]any{
+		"idempotency_key": "async-native-create", "agent": "codex", "runtime": "test", "prompt": "start",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: 250 * time.Millisecond}
+	startedAt := time.Now()
+	response, err := client.Post(httpServer.URL+"/api/v1/sessions", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("create blocked on runtime spawn: %v", err)
+	}
+	defer response.Body.Close()
+	if elapsed := time.Since(startedAt); elapsed > 200*time.Millisecond {
+		t.Fatalf("create response waited %s for runtime spawn", elapsed)
+	}
+	var admitted struct {
+		Data v1SessionData `json:"data"`
+	}
+	decodeJSON(t, response.Body, &admitted)
+	if response.StatusCode != http.StatusCreated || admitted.Data.SessionID == "" || admitted.Data.State != durable.StateCreated {
+		t.Fatalf("async admission status=%d data=%+v", response.StatusCode, admitted.Data)
+	}
+	select {
+	case <-rt.started:
+	case <-time.After(time.Second):
+		t.Fatal("background runtime spawn did not start")
+	}
+	streamURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/v1/ws/sessions/" + admitted.Data.SessionID + "/events"
+	connection, _, err := websocket.DefaultDialer.Dial(streamURL, nil)
+	if err != nil {
+		t.Fatalf("open startup stream: %v", err)
+	}
+	defer connection.Close()
+	_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+	var ready map[string]any
+	if err := connection.ReadJSON(&ready); err != nil || ready["frame_type"] != "stream.ready" {
+		t.Fatalf("startup stream ready frame=%+v err=%v", ready, err)
+	}
+	var progress map[string]any
+	if err := connection.ReadJSON(&progress); err != nil {
+		t.Fatalf("read startup progress: %v", err)
+	}
+	if progress["frame_type"] != "session.progress" || progress["stage"] != "runtime.spawn" {
+		t.Fatalf("startup progress frame = %+v", progress)
+	}
+	rt.releaseSpawn()
+	waitForDurableTerminal(t, store, admitted.Data.SessionID)
 }
 
 func TestV1NativeInputAndInterruptUseActiveProviderTransport(t *testing.T) {
@@ -1263,6 +1391,26 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-th
 
 func (*nativeCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
 
+type resumingCodexFixtureAgent struct{}
+
+func (*resumingCodexFixtureAgent) Name() string { return "codex" }
+func (*resumingCodexFixtureAgent) BuildCmd(string, agent.AgentConfig) ([]string, error) {
+	return []string{"/bin/sh", "-c", `
+IFS= read -r initialize
+printf '%s\n' '{"id":0,"result":{"userAgent":"codex-resume-fixture"}}'
+IFS= read -r initialized
+IFS= read -r thread_resume
+case "$thread_resume" in
+  *'"method":"thread/resume"'*'"threadId":"provider-original-thread"'*) ;;
+  *) printf 'expected durable thread/resume, got %s\n' "$thread_resume" >&2; exit 9 ;;
+esac
+printf '%s\n' '{"id":1,"result":{"threadId":"provider-original-thread"}}'
+IFS= read -r turn_start
+printf '%s\n' '{"id":2,"result":{}}' '{"method":"turn/started","params":{"threadId":"provider-original-thread","turnId":"resumed-turn"}}' '{"method":"item/agentMessage/delta","params":{"threadId":"provider-original-thread","turnId":"resumed-turn","delta":"continued"}}' '{"method":"turn/completed","params":{"threadId":"provider-original-thread","turnId":"resumed-turn","status":"completed"}}'
+`}, nil
+}
+func (*resumingCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
+
 type interactiveCodexFixtureAgent struct{}
 
 func (*interactiveCodexFixtureAgent) Name() string { return "codex" }
@@ -1308,6 +1456,28 @@ func (*cancelCodexFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) {
 type countingRuntime struct {
 	Runtime runtime.Runtime
 	count   *atomic.Int32
+}
+
+type blockingSpawnTestRuntime struct {
+	runtime.Runtime
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func (*blockingSpawnTestRuntime) Name() string { return "test" }
+func (rt *blockingSpawnTestRuntime) Spawn(ctx context.Context, config runtime.SpawnConfig) (runtime.ProcessHandle, error) {
+	rt.startedOnce.Do(func() { close(rt.started) })
+	select {
+	case <-rt.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return rt.Runtime.Spawn(ctx, config)
+}
+func (rt *blockingSpawnTestRuntime) releaseSpawn() {
+	rt.releaseOnce.Do(func() { close(rt.release) })
 }
 
 type terminalResultRuntime struct {

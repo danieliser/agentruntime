@@ -46,6 +46,12 @@ type Server struct {
 	draining      bool
 	nativeMu      sync.RWMutex
 	native        map[string]*activeNativeSession
+	readiness     *runtimeReadinessMonitor
+	activationCtx context.Context
+	activationEnd context.CancelFunc
+	activationMu  sync.Mutex
+	activations   int
+	progress      *activationProgressBroker
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -127,6 +133,18 @@ type ServerConfig struct {
 
 	// ObserverService exposes independently supervised immutable-event plugins.
 	ObserverService ObserverService
+
+	// RuntimeProbeInterval controls passive runtime readiness refreshes.
+	// Zero uses the production default.
+	RuntimeProbeInterval time.Duration
+
+	// RuntimeProbeTimeout bounds one background refresh across each runtime.
+	// Zero uses the production default.
+	RuntimeProbeTimeout time.Duration
+
+	// RuntimeProbeStaleAfter fails readiness when the most recent completed
+	// probe is older than this duration. Zero uses the production default.
+	RuntimeProbeStaleAfter time.Duration
 }
 
 // DiagnosticLogConfig controls private, redacted, non-canonical session logs.
@@ -196,17 +214,21 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		commitHash = cfgs[0].CommitHash
 	}
 
+	activationCtx, activationEnd := context.WithCancel(context.Background())
 	s := &Server{
-		router:     router,
-		sessions:   sessions,
-		runtimes:   runtimes,
-		runtime:    rt,
-		agents:     agents,
-		version:    version,
-		commitHash: commitHash,
-		dataDir:    dataDir,
-		logDir:     logDir,
-		native:     make(map[string]*activeNativeSession),
+		router:        router,
+		sessions:      sessions,
+		runtimes:      runtimes,
+		runtime:       rt,
+		agents:        agents,
+		version:       version,
+		commitHash:    commitHash,
+		dataDir:       dataDir,
+		logDir:        logDir,
+		native:        make(map[string]*activeNativeSession),
+		activationCtx: activationCtx,
+		activationEnd: activationEnd,
+		progress:      newActivationProgressBroker(),
 	}
 	if len(cfgs) > 0 {
 		s.listenerScope = cfgs[0].ListenerScope
@@ -220,6 +242,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		s.eventBroker = cfgs[0].EventBroker
 		s.observers = cfgs[0].ObserverService
 	}
+	s.readiness = newRuntimeReadinessMonitor(runtimes, configuredRuntimeReadiness(cfgs...))
 
 	RegisterRoutes(router, s)
 	return s
@@ -227,6 +250,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 
 // Start begins listening on the given address. Blocks until the server is stopped.
 func (s *Server) Start(addr string) error {
+	s.startRuntimeReadiness()
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           s.router,
@@ -252,6 +276,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.admissionMu.Lock()
 	s.draining = true
 	s.admissionMu.Unlock()
+	s.stopRuntimeReadiness()
 
 	var errs []error
 	if s.srv != nil {
@@ -259,6 +284,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	s.activationEnd()
+	s.waitForActivationDrain(ctx)
 
 	waitForSessionDrain(ctx, s.sessions)
 	preserveDocker := false

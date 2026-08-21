@@ -2,6 +2,31 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.2.5] — 2026-08-21
+
+- Runtime admission is supervised in the background. `/health` returns the
+  latest timestamped snapshot immediately, marks stale evidence unavailable,
+  and includes verified Docker daemon, image digest, version, commit, and
+  provider stamp details without running Docker CLI calls on the request path.
+- AgentD prewarms the shared Docker proxy at startup. Transient proxy startup
+  failures are retryable without a daemon restart, successful state is
+  revalidated, the readiness allowance covers measured cold starts, and the
+  invalid Squid `cache_dir null` initialization path is removed.
+- Native v1 creation returns after durable admission while supervised runtime
+  activation continues in the background. The existing WebSocket emits
+  additive `session.progress` frames for admission, spawn, provider bootstrap,
+  and running state; durable provider events retain their sequence contract.
+- Unrestricted Docker Codex and Claude sessions retain only provider-native
+  conversation state by default. Follow-ups resolve provider identity and root
+  volume lineage from the durable store across daemon restarts, fail closed if
+  the volume is missing, and send the exact Codex `thread/resume` request.
+- Public sessions expose `provider_session_id`, `resumable`, and continuation
+  lineage. The embedded dashboard can continue eligible Docker history and
+  uses logical AgentD IDs instead of lossy provider-ID-only handoff.
+- Release builds add stamped Codex-only and Claude-only runtime images and
+  select them per provider, while retaining the combined compatibility image.
+  Release installation and Docker verification require all provider images.
+
 ## [2.2.4] — 2026-08-20
 
 - Codex's advertised provider endpoint set is now the exact pair

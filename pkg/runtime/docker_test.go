@@ -18,6 +18,25 @@ func TestDockerRuntime_Name(t *testing.T) {
 	if rt.Name() != "docker" {
 		t.Fatalf("expected name 'docker', got %q", rt.Name())
 	}
+	if _, ok := any(rt).(Prewarmer); !ok {
+		t.Fatal("Docker runtime must prewarm shared proxy infrastructure")
+	}
+}
+
+func TestDockerRuntimeSelectsProviderSpecificImage(t *testing.T) {
+	config := DockerConfig{
+		Image: "agent:compat", CodexImage: "agent-codex:2.2.5", ClaudeImage: "agent-claude:2.2.5",
+	}
+	if got := resolvedDockerImage(config, SpawnConfig{Request: &apischema.SessionRequest{Agent: "codex"}}); got != config.CodexImage {
+		t.Fatalf("Codex image = %q", got)
+	}
+	if got := resolvedDockerImage(config, SpawnConfig{Request: &apischema.SessionRequest{Agent: "claude"}}); got != config.ClaudeImage {
+		t.Fatalf("Claude image = %q", got)
+	}
+	custom := SpawnConfig{Request: &apischema.SessionRequest{Agent: "codex", Container: &apischema.ContainerConfig{Image: "custom:image"}}}
+	if got := resolvedDockerImage(config, custom); got != "custom:image" {
+		t.Fatalf("custom image = %q", got)
+	}
 }
 
 func TestDockerRuntimeAdmissionCheckProvesCLIAndDaemonAvailability(t *testing.T) {
@@ -29,19 +48,24 @@ if [ "$*" = "ps -q --no-trunc" ]; then
   exit 0
 fi
 if [ "$*" = "image inspect agentruntime-agent:latest" ]; then
-  printf '%s\n' 'image-present'
-  exit 0
+	printf '%s\n' '[{"Id":"sha256:agent","Config":{"Labels":{}}}]'
+	exit 0
 fi
 if [ "$*" = "image inspect agentruntime-proxy:latest" ]; then
-  printf '%s\n' 'proxy-present'
+	printf '%s\n' '[{"Id":"sha256:proxy","Config":{"Labels":{}}}]'
   exit 0
 fi
 echo "unexpected docker command: $*" >&2
 exit 2
 `)
 	runtime := NewDockerRuntime(DockerConfig{})
-	if err := runtime.CheckAdmission(context.Background()); err != nil {
+	reportValue, err := runtime.CheckAdmissionReport(context.Background())
+	if err != nil {
 		t.Fatalf("Docker admission check failed: %v", err)
+	}
+	report := reportValue.Docker
+	if report == nil || !report.DaemonReady || len(report.Images) != 2 || report.Images[0].Digest != "sha256:agent" || report.Images[1].Digest != "sha256:proxy" {
+		t.Fatalf("Docker admission report = %+v", report)
 	}
 	data, err := os.ReadFile(logFile)
 	if err != nil || string(data) != "ps -q --no-trunc\nimage inspect agentruntime-agent:latest\nimage inspect agentruntime-proxy:latest\n" {
@@ -79,11 +103,9 @@ func TestDockerRuntimeAdmissionCheckRejectsWrongImageStamp(t *testing.T) {
 set -eu
 case "$*" in
   "ps -q --no-trunc") exit 0 ;;
-  "image inspect agentruntime-agent:2.2.0") exit 0 ;;
-  "image inspect agentruntime-proxy:2.2.0") exit 0 ;;
-  "image inspect --format {{json .Config.Labels}} agentruntime-agent:2.2.0")
-    printf '%s\n' '{"org.opencontainers.image.version":"2.2.0","org.opencontainers.image.revision":"wrong"}'
-    exit 0 ;;
+	"image inspect agentruntime-agent:2.2.0")
+	  printf '%s\n' '[{"Id":"sha256:agent","Config":{"Labels":{"org.opencontainers.image.version":"2.2.0","org.opencontainers.image.revision":"wrong"}}}]'
+	  exit 0 ;;
 esac
 echo "unexpected docker command: $*" >&2
 exit 2
@@ -1042,6 +1064,38 @@ exit 2
 	}
 }
 
+func TestDockerPrepareRun_PersistCodexSessionMountsRolloutStore(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then exit 0; fi
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then exit 0; fi
+exit 2
+`)
+
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	spec, err := rt.prepareRun(SpawnConfig{
+		Cmd: []string{"codex", "app-server"}, SessionID: "codex-persist-1234",
+		Request: &apischema.SessionRequest{
+			Agent: "codex", WorkDir: t.TempDir(), PersistSession: true,
+			Codex: &apischema.CodexConfig{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareRun failed: %v", err)
+	}
+	defer spec.cleanup()
+
+	expected := "agentruntime-vol-codex-persist-1234:/home/agent/.codex/sessions:rw"
+	if !hasFlagValue(spec.args, "-v", expected) {
+		t.Fatalf("expected Codex rollout mount %q in args, got %v", expected, spec.args)
+	}
+	for index, arg := range spec.args {
+		if arg == "-v" && index+1 < len(spec.args) && strings.Contains(spec.args[index+1], "/home/agent/.claude/projects") {
+			t.Fatalf("Codex persistence incorrectly mounted Claude state: %v", spec.args)
+		}
+	}
+}
+
 func TestDockerPrepareRun_NoPersistSession_NoVolume(t *testing.T) {
 	installFakeDocker(t, `#!/bin/sh
 exit 2
@@ -1112,7 +1166,10 @@ exit 2
 func TestDockerPrepareRun_ReuseVolume(t *testing.T) {
 	installFakeDocker(t, `#!/bin/sh
 set -eu
-if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+	if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+	  exit 0
+	fi
+	if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
   exit 1  # Fail to create (should not be called when reusing)
 fi
 # Handle init volume permissions run
@@ -1144,6 +1201,28 @@ exit 2
 	expectedMount := "agentruntime-vol-old-session-1234:/home/agent/.claude/projects:rw"
 	if !hasFlagValue(spec.args, "-v", expectedMount) {
 		t.Fatalf("expected reused volume mount %q in args, got %v", expectedMount, spec.args)
+	}
+}
+
+func TestDockerPrepareRun_ResumeFailsWhenProviderVolumeIsMissing(t *testing.T) {
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  echo "Error: No such volume" >&2
+  exit 1
+fi
+exit 2
+`)
+	rt := NewDockerRuntime(DockerConfig{Image: "ubuntu:22.04"})
+	_, err := rt.prepareRun(SpawnConfig{
+		Cmd: []string{"codex", "app-server"}, SessionID: "new-session",
+		VolumeName: "agentruntime-vol-missing-root",
+		Request: &apischema.SessionRequest{
+			Agent: "codex", WorkDir: t.TempDir(), PersistSession: true, Codex: &apischema.CodexConfig{},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "persistent provider volume") {
+		t.Fatalf("missing resume volume error = %v", err)
 	}
 }
 

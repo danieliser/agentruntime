@@ -77,6 +77,14 @@ func (s *Server) checkRuntimeAdmission(ctx context.Context, request SessionReque
 			return err
 		}
 	}
+	if s.readiness != nil {
+		if handled, err := s.readiness.admission(rt.Name(), time.Now().UTC()); handled {
+			if err != nil {
+				return durable.NewError(durable.CodeRuntimeUnavailable, "check_runtime_admission", "execution runtime is unavailable", err)
+			}
+			return nil
+		}
+	}
 	checker, ok := rt.(runtime.AdmissionChecker)
 	if !ok {
 		return nil
@@ -98,7 +106,7 @@ func (s *Server) writeAdmittedFailure(c *gin.Context, sessionID string, cause er
 	log.Printf("[session %s] admitted runtime failure could not be terminalized: %v", sessionID, err)
 	envelope := gin.H{"api_version": "v1", "error": apiErrorEnvelope{Code: durable.CodeIndeterminate, Message: "admitted session settlement failed"}}
 	if stored, lookupErr := s.durableStore.GetSession(ctx, sessionID); lookupErr == nil {
-		envelope["data"] = v1SessionView(c, stored)
+		envelope["data"] = s.v1SessionView(c, stored)
 	}
 	c.JSON(http.StatusServiceUnavailable, envelope)
 }

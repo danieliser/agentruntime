@@ -29,7 +29,8 @@ func (*blockingStartupObserver) Sync(ctx context.Context) error {
 func TestQualifiedBuildUsesExactStampedDockerImages(t *testing.T) {
 	identity := buildinfo.Identity{Version: "2.2.0", Commit: "0123456789abcdef0123456789abcdef01234567"}
 	cfg := dockerConfigForBuild(t.TempDir(), "ssh://docker.example", identity)
-	if cfg.Image != "agentruntime-agent:2.2.0" || cfg.ProxyImage != "agentruntime-proxy:2.2.0" {
+	if cfg.Image != "agentruntime-agent:2.2.0" || cfg.CodexImage != "agentruntime-agent-codex:2.2.0" ||
+		cfg.ClaudeImage != "agentruntime-agent-claude:2.2.0" || cfg.ProxyImage != "agentruntime-proxy:2.2.0" {
 		t.Fatalf("qualified Docker image config = %+v", cfg)
 	}
 	if cfg.ExpectedVersion != identity.Version || cfg.ExpectedCommit != identity.Commit {
@@ -40,7 +41,9 @@ func TestQualifiedBuildUsesExactStampedDockerImages(t *testing.T) {
 	}
 
 	dev := dockerConfigForBuild(t.TempDir(), "", buildinfo.Identity{Version: "dev", Commit: "unknown"})
-	if dev.Image != runtime.DefaultDockerImage || dev.ProxyImage != "agentruntime-proxy:latest" || dev.ExpectedVersion != "" || dev.ExpectedCommit != "" {
+	if dev.Image != runtime.DefaultDockerImage || dev.CodexImage != "agentruntime-agent-codex:latest" ||
+		dev.ClaudeImage != "agentruntime-agent-claude:latest" || dev.ProxyImage != "agentruntime-proxy:latest" ||
+		dev.ExpectedVersion != "" || dev.ExpectedCommit != "" {
 		t.Fatalf("development Docker config = %+v", dev)
 	}
 }
@@ -52,6 +55,25 @@ func TestDockerAgentImageProvidesBubblewrapOnPath(t *testing.T) {
 	}
 	if !bytes.Contains(dockerfile, []byte("bubblewrap")) {
 		t.Fatal("runtime image does not install provider-required bubblewrap")
+	}
+	for _, required := range [][]byte{[]byte("AGENTD_PROVIDER"), []byte("@openai/codex"), []byte("@anthropic-ai/claude-code")} {
+		if !bytes.Contains(dockerfile, required) {
+			t.Fatalf("runtime image is missing provider split control %q", required)
+		}
+	}
+}
+
+func TestProxyConfigurationDisablesCachingWithoutInvalidNullStore(t *testing.T) {
+	config, err := os.ReadFile(filepath.Join("..", "..", "docker", "squid.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(config)
+	if !strings.Contains(text, "cache deny all") {
+		t.Fatal("proxy must disable response caching")
+	}
+	if strings.Contains(text, "cache_dir null") {
+		t.Fatal("proxy config contains Squid's invalid cache_dir null initialization path")
 	}
 }
 
@@ -77,7 +99,7 @@ func TestInstallerLaunchdPathCoversDockerLocations(t *testing.T) {
 			t.Fatalf("launchd installer is missing %q", required)
 		}
 	}
-	for _, required := range []string{"buildinfo.Version", "buildinfo.Commit", "agentruntime-agent:${AGENTD_VERSION}", "org.opencontainers.image.revision"} {
+	for _, required := range []string{"buildinfo.Version", "buildinfo.Commit", "agentruntime-agent:${AGENTD_VERSION}", "agentruntime-agent-codex:${AGENTD_VERSION}", "agentruntime-agent-claude:${AGENTD_VERSION}", "org.opencontainers.image.revision"} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("installer release qualification is missing %q", required)
 		}

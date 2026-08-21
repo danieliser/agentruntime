@@ -19,14 +19,20 @@ if [[ ! "${AGENTD_COMMIT}" =~ ^[a-f0-9]{40,64}$ ]]; then
 fi
 
 build_agent() {
-  echo "Building agentruntime-agent:${AGENTD_VERSION} at ${AGENTD_COMMIT} ..."
+  local provider="$1"
+  local image="agentruntime-agent"
+  if [ "${provider}" != "all" ]; then
+    image="agentruntime-agent-${provider}"
+  fi
+  echo "Building ${image}:${AGENTD_VERSION} (${provider}) at ${AGENTD_COMMIT} ..."
   docker build \
     --build-arg HOST_UID="$(id -u)" \
     --build-arg HOST_GID="$(id -g)" \
     --build-arg AGENTD_VERSION="${AGENTD_VERSION}" \
     --build-arg AGENTD_COMMIT="${AGENTD_COMMIT}" \
-    -t "agentruntime-agent:${AGENTD_VERSION}" \
-    -t agentruntime-agent:latest \
+    --build-arg AGENTD_PROVIDER="${provider}" \
+    -t "${image}:${AGENTD_VERSION}" \
+    -t "${image}:latest" \
     -f "${REPO_ROOT}/docker/Dockerfile.agent" \
     "${REPO_ROOT}"
 }
@@ -44,17 +50,25 @@ build_proxy() {
 
 case "${TARGET}" in
   agent)
-    build_agent
+    build_agent all
+    ;;
+  codex)
+    build_agent codex
+    ;;
+  claude)
+    build_agent claude
     ;;
   proxy)
     build_proxy
     ;;
   all)
-    build_agent
+    build_agent all
+    build_agent codex
+    build_agent claude
     build_proxy
     ;;
   *)
-    echo "Unknown target: ${TARGET}. Use: agent | proxy | all" >&2
+    echo "Unknown target: ${TARGET}. Use: agent | codex | claude | proxy | all" >&2
     exit 1
     ;;
 esac

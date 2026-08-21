@@ -1,5 +1,245 @@
 # AgentD overnight qualification worklog
 
+## v2.2.5 readiness, startup, and Docker continuation
+
+- Started: 2026-08-21 (America/New_York), from the current post-v2.2.4
+  dashboard worktree. This is an explicit reviewed v2.2.5 feature/reliability
+  release; the installed, verified v2.2.4 daemon on port 38093 remains
+  untouched until a v2.2.5 candidate passes its release and live gates.
+- Confirmed pre-change implementation causes: `/health` synchronously runs
+  Docker daemon discovery, two image inspections, and two OCI-stamp
+  inspections under one five-second context; `NetworkManager.EnsureProxy`
+  caches its first result (including failure) through `sync.Once`; the shipped
+  Squid config contains the invalid `cache_dir null /tmp` directive; and the
+  persistence volume overlays only `/home/agent/.claude/projects`, while Codex
+  rollout state remains in a fresh per-session `/home/agent/.codex` bind
+  mount. Consequently a completed Docker Codex follow-up can receive the old
+  provider ID but cannot load its rollout, and cold proxy startup can poison
+  the daemon until restart.
+- Planned release gates: cached background runtime snapshots with freshness,
+  startup proxy prewarm with retryable readiness, provider-correct persistent
+  state and public provider identity, immediate durable admission with startup
+  progress on the event stream, provider-specific runtime images, then full
+  unit/race/release and live installed-daemon qualification.
+- TDD implementation completed: Docker proxy readiness now caches only
+  success, revalidates cached state, retries transient failures, and allows 45
+  seconds for measured cold starts. Docker implements the startup prewarm
+  contract; the background monitor probes immediately and every 15 seconds
+  with a 60-second bound. `/health` and new admissions read the same snapshot,
+  fail stale evidence after 45 seconds, and expose checked time, last error,
+  daemon state, and exact image references/digests/OCI stamps. Squid's invalid
+  `cache_dir null /tmp` line was removed.
+- Docker continuation root causes fixed under tests: Codex persistence now
+  overlays `/home/agent/.codex/sessions` (Claude remains
+  `/home/agent/.claude/projects`); unrestricted native Docker sessions retain
+  provider state by default; durable generation identity and recursive
+  `resume_session` lineage choose the root volume after daemon restart; missing
+  volumes and Docker provider-ID-only handoffs fail closed. The HTTP path also
+  had a second defect: it correctly resolved the provider ID but passed `""`
+  into `AttachNativeSessionIO`. A fixture now requires the exact Codex
+  `thread/resume` RPC with the original thread ID. Restricted ephemeral policy
+  sessions explicitly reject retained-state resume.
+- Native POST creation now preserves its HTTP 201 contract but returns as soon
+  as the logical session is durably admitted. A supervised, shutdown-cancelled
+  activation worker owns materialization, runtime spawn, and provider
+  bootstrap. The authenticated session WebSocket emits additive unsequenced
+  `session.progress` frames while the existing durable event sequence remains
+  unchanged. A blocked-spawn test proves the HTTP response returns in under
+  200 ms and live progress reports `runtime.spawn` before release.
+- Public session views now expose `provider_session_id`, `resumable`, and
+  `resume_source_session_id`. The dashboard enables Continue only when the
+  backend reports retained state, always sends the logical AgentD session ID,
+  and supports Docker follow-up rather than parsing a provider ID and losing
+  its volume lineage.
+- Added compatibility, Codex-only, and Claude-only stamped runtime-image
+  builds. Qualified AgentD config selects `agentruntime-agent-codex:2.2.5` or
+  `agentruntime-agent-claude:2.2.5` per native provider, records the exact
+  selected reference/digest in the durable generation, and still builds the
+  combined `agentruntime-agent:2.2.5`. Installer and release verification now
+  require all three runtime images plus the proxy.
+- Pre-image release gates pass: `go test ./...`, `go test -race ./...`,
+  `go vet ./...`, JavaScript syntax checks, shell syntax checks, and
+  `git diff --check`.
+
+## Embedded live-agent console scaffold
+
+- Console activity now renders expandable normalized tool/provider items with
+  method, item kind, status, optional duration, and the full JSON payload.
+  Terminal local sessions can be continued from either the composer or a new
+  History `Continue` action. Docker terminal continuation is intentionally
+  disabled with an explicit v2.2.5 message: two Docker proofs showed that a new
+  logical session completed successfully but received a different Codex thread
+  ID even when supplied the prior logical ID or native thread ID. The old
+  rollout remains in its per-session mount while the new container receives a
+  fresh mount, so claiming provider continuity would be false. v2.2.5 must
+  preserve/reuse provider state for Docker before enabling this control.
+- Docker cold-path measurements: the runtime image is 1.048 GB and the proxy
+  image is 236 MB. The observed first failure was dominated by Squid readiness
+  (33 seconds), while subsequent proxy-warm Docker creates still took roughly
+  14-22 seconds before admission returned. The highest-value v2.2.5 changes are
+  startup-time proxy prewarming, retryable proxy readiness, removing the invalid
+  Squid `cache_dir null` initialization path, background/cached admission
+  snapshots, and then provider-specific slimmer runtime images. A warm container
+  pool is not recommended until credential/mount isolation can be proven.
+- First dashboard Docker launch `9f2d8ba9-72cb-4396-886b-6d366f0d53af`
+  failed pre-spawn at sequence 1 with verbatim error `spawn: docker proxy:
+  docker proxy did not become ready: context deadline exceeded`. The proxy
+  container started at 03:50:25Z but Squid did not accept port 3128 until
+  03:50:58Z, after AgentD's readiness wait expired. `NetworkManager.EnsureProxy`
+  caches that first error through `sync.Once`, so the otherwise-ready proxy was
+  not retryable within the same daemon process. No code was hotfixed; the
+  isolated dashboard-dev job alone was restarted to clear the cached failure.
+  A subsequent Docker proof session
+  `183ae356-c930-4c88-ac95-94c41466dcbd` completed with exit 0 at sequence 25
+  and streamed exact output `DOCKER_DASHBOARD_OK`. Making proxy readiness
+  retryable is a reviewed v2.2.5 code change.
+- The initial retained-terminal preview on port 38094 ended with its tool
+  session, so it was not a durable handoff. Replaced it with the separate
+  launchd job `com.agentruntime.dashboard-dev`, serving the current repo build
+  from `.artifacts/dashboard-dev` on loopback port 38094 with local as its
+  default runtime. Launchd reports it running as PID 59876; `/health` is HTTP
+  200 and the served dashboard contains the console/auth assets. It is isolated
+  from installed v2.2.4 PID 34416 on port 38093.
+- Readiness follow-up decision: v2.2.5 should supervise Docker admission probes
+  in the background and publish a timestamped last-known snapshot. `/health`
+  should only read that snapshot, report freshness/staleness, and return
+  immediately; it should not synchronously run the five Docker CLI checks per
+  request. This is an explicit reviewed-release behavior change, not a v2.2.4
+  deployment hotfix.
+- Follow-up health incident at 2026-08-20 23:23 America/New_York: the installed
+  v2.2.4 daemon on port 38093 remained the original launchd PID 34416 and
+  launchd reported that it had never exited, but one `/health` request produced
+  no bytes before the client's 5.006-second deadline. Docker itself remained
+  reachable. Without restarting or changing the installed daemon, the next
+  three `/health` probes returned HTTP 200 with Docker/local ready in
+  0.60-1.10 seconds, and Trading Floor `/api/v1/health` returned HTTP 200 with
+  `agent_runtime="healthy"`. This was another transient Docker readiness-latency
+  event, not an AgentD crash. The isolated dashboard dev daemon used port 38094,
+  was no longer running at incident time, and its uninstalled repository assets
+  cannot affect the immutable v2.2.4 binary on port 38093.
+- Added a repo-native Console tab to the authenticated embedded dashboard rather
+  than introducing a second web stack. It launches native Codex or Claude
+  sessions through `POST /api/v1/sessions`, streams durable events over the
+  authenticated session WebSocket, renders `content.delta` output and tool
+  activity live, and exposes steer, interrupt, and cancel controls.
+- Launch configuration includes model-aware effort choices, supported fast mode,
+  local/Docker runtime, timeout, trace policy, clean/continued context, workdir,
+  Claude max turns, optional structured-output schema, and opt-in Codex
+  restricted egress. Restricted auth JSON is parsed from a file and retained in
+  memory only. The dashboard bearer token now uses a non-blocking in-page gate
+  and session storage; it is never put in local storage or a URL.
+- Live isolated-daemon proof on 2026-08-20: the Console form launched local
+  Codex session `1f6bcb65-dc94-426f-9b3e-fc58c555285b` with
+  `gpt-5.6-luna`/`medium`; the durable stream reached 872 contiguous events.
+  Mid-turn steer `dashboard-live-steer-1` was durably recorded as
+  `control.steer.requested` at sequence 459 and
+  `control.steer.dispatched` at sequence 460. The session completed at sequence
+  872 with exit 0 and streamed the requested terminal marker
+  `STREAM_TEST_COMPLETE`. This used a separate dev daemon on port 38094 and did
+  not alter or restart the installed v2.2.4 daemon on port 38093.
+
+## v2.2.4 installed-deployment readiness repair
+
+- Started: 2026-08-20 15:23 America/New_York from clean `main` at
+  `5c3fdd1fd2a88a1df96168aabdc3bbf564e23cda`; deployment repair only. The
+  immutable release source is tag `v2.2.4` at
+  `a5d0560c68c2b9f60629b623e137146f9d1149ca`.
+- Pre-fix binary identity was already exact: `~/.local/bin/agentd --build-info`
+  returned `{"agentd_version":"2.2.4","commit_hash":"a5d0560c68c2b9f60629b623e137146f9d1149ca"}`
+  and `--require-build` passed. The live launchd service is
+  `com.danieliser.agentd`, PID 47885, loopback `127.0.0.1:38093`, Docker
+  default, using `~/.agentd`.
+- Pre-fix exact images were present and correctly stamped:
+  `agentruntime-agent:2.2.4` was
+  `sha256:83806fd3ffb840873757c209e38c6278f454765258d324788110019cbda9c4e1`
+  and `agentruntime-proxy:2.2.4` was
+  `sha256:15c9be9c041be15a8accf1481868b6686b8e1fc033bc1ce39dd489dc077ef16e`;
+  both labels were exactly `2.2.4` and the pinned commit. Direct inspection of
+  the runtime image found `/usr/bin/bwrap`, `bubblewrap 0.8.0`.
+- OrbStack/Docker was running (client/server 29.4.0, `orbstack` context) and
+  ordinary `docker ps`/exact image inspections completed in 0.08-0.16 seconds
+  when uncontended. Host data-volume headroom was 272 GiB (85% used), so no
+  disk or cache deletion was needed before repair.
+- **Actual pre-fix cause, recorded before repair:** the canary's retained
+  verbatim failure is `AGENTD_RUNTIME_UNAVAILABLE: AgentD Docker runtime is
+  not explicitly ready for admission.` It ran from 18:58:10.324657Z to
+  18:58:15.493750Z, created no AgentD session, and coincided with the live
+  `/health` Docker admission probe exhausting its single five-second bounded
+  context. AgentD's probe performs `docker ps`, two exact image inspections,
+  and two OCI-label inspections sequentially inside that one bound; `/health`
+  suppresses the inner command error, so the most exact available mechanism is
+  a transient Docker CLI/daemon response overrun, not a missing/misstamped
+  binary or image and not ENOSPC. This was independently observed as HTTP 503
+  with verbatim body
+  `{"default_runtime":"docker","runtime_status":{"docker":"unavailable","local":"ready"},"runtimes":["docker","local"],"status":"error","version":"2.2.4"}`;
+  it returned HTTP 200/`docker:ready` without any artifact change once Docker
+  calls were responsive. No more specific inner Docker error was persisted by
+  the current health endpoint, and this worklog does not invent one.
+- Rebuilt from the detached immutable release worktree at the pinned commit.
+  `agentruntime-agent:2.2.4` used `docker build --no-cache --pull`; its package
+  layer ran for 1,805.1 seconds and its separate bubblewrap layer ran for 50.5
+  seconds, proving this was not reuse of the prior 2.2.x runtime contents. The
+  resulting image ID is
+  `sha256:14ddadadecedeac1220059d3e82aae20f521d372129a9d83e38b01b0ca09a73f`.
+  `agentruntime-proxy:2.2.4` was also rebuilt with `--no-cache --pull`; its new
+  image ID is
+  `sha256:a21efddc95aca6371be5325901d86c45723675ce7cf5146e016cff5e9cafaf30`.
+  Both carry exact `2.2.4`/pinned-commit OCI labels. The rebuilt runtime
+  directly reports `/usr/bin/bwrap`, `bubblewrap 0.8.0`, Debian package
+  `0.8.0-2+deb12u1`. Final build-time disk headroom remained 267 GiB; no cache
+  or data was deleted. Heavy unrelated Airbyte/ClickHouse container load made
+  the uncached toolchain layer slow, but it completed without exit 137 or
+  ENOSPC and those workloads were not altered.
+- Installation: unloaded the previous ad-hoc `com.danieliser.agentd` launchd
+  job, then ran the pinned release's installer with `--port 38093
+  --docker-default --no-credential-sync`. The canonical
+  `com.agentruntime.agentd` job is live as PID 34416, loopback-only, using the
+  existing `~/.agentd` data directory. Its newly built installed binary again
+  passes `--require-build 2.2.4@a5d0560c68c2b9f60629b623e137146f9d1149ca`.
+  `REQUIRE_RELEASE_TAG=1 VERIFY_DOCKER_IMAGES=1
+  scripts/verify-release.sh 2.2.4
+  a5d0560c68c2b9f60629b623e137146f9d1149ca` passed.
+- Live readiness proof: the installed daemon returned HTTP 200 ten consecutive
+  times immediately after install with exact body
+  `{"default_runtime":"docker","runtime_status":{"docker":"ready","local":"ready"},"runtimes":["docker","local"],"status":"ok","version":"2.2.4"}`.
+  Its authenticated capabilities returned `agentd_version=2.2.4`, the pinned
+  `commit_hash`, Docker in `runtimes`, execution-policy versions 2.0/2.1, and
+  the exact Codex endpoints. After qualification and its Docker cleanup, the
+  same `/health` payload was still HTTP 200. A fresh post-TTL request to the
+  live Trading Floor daemon at `/api/v1/health` reported
+  `services.agent_runtime="healthy"` twice; unrelated market-data,
+  intelligence, and optional OpenTraces services remain degraded/unavailable.
+- Live installed-daemon positive gate: session
+  `6d06f213-b2fb-4ffd-970b-c2f6d3800563` completed the opt-in restricted-egress
+  Codex turn with exact result `{"ok":true}`, exit 0, last sequence 26,
+  artifact hash
+  `sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93`,
+  and output hash
+  `sha256:452b61a8167c605f9975ca6fe9104bde449c2dce8a6d5d4ccd89d7ad61cf5fde`.
+  Before the counted successful gate, one local YAML request was rejected
+  before dispatch because the CLI cannot decode its raw JSON schema field,
+  and two JSON attempts were timing-invalidated by a 30-second client cancel
+  and then host-starved Squid startup. Their exact terminal error was
+  `restricted_egress: egress_preflight_failed: egress_preflight_failed: policy
+  proxy unavailable`; only their explicitly session-labeled orphan proxy and
+  network resources were removed. No source or unrelated workload changed.
+- Live installed-daemon missing-auth-host negative: session
+  `21584c33-a970-4f4b-bfb8-3cc604b9a4f0` used an isolated near-expiry auth copy
+  and removed only `auth.openai.com`. It failed as required with exit 1 and
+  exact terminal attribution `restricted_egress: egress_denied: egress_denied:
+  CONNECT host "auth.openai.com"`; there was no `context deadline exceeded`.
+  The private egress evidence contained only `timestamp` and `connect_host`
+  fields and included the denied host. Its failed receipt is durable (last
+  sequence 137, output hash
+  `sha256:1dd212d19c9021bd3192475dd430fc8d7243a2c4ae146cbdbd02f21ae6d0fc6a`).
+- **Readiness attestation (Trading Floor cite):** installed AgentD
+  `2.2.4@a5d0560c68c2b9f60629b623e137146f9d1149ca`; runtime/proxy content digests
+  `sha256:14ddadadecedeac1220059d3e82aae20f521d372129a9d83e38b01b0ca09a73f` /
+  `sha256:a21efddc95aca6371be5325901d86c45723675ce7cf5146e016cff5e9cafaf30`;
+  live `/health` is HTTP 200 `status=ok`, `default_runtime=docker`,
+  `docker=ready`, `local=ready`, and a fresh Trading Floor capability
+  handshake reports `agent_runtime=healthy`.
+
 ## v2.2.4 restricted-egress provider-turn qualification
 
 - Started: 2026-08-20 (America/New_York), from `main` at `07a5093` with a

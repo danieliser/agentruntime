@@ -24,16 +24,18 @@ import (
 func (s *Server) handleHealth(c *gin.Context) {
 	available := make([]string, 0, len(s.runtimes))
 	runtimeStatus := make(map[string]string, len(s.runtimes))
+	runtimeChecks := s.readiness.snapshot(time.Now().UTC())
 	ready := true
 	for name := range s.runtimes {
 		available = append(available, name)
-		runtimeStatus[name] = "ready"
-		if checker, ok := s.runtimes[name].(runtime.AdmissionChecker); ok {
-			checkCtx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-			err := checker.CheckAdmission(checkCtx)
-			cancel()
-			if err != nil {
-				ready = false
+		snapshot := runtimeChecks[name]
+		runtimeStatus[name] = snapshot.Status
+		if snapshot.Stale {
+			runtimeStatus[name] = "stale"
+		}
+		if snapshot.Status != "ready" || snapshot.Stale {
+			ready = false
+			if snapshot.Status == "checking" {
 				runtimeStatus[name] = "unavailable"
 			}
 		}
@@ -51,6 +53,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"default_runtime": s.runtime.Name(),
 		"runtimes":        available,
 		"runtime_status":  runtimeStatus,
+		"runtime_checks":  runtimeChecks,
 	})
 }
 
@@ -81,6 +84,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		})
 		return
 	}
+	configureDockerProviderPersistence(&req, rt.Name())
 	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
 	if err != nil {
 		writeDurableError(c, err)
@@ -175,11 +179,19 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		}
 	}
 
-	resumeSessionID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession, originalSession)
+	resumeSession, err := s.resolveResumeSession(c.Request.Context(), req.Agent, req.ResumeSession, originalSession)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := validateResolvedResumeState(rt.Name(), req.ResumeSession, resumeSession); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if resumeSession.VolumeName != "" {
+		req.PersistSession = true
+	}
+	resumeSessionID := resumeSession.ProviderID
 
 	// ACT-1001: native HTTP admission uses the same resolver as internal
 	// admission and generation resume. Provider controls must not be rebuilt
@@ -233,6 +245,12 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		return
 	}
 	admitted := result.Session
+	if nativeV1Agent(req.Agent) {
+		req.AdmittedSessionID = admitted.ID
+		s.launchAdmittedNativeSession(req)
+		s.writeV1Session(c, http.StatusCreated, admitted)
+		return
+	}
 	requestedID = admitted.ID
 	sess := session.NewSessionWithID(requestedID, req.TaskID, req.Agent, rt.Name(), req.Tags)
 	sess.Contamination = agent.KnownContamination(req.Agent, req.Context == "clean")
@@ -248,7 +266,9 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	// Determine volume name for persistence
 	var volumeNameForSpawn string
 	if req.PersistSession {
-		if originalSession != nil && originalSession.VolumeName != "" {
+		if resumeSession.VolumeName != "" {
+			volumeNameForSpawn = resumeSession.VolumeName
+		} else if originalSession != nil && originalSession.VolumeName != "" {
 			// Reuse the original session's volume for resume
 			volumeNameForSpawn = originalSession.VolumeName
 		} else {
@@ -310,7 +330,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	nativeGeneration := nativeV1Agent(req.Agent)
 	generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
 		SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
-		ImageReference:  resolvedImageReference(req, rt.Name()),
+		ImageReference:  runtimeGenerationImageReference(handle, req, rt.Name()),
 		ImageDigest:     runtimeGenerationImageDigest(handle),
 		SandboxProfile:  requestSandboxProfile(rt.Name(), nativeGeneration, req),
 		DockerLogDriver: generationDockerLogDriver(rt.Name(), nativeGeneration), CreatedAt: time.Now().UTC(),
@@ -357,7 +377,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 		var active activeNativeSessionRef
 		if err := AttachNativeSessionIO(
 			sess, s.logDir, nativeprotocol.Provider(req.Agent), admitted.ActiveGeneration,
-			"", req.Prompt, diagnosticRedactions(req), !req.Interactive,
+			resumeSessionID, req.Prompt, diagnosticRedactions(req), !req.Interactive,
 			false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
 			func() string {
 				current := active.Load()
@@ -587,52 +607,8 @@ func effectiveWorkDir(workDir string, mounts []Mount) string {
 }
 
 func (s *Server) lookupResumeSessionID(agentName, sessionID string, original *session.Session) (string, error) {
-	if sessionID == "" {
-		return "", nil
-	}
-
-	// Prefer the claude_session_id tag captured from result events.
-	// This works for Docker where filesystem scanning can't reach the named volume.
-	if original != nil {
-		snap := original.Snapshot()
-		if snap.Tags != nil {
-			if claudeID, ok := snap.Tags["claude_session_id"]; ok && claudeID != "" {
-				return claudeID, nil
-			}
-		}
-	}
-
-	// Fall back to filesystem scanning (works for local runtime).
-	var (
-		args []string
-		err  error
-	)
-
-	switch agentName {
-	case "claude":
-		args, err = agentsessions.ClaudeResumeArgs(s.dataDir, sessionID)
-	case "codex":
-		args, err = agentsessions.CodexResumeArgs(s.dataDir, sessionID)
-	default:
-		return "", fmt.Errorf("resume_session is not supported for agent: %s", agentName)
-	}
-	if err != nil {
-		return "", err
-	}
-
-	resolved, err := resumeSessionIDFromArgs(args)
-	if err != nil {
-		return "", err
-	}
-
-	// If no session was found in the registry and the filesystem scan returned
-	// nothing, the caller may have passed a pre-resolved Claude session ID
-	// directly (e.g., from the chat manager's ClaudeSessionIDs map). Pass it
-	// through — Claude will use it for --session-id, or ignore it if invalid.
-	if resolved == "" && original == nil {
-		return sessionID, nil
-	}
-	return resolved, nil
+	resolved, err := s.resolveResumeSession(context.Background(), agentName, sessionID, original)
+	return resolved.ProviderID, err
 }
 
 func resumeSessionIDFromArgs(args []string) (string, error) {

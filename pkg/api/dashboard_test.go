@@ -78,6 +78,74 @@ func TestEmbeddedDashboardAuthenticatesWithoutPersistingOrLeakingToken(t *testin
 	}
 }
 
+func TestEmbeddedDashboardProvidesLiveAgentConsole(t *testing.T) {
+	index, err := dashboardFS.ReadFile("dashboard/index.html")
+	if err != nil {
+		t.Fatalf("read embedded dashboard index: %v", err)
+	}
+	console, err := dashboardFS.ReadFile("dashboard/console.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard console: %v", err)
+	}
+	app, err := dashboardFS.ReadFile("dashboard/app.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard app: %v", err)
+	}
+	for _, required := range [][]byte{
+		[]byte(`data-tab="console"`),
+		[]byte(`id="console-form"`),
+		[]byte(`id="console-output"`),
+		[]byte(`id="dashboard-auth"`),
+		[]byte(`console.js`),
+	} {
+		if !bytes.Contains(index, required) {
+			t.Fatalf("dashboard console markup missing %q", required)
+		}
+	}
+	for _, required := range [][]byte{
+		[]byte(`/api/v1/sessions`),
+		[]byte(`/input`),
+		[]byte(`/interrupt`),
+		[]byte(`/cancel`),
+		[]byte(`structured_output`),
+		[]byte(`execution_policy`),
+		[]byte(`agentd.auth.`),
+		[]byte(`content.delta`),
+		[]byte(`kind: 'steer'`),
+		[]byte(`effortsByModel`),
+		[]byte(`resume_session`),
+		[]byte(`Send follow-up`),
+		[]byte(`tool-event-details`),
+		[]byte(`raw_base64`),
+		[]byte(`after_sequence=0&limit=20`),
+		[]byte(`provider_session_id`),
+		[]byte(`session.resumable`),
+		[]byte(`request.resume_session = previousSessionID`),
+		[]byte(`session.progress`),
+	} {
+		if !bytes.Contains(console, required) {
+			t.Fatalf("dashboard console behavior missing %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("localStorage"),
+		[]byte("readAsDataURL"),
+		[]byte("Docker history continuation requires AgentD v2.2.5"),
+	} {
+		if bytes.Contains(console, forbidden) {
+			t.Fatalf("dashboard console persists or overexposes credentials through %q", forbidden)
+		}
+	}
+	if bytes.Contains(app, []byte("window.prompt")) {
+		t.Fatal("dashboard authentication must not block on window.prompt")
+	}
+	for _, required := range [][]byte{[]byte(`data-action="resume"`), []byte(`resumeConsoleSession`)} {
+		if !bytes.Contains(app, required) {
+			t.Fatalf("dashboard history resume behavior missing %q", required)
+		}
+	}
+}
+
 func TestAPIPrioritizesOverDashboard(t *testing.T) {
 	ts, _ := newTestServer(t)
 

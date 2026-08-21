@@ -41,6 +41,9 @@ type v1SessionData struct {
 	ExecutionPolicyHash string               `json:"execution_policy_hash,omitempty"`
 	StructuredOutput    *StructuredOutput    `json:"structured_output,omitempty"`
 	OutputSchemaHash    string               `json:"output_schema_hash,omitempty"`
+	ProviderSessionID   string               `json:"provider_session_id,omitempty"`
+	Resumable           bool                 `json:"resumable"`
+	ResumeSourceSession string               `json:"resume_source_session_id,omitempty"`
 }
 
 type v1TerminalReceiptData struct {
@@ -91,7 +94,7 @@ func (s *Server) handleV1ListSessions(c *gin.Context) {
 	}
 	data := make([]v1SessionData, 0, len(stored))
 	for _, item := range stored {
-		data = append(data, v1SessionView(c, item))
+		data = append(data, s.v1SessionView(c, item))
 	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": data})
 }
@@ -335,13 +338,28 @@ func scrubManifestSecrets(value any, path string, grants *[]string) {
 func (s *Server) writeV1Session(c *gin.Context, status int, stored durable.Session) {
 	c.JSON(status, gin.H{
 		"api_version": "v1",
-		"data":        v1SessionView(c, stored),
+		"data":        s.v1SessionView(c, stored),
 	})
 }
 
-func v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
+func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
 	policy, policyHash := manifestExecutionPolicy(stored.RequestManifest)
 	structuredOutput, outputSchemaHash := structuredOutputFromManifest(stored.RequestManifest)
+	var continuation struct {
+		ResumeSession  string `json:"resume_session"`
+		PersistSession bool   `json:"persist_session"`
+	}
+	_ = json.Unmarshal(stored.RequestManifest, &continuation)
+	providerID := ""
+	if s.durableStore != nil && stored.ActiveGeneration > 0 {
+		if generation, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, stored.ActiveGeneration); err == nil {
+			providerID = generation.ProviderID
+		}
+	}
+	resumable := providerID != ""
+	if stored.Runtime == "docker" {
+		resumable = resumable && continuation.PersistSession
+	}
 	return v1SessionData{
 		SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
 		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
@@ -350,6 +368,7 @@ func v1SessionView(c *gin.Context, stored durable.Session) v1SessionData {
 		EventsURL: sessionEventsURL(c, stored.ID), EventStreamURL: sessionEventStreamURL(c, stored.ID),
 		ExecutionPolicy: policy, ExecutionPolicyHash: policyHash,
 		StructuredOutput: structuredOutput, OutputSchemaHash: outputSchemaHash,
+		ProviderSessionID: providerID, Resumable: resumable, ResumeSourceSession: continuation.ResumeSession,
 	}
 }
 
@@ -393,6 +412,13 @@ func runtimeGenerationImageDigest(handle runtime.ProcessHandle) string {
 		return identified.RuntimeImageDigest()
 	}
 	return ""
+}
+
+func runtimeGenerationImageReference(handle runtime.ProcessHandle, request SessionRequest, runtimeName string) string {
+	if referenced, ok := handle.(runtime.RuntimeImageReferencedHandle); ok && referenced.RuntimeImageReference() != "" {
+		return referenced.RuntimeImageReference()
+	}
+	return resolvedImageReference(request, runtimeName)
 }
 
 func resolvedImageReference(request SessionRequest, runtimeName string) string {

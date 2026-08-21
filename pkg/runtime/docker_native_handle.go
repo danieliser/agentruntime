@@ -19,10 +19,11 @@ import (
 // Input is delivered through docker attach while output is read from Docker's
 // retained log stream so records emitted before attachment remain replayable.
 type nativeDockerHandle struct {
-	containerID string
-	dockerHost  string
-	imageDigest string
-	recovery    RecoveryInfo
+	containerID    string
+	dockerHost     string
+	imageDigest    string
+	imageReference string
+	recovery       RecoveryInfo
 
 	attachCmd *exec.Cmd
 	logsCmd   *exec.Cmd
@@ -91,16 +92,17 @@ func newNativeDockerHandle(host, containerID string, recovery RecoveryInfo) (*na
 	}
 
 	handle := &nativeDockerHandle{
-		containerID: containerID,
-		dockerHost:  host,
-		recovery:    recovery,
-		attachCmd:   attachCmd,
-		logsCmd:     logsCmd,
-		waitCmd:     waitCmd,
-		stdin:       stdin,
-		stdout:      stdout,
-		stderr:      stderr,
-		done:        make(chan ExitResult, 1),
+		containerID:    containerID,
+		dockerHost:     host,
+		recovery:       recovery,
+		attachCmd:      attachCmd,
+		logsCmd:        logsCmd,
+		waitCmd:        waitCmd,
+		stdin:          stdin,
+		stdout:         stdout,
+		stderr:         stderr,
+		done:           make(chan ExitResult, 1),
+		imageReference: recovery.ImageReference,
 	}
 	logsWait := make(chan error, 1)
 	go func() { logsWait <- logsCmd.Wait() }()
@@ -199,14 +201,15 @@ func stopDockerCLI(cmd *exec.Cmd) {
 	}
 }
 
-func (h *nativeDockerHandle) Stdin() io.WriteCloser      { return h.stdin }
-func (h *nativeDockerHandle) Stdout() io.ReadCloser      { return h.stdout }
-func (h *nativeDockerHandle) Stderr() io.ReadCloser      { return h.stderr }
-func (h *nativeDockerHandle) Wait() <-chan ExitResult    { return h.done }
-func (h *nativeDockerHandle) PID() int                   { return 0 }
-func (h *nativeDockerHandle) RuntimeID() string          { return h.containerID }
-func (h *nativeDockerHandle) RuntimeImageDigest() string { return h.imageDigest }
-func (*nativeDockerHandle) NativeStdio() bool            { return true }
+func (h *nativeDockerHandle) Stdin() io.WriteCloser         { return h.stdin }
+func (h *nativeDockerHandle) Stdout() io.ReadCloser         { return h.stdout }
+func (h *nativeDockerHandle) Stderr() io.ReadCloser         { return h.stderr }
+func (h *nativeDockerHandle) Wait() <-chan ExitResult       { return h.done }
+func (h *nativeDockerHandle) PID() int                      { return 0 }
+func (h *nativeDockerHandle) RuntimeID() string             { return h.containerID }
+func (h *nativeDockerHandle) RuntimeImageDigest() string    { return h.imageDigest }
+func (h *nativeDockerHandle) RuntimeImageReference() string { return h.imageReference }
+func (*nativeDockerHandle) NativeStdio() bool               { return true }
 
 func (h *nativeDockerHandle) RecoveryInfo() *RecoveryInfo {
 	if h.recovery.SessionID == "" && h.recovery.TaskID == "" {

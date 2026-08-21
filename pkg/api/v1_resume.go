@@ -154,7 +154,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	}
 	generation, err := s.durableStore.CreateGeneration(context.Background(), durable.CreateGenerationParams{
 		SessionID: stored.ID, Runtime: rt.Name(), ContainerID: runtimeID,
-		ImageReference: resolvedImageReference(request, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
+		ImageReference: runtimeGenerationImageReference(handle, request, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, request),
 		ProviderID:     previous.ProviderID, DockerLogDriver: generationDockerLogDriver(rt.Name(), true), CreatedAt: time.Now().UTC(),
 	})

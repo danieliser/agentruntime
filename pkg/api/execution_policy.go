@@ -151,6 +151,9 @@ func resolveExecutionPolicy(request *SessionRequest, runtimeName string) (resolv
 	if request.PersistSession {
 		return unsupported("ephemeral workspace cannot use a persistent session volume")
 	}
+	if request.ResumeSession != "" {
+		return unsupported("ephemeral workspace cannot resume retained provider state")
+	}
 	if request.Lifecycle != nil || request.Team != nil {
 		return unsupported("execution policy v1 does not grant lifecycle hooks or agent teams")
 	}

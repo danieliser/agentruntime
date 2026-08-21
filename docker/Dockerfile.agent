@@ -4,11 +4,13 @@ ARG HOST_UID=1000
 ARG HOST_GID=1000
 ARG AGENTD_VERSION=dev
 ARG AGENTD_COMMIT=unknown
+ARG AGENTD_PROVIDER=all
 
 LABEL org.opencontainers.image.title="AgentD runtime"
 LABEL org.opencontainers.image.version="${AGENTD_VERSION}"
 LABEL org.opencontainers.image.revision="${AGENTD_COMMIT}"
 LABEL org.opencontainers.image.source="https://github.com/danieliser/agentruntime"
+LABEL io.agentruntime.provider="${AGENTD_PROVIDER}"
 
 ENV TERM=xterm-256color
 
@@ -22,9 +24,12 @@ RUN apt-get update \
         python3-venv \
         ripgrep \
         tini \
-    && npm install --global --no-audit --no-fund \
-        @anthropic-ai/claude-code \
-        @openai/codex \
+	&& case "${AGENTD_PROVIDER}" in \
+		all) npm install --global --no-audit --no-fund @anthropic-ai/claude-code @openai/codex ;; \
+		codex) npm install --global --no-audit --no-fund @openai/codex ;; \
+		claude) npm install --global --no-audit --no-fund @anthropic-ai/claude-code ;; \
+		*) echo "unsupported AGENTD_PROVIDER=${AGENTD_PROVIDER}" >&2; exit 2 ;; \
+	esac \
     && npm cache clean --force \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
@@ -35,10 +40,12 @@ RUN apt-get update \
 # Codex checks PATH for bubblewrap before app-server initialization. Without
 # the package it spends tens of seconds falling back to its bundled binary,
 # exceeding AgentD's bounded native bootstrap deadline before any CONNECT.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends bubblewrap \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN if [ "${AGENTD_PROVIDER}" = "codex" ] || [ "${AGENTD_PROVIDER}" = "all" ]; then \
+		apt-get update \
+		&& apt-get install -y --no-install-recommends bubblewrap \
+		&& apt-get clean \
+		&& rm -rf /var/lib/apt/lists/*; \
+	fi
 
 RUN if getent group "${HOST_GID}" > /dev/null; then \
       EXISTING_GROUP="$(getent group "${HOST_GID}" | cut -d: -f1)"; \

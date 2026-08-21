@@ -26,7 +26,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if !nativeV1Agent(req.Agent) {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "durable internal spawn requires a native Claude or Codex agent", nil)
 	}
-	if req.SessionID == "" {
+	if req.SessionID == "" && req.AdmittedSessionID == "" {
 		req.SessionID = uuid.NewString()
 	}
 	if req.IdempotencyKey == "" {
@@ -36,6 +36,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if rt == nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("unknown runtime %q", req.Runtime), nil)
 	}
+	configureDockerProviderPersistence(&req, rt.Name())
 	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
 	if err != nil {
 		return nil, durable.Session{}, err
@@ -74,10 +75,17 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 			req.PersistSession = true
 		}
 	}
-	providerID, err := s.lookupResumeSessionID(req.Agent, req.ResumeSession, original)
+	resumeSession, err := s.resolveResumeSession(ctx, req.Agent, req.ResumeSession, original)
 	if err != nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider session", err)
 	}
+	if err := validateResolvedResumeState(rt.Name(), req.ResumeSession, resumeSession); err != nil {
+		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider state", err)
+	}
+	if resumeSession.VolumeName != "" {
+		req.PersistSession = true
+	}
+	providerID := resumeSession.ProviderID
 	resolved, err := resolveNativeExecution(req, ag, workDir, providerID)
 	if err != nil {
 		return nil, durable.Session{}, durable.NewError(durable.CodeInvalidArgument, op, "resolve native execution", err)
@@ -87,16 +95,28 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		return nil, durable.Session{}, err
 	}
 
-	admission, err := s.admitV1Session(ctx, req, rt.Name())
-	if err != nil {
-		return nil, durable.Session{}, err
+	var admission durable.CreateSessionResult
+	if req.AdmittedSessionID != "" {
+		stored, err := s.durableStore.GetSession(ctx, req.AdmittedSessionID)
+		if err != nil {
+			return nil, durable.Session{}, err
+		}
+		admission = durable.CreateSessionResult{Session: stored}
+	} else {
+		var err error
+		admission, err = s.admitV1Session(ctx, req, rt.Name())
+		if err != nil {
+			return nil, durable.Session{}, err
+		}
 	}
 	if !admission.Created {
 		existing := s.sessions.Get(admission.Session.ID)
-		if existing == nil {
+		if existing != nil {
+			return existing, admission.Session, nil
+		}
+		if admission.Session.State != durable.StateCreated {
 			return nil, admission.Session, durable.NewError(durable.CodeIndeterminate, op, "durable session exists without an attached runtime", nil)
 		}
-		return existing, admission.Session, nil
 	}
 	stored := admission.Session
 	failAdmission := func(cause error) (*session.Session, durable.Session, error) {
@@ -120,7 +140,9 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 
 	volumeName := ""
 	if req.PersistSession {
-		if original != nil && original.VolumeName != "" {
+		if resumeSession.VolumeName != "" {
+			volumeName = resumeSession.VolumeName
+		} else if original != nil && original.VolumeName != "" {
 			volumeName = original.VolumeName
 		} else {
 			volumeName = "agentruntime-vol-" + sess.ID
@@ -145,6 +167,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		SessionDir: &sess.SessionDir, VolumeName: volumeName, PTY: req.PTY,
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, req),
 	}
+	s.progress.publish(stored.ID, "runtime.spawn", "starting runtime process or container", false)
 	handle, err := rt.Spawn(ctx, spawnConfig)
 	if err != nil {
 		return failAdmission(classifyRuntimeFailure(err))
@@ -159,7 +182,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	}
 	generation, err := s.durableStore.CreateGeneration(lifecycleCtx, durable.CreateGenerationParams{
 		SessionID: sess.ID, Runtime: rt.Name(), ContainerID: runtimeID,
-		ImageReference: resolvedImageReference(req, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
+		ImageReference: runtimeGenerationImageReference(handle, req, rt.Name()), ImageDigest: runtimeGenerationImageDigest(handle),
 		SandboxProfile: requestSandboxProfile(rt.Name(), true, req), DockerLogDriver: generationDockerLogDriver(rt.Name(), true),
 		CreatedAt: time.Now().UTC(),
 	})
@@ -183,6 +206,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	}
 
 	var active activeNativeSessionRef
+	s.progress.publish(stored.ID, "provider.bootstrap", "initializing provider-native transport", false)
 	if err := AttachNativeSessionIO(
 		sess, s.logDir, nativeprotocol.Provider(req.Agent), generation.Number, providerID,
 		req.Prompt, diagnosticRedactions(req), !req.Interactive, false, nativePolicy(req), req.StructuredOutput, s.eventBroker,
@@ -214,6 +238,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 		_ = handle.Kill()
 		return failAdmission(classifyNativeBootstrapFailure(rt, spawnConfig, err))
 	}
+	s.progress.publish(stored.ID, "running", "provider turn is running", true)
 	log.Printf("[session %s] spawned durable internal session: agent=%s runtime=%s generation=%d", sess.ID, req.Agent, rt.Name(), generation.Number)
 	return sess, stored, nil
 }

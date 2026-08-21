@@ -40,14 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initializeAuthenticatedDashboard() {
-	while (!state.authToken) {
-		const entered = window.prompt('Enter the AgentD token from ~/.agentd/auth.token');
-		if (!entered) {
-			document.getElementById('sessions-body').innerHTML = '<tr><td colspan="8" class="empty-message">Authentication required</td></tr>';
-			return;
-		}
-		state.authToken = entered.trim();
-	}
+	if (!state.authToken) await requestDashboardToken();
 	try {
 		const response = await apiFetch('/api/v1/capabilities');
 		if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -56,9 +49,29 @@ async function initializeAuthenticatedDashboard() {
 	} catch (error) {
 		sessionStorage.removeItem('agentd.dashboard.token');
 		state.authToken = '';
-		console.error('Dashboard authentication failed');
-		initializeAuthenticatedDashboard();
+		document.getElementById('dashboard-auth-error').classList.remove('hidden');
+		await requestDashboardToken();
+		return initializeAuthenticatedDashboard();
 	}
+}
+
+function requestDashboardToken() {
+	const gate = document.getElementById('dashboard-auth');
+	const form = document.getElementById('dashboard-auth-form');
+	const input = document.getElementById('dashboard-auth-token');
+	gate.classList.remove('hidden');
+	input.focus();
+	return new Promise((resolve) => {
+		form.onsubmit = (event) => {
+			event.preventDefault();
+			state.authToken = input.value.trim();
+			if (!state.authToken) return;
+			document.getElementById('dashboard-auth-error').classList.add('hidden');
+			gate.classList.add('hidden');
+			input.value = '';
+			resolve();
+		};
+	});
 }
 
 function apiFetch(path, options = {}) {
@@ -288,6 +301,7 @@ function updateHistoryTable() {
                 <td>
                     <div class="action-buttons">
                         <button class="btn btn-view" data-action="info" data-session-id="${escapeAttr(entry.session_id)}">View</button>
+						<button class="btn btn-view" data-action="resume" data-session-id="${escapeAttr(entry.session_id)}" ${entry.resumable ? '' : 'disabled title="Provider state was not retained"'}>Continue</button>
                     </div>
                 </td>
             </tr>
@@ -302,6 +316,9 @@ function updateHistoryTable() {
             const sessionId = btn.dataset.sessionId;
             if (action === 'info') {
                 showDetailPanel(sessionId);
+            } else if (action === 'resume') {
+                const session = state.history.find(entry => entry.session_id === sessionId);
+                if (session) resumeConsoleSession(session);
             }
         });
     });

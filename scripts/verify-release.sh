@@ -35,10 +35,13 @@ if [ "${REQUIRE_RELEASE_TAG:-0}" = "1" ] && ! git -C "$REPO_ROOT" tag --points-a
 fi
 
 if [ "${VERIFY_DOCKER_IMAGES:-0}" = "1" ]; then
-  for image in "agentruntime-agent:${VERSION}" "agentruntime-proxy:${VERSION}"; do
+  for image in "agentruntime-agent:${VERSION}" "agentruntime-agent-codex:${VERSION}" "agentruntime-agent-claude:${VERSION}" "agentruntime-proxy:${VERSION}"; do
     test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")" = "$VERSION"
     test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$COMMIT"
   done
+  test "$(docker image inspect --format '{{ index .Config.Labels "io.agentruntime.provider" }}' "agentruntime-agent:${VERSION}")" = "all"
+  test "$(docker image inspect --format '{{ index .Config.Labels "io.agentruntime.provider" }}' "agentruntime-agent-codex:${VERSION}")" = "codex"
+  test "$(docker image inspect --format '{{ index .Config.Labels "io.agentruntime.provider" }}' "agentruntime-agent-claude:${VERSION}")" = "claude"
 fi
 
 echo "verified AgentD v${VERSION}@${COMMIT}"

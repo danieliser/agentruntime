@@ -120,7 +120,7 @@ if ! command -v docker &> /dev/null; then
     echo "error: Docker is required for release-stamped AgentD runtime images"
     exit 1
 fi
-for image in "agentruntime-agent:${AGENTD_VERSION}" "agentruntime-proxy:${AGENTD_VERSION}"; do
+for image in "agentruntime-agent:${AGENTD_VERSION}" "agentruntime-agent-codex:${AGENTD_VERSION}" "agentruntime-agent-claude:${AGENTD_VERSION}" "agentruntime-proxy:${AGENTD_VERSION}"; do
     if ! docker image inspect "$image" &> /dev/null; then
         echo "error: required runtime image $image is absent; run ./docker/build.sh all first"
         exit 1

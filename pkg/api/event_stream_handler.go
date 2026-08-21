@@ -51,6 +51,8 @@ func (s *Server) handleV1EventStream(c *gin.Context) {
 		return
 	}
 	defer subscription.Close()
+	progress, unsubscribeProgress := s.progress.subscribe(c.Param("id"))
+	defer unsubscribeProgress()
 	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
@@ -64,19 +66,45 @@ func (s *Server) handleV1EventStream(c *gin.Context) {
 	}); err != nil {
 		return
 	}
-	for {
-		event, err := subscription.Next(streamCtx)
-		if err != nil {
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
-				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				_ = conn.WriteJSON(gin.H{"frame_type": "error", "error": durableErrorEnvelope(err)})
+	type eventResult struct {
+		event durable.Event
+		err   error
+	}
+	events := make(chan eventResult, 1)
+	go func() {
+		for {
+			event, nextErr := subscription.Next(streamCtx)
+			select {
+			case events <- eventResult{event: event, err: nextErr}:
+			case <-streamCtx.Done():
+				return
 			}
+			if nextErr != nil {
+				return
+			}
+		}
+	}()
+	for {
+		var payload any
+		select {
+		case update := <-progress:
+			payload = update
+		case result := <-events:
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) && !errors.Is(result.err, io.EOF) {
+					_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+					_ = conn.WriteJSON(gin.H{"frame_type": "error", "error": durableErrorEnvelope(result.err)})
+				}
+				return
+			}
+			payload = wireEvent(result.event)
+		case <-streamCtx.Done():
 			return
 		}
 		if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
 			return
 		}
-		if err := conn.WriteJSON(wireEvent(event)); err != nil {
+		if err := conn.WriteJSON(payload); err != nil {
 			return
 		}
 	}

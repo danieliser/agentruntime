@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNetworkManager_EnsureNetwork(t *testing.T) {
@@ -143,7 +144,40 @@ exit 2
 		!strings.Contains(string(data), "network connect --alias agentruntime-proxy "+defaultDockerPolicyNetworkName+" agentruntime-proxy") {
 		t.Fatalf("expected internal policy network and dual-homed proxy, got log %q", string(data))
 	}
-	if count := strings.Count(string(data), "exec agentruntime-proxy sh -c "+dockerProxyReadinessProbe+"\n"); count != 2 {
-		t.Fatalf("expected readiness retry before admission, got %d attempts in log %q", count, string(data))
+	if count := strings.Count(string(data), "exec agentruntime-proxy sh -c "+dockerProxyReadinessProbe+"\n"); count != 3 {
+		t.Fatalf("expected initial readiness retry plus cached-state revalidation, got %d attempts in log %q", count, string(data))
+	}
+}
+
+func TestNetworkManager_EnsureProxyRetriesAfterReadinessTimeout(t *testing.T) {
+	tempDir := t.TempDir()
+	readyFile := filepath.Join(tempDir, "proxy.ready")
+	installFakeDockerWithReadinessControl(t, `#!/bin/sh
+set -eu
+READY_FILE="`+readyFile+`"
+case "$1 $2" in
+  "network inspect") exit 0 ;;
+  "network connect") exit 0 ;;
+  "inspect --type") printf 'true\n'; exit 0 ;;
+  "exec agentruntime-proxy")
+    if [ -f "$READY_FILE" ]; then exit 0; fi
+    exit 1
+    ;;
+esac
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+
+	manager := &NetworkManager{}
+	firstCtx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	if err := manager.EnsureProxy(firstCtx); err == nil {
+		t.Fatal("first EnsureProxy unexpectedly succeeded")
+	}
+	if err := os.WriteFile(readyFile, []byte("ready"), 0o600); err != nil {
+		t.Fatalf("mark proxy ready: %v", err)
+	}
+	if err := manager.EnsureProxy(context.Background()); err != nil {
+		t.Fatalf("EnsureProxy did not retry after transient readiness failure: %v", err)
 	}
 }

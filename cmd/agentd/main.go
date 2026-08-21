@@ -393,10 +393,14 @@ func dockerConfigForBuild(dataDir, dockerHost string, identity buildinfo.Identit
 	}
 	if identity.Version == "" || identity.Version == "dev" || identity.Commit == "" || identity.Commit == "unknown" {
 		cfg.Image = runtime.DefaultDockerImage
+		cfg.CodexImage = "agentruntime-agent-codex:latest"
+		cfg.ClaudeImage = "agentruntime-agent-claude:latest"
 		cfg.ProxyImage = "agentruntime-proxy:latest"
 		return cfg
 	}
 	cfg.Image = "agentruntime-agent:" + identity.Version
+	cfg.CodexImage = "agentruntime-agent-codex:" + identity.Version
+	cfg.ClaudeImage = "agentruntime-agent-claude:" + identity.Version
 	cfg.ProxyImage = "agentruntime-proxy:" + identity.Version
 	cfg.ExpectedVersion = identity.Version
 	cfg.ExpectedCommit = identity.Commit

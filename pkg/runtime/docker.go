@@ -26,6 +26,10 @@ const DefaultDockerImage = "agentruntime-agent:latest"
 type DockerConfig struct {
 	// Image is the default container image (e.g., "agentruntime-agent:latest").
 	Image string
+	// CodexImage and ClaudeImage are slimmer provider-specific images. When
+	// configured, native sessions select them ahead of the compatibility image.
+	CodexImage  string
+	ClaudeImage string
 	// ProxyImage is the managed egress proxy image.
 	ProxyImage string
 
@@ -111,47 +115,95 @@ type dockerRunSpec struct {
 	cleanup func()
 }
 
+type DockerImageStamp struct {
+	Reference string `json:"reference"`
+	Digest    string `json:"digest"`
+	Version   string `json:"version,omitempty"`
+	Commit    string `json:"commit,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+}
+
+type DockerAdmissionReport struct {
+	DaemonReady bool               `json:"daemon_ready"`
+	Images      []DockerImageStamp `json:"images"`
+}
+
 func (r *DockerRuntime) Name() string { return "docker" }
+
+// Prewarm starts and validates the shared network proxy before the first
+// Docker admission reaches the spawn path.
+func (r *DockerRuntime) Prewarm(ctx context.Context) error {
+	return r.manager().EnsureProxy(ctx)
+}
 
 // CheckAdmission verifies both Docker CLI discovery and daemon reachability
 // without creating a container or otherwise mutating runtime state.
 func (r *DockerRuntime) CheckAdmission(ctx context.Context) error {
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "ps", "-q", "--no-trunc"); err != nil {
-		return fmt.Errorf("Docker runtime unavailable: %w", err)
-	}
-	for _, image := range []string{r.cfg.Image, r.cfg.ProxyImage} {
-		if _, err := dockerOutputHost(checkCtx, r.cfg.Host, "image", "inspect", image); err != nil {
-			return fmt.Errorf("Docker configured image %q is unavailable: %w", image, err)
-		}
-	}
-	if r.cfg.ExpectedVersion != "" || r.cfg.ExpectedCommit != "" {
-		for _, image := range []string{r.cfg.Image, r.cfg.ProxyImage} {
-			if err := r.checkImageStamp(checkCtx, image); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	_, err := r.CheckAdmissionReport(ctx)
+	return err
 }
 
-func (r *DockerRuntime) checkImageStamp(ctx context.Context, image string) error {
-	raw, err := dockerOutputHost(ctx, r.cfg.Host, "image", "inspect", "--format", "{{json .Config.Labels}}", image)
+func (r *DockerRuntime) CheckAdmissionReport(ctx context.Context) (AdmissionReport, error) {
+	if _, err := dockerOutputHost(ctx, r.cfg.Host, "ps", "-q", "--no-trunc"); err != nil {
+		return AdmissionReport{}, fmt.Errorf("Docker runtime unavailable: %w", err)
+	}
+	report := DockerAdmissionReport{DaemonReady: true, Images: make([]DockerImageStamp, 0, len(r.configuredImages()))}
+	for _, image := range r.configuredImages() {
+		stamp, err := r.inspectImageStamp(ctx, image)
+		if err != nil {
+			return AdmissionReport{}, err
+		}
+		if r.cfg.ExpectedVersion != "" && stamp.Version != r.cfg.ExpectedVersion {
+			return AdmissionReport{}, fmt.Errorf("Docker image %q version stamp %q does not match %q", image, stamp.Version, r.cfg.ExpectedVersion)
+		}
+		if r.cfg.ExpectedCommit != "" && stamp.Commit != r.cfg.ExpectedCommit {
+			return AdmissionReport{}, fmt.Errorf("Docker image %q revision stamp %q does not match %q", image, stamp.Commit, r.cfg.ExpectedCommit)
+		}
+		report.Images = append(report.Images, stamp)
+	}
+	return AdmissionReport{Docker: &report}, nil
+}
+
+func (r *DockerRuntime) configuredImages() []string {
+	candidates := []string{r.cfg.Image, r.cfg.CodexImage, r.cfg.ClaudeImage, r.cfg.ProxyImage}
+	seen := make(map[string]struct{}, len(candidates))
+	images := make([]string, 0, len(candidates))
+	for _, image := range candidates {
+		if image == "" {
+			continue
+		}
+		if _, duplicate := seen[image]; duplicate {
+			continue
+		}
+		seen[image] = struct{}{}
+		images = append(images, image)
+	}
+	return images
+}
+
+func (r *DockerRuntime) inspectImageStamp(ctx context.Context, image string) (DockerImageStamp, error) {
+	raw, err := dockerOutputHost(ctx, r.cfg.Host, "image", "inspect", image)
 	if err != nil {
-		return fmt.Errorf("inspect Docker image stamp %q: %w", image, err)
+		return DockerImageStamp{}, fmt.Errorf("Docker configured image %q is unavailable: %w", image, err)
 	}
-	labels := map[string]string{}
-	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
-		return fmt.Errorf("decode Docker image stamp %q: %w", image, err)
+	var inspected []struct {
+		ID     string `json:"Id"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
 	}
-	if got := labels["org.opencontainers.image.version"]; got != r.cfg.ExpectedVersion {
-		return fmt.Errorf("Docker image %q version stamp %q does not match %q", image, got, r.cfg.ExpectedVersion)
+	if err := json.Unmarshal([]byte(raw), &inspected); err != nil {
+		return DockerImageStamp{}, fmt.Errorf("decode Docker image stamp %q: %w", image, err)
 	}
-	if got := labels["org.opencontainers.image.revision"]; got != r.cfg.ExpectedCommit {
-		return fmt.Errorf("Docker image %q revision stamp %q does not match %q", image, got, r.cfg.ExpectedCommit)
+	if len(inspected) != 1 || inspected[0].ID == "" {
+		return DockerImageStamp{}, fmt.Errorf("decode Docker image stamp %q: expected one image with an ID", image)
 	}
-	return nil
+	labels := inspected[0].Config.Labels
+	return DockerImageStamp{
+		Reference: image, Digest: inspected[0].ID,
+		Version: labels["org.opencontainers.image.version"], Commit: labels["org.opencontainers.image.revision"],
+		Provider: labels["io.agentruntime.provider"],
+	}, nil
 }
 
 // dockerCmd returns an exec.Cmd for "docker <args>" with DOCKER_HOST set if configured.
@@ -236,7 +288,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		if err := r.manager().EnsurePolicyProxy(policyCtx, policyNetwork); err != nil {
 			return nil, &SpawnError{Reason: "policy proxy", Err: &EgressError{Code: EgressPreflightFailed, Stage: "policy proxy unavailable", Err: err}}
 		}
-		if err := r.manager().preflightPolicyEgress(policyCtx, policyNetwork, resolvedDockerImage(r.cfg.Image, cfg)); err != nil {
+		if err := r.manager().preflightPolicyEgress(policyCtx, policyNetwork, resolvedDockerImage(r.cfg, cfg)); err != nil {
 			return nil, &SpawnError{Reason: "egress preflight", Err: err}
 		}
 	} else {
@@ -248,7 +300,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		}
 	}
 	if cfg.Generation > 0 {
-		cfg.ImageReference = resolvedDockerImage(r.cfg.Image, cfg)
+		cfg.ImageReference = resolvedDockerImage(r.cfg, cfg)
 		imageDigest, err := r.imageReferenceDigest(ctx, cfg.ImageReference)
 		if err != nil {
 			return nil, &SpawnError{Reason: "image digest", Err: err}
@@ -307,6 +359,7 @@ func (r *DockerRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHand
 		return nil, &SpawnError{Reason: "native docker stdio", Err: err}
 	}
 	handle.imageDigest = imageDigest
+	handle.imageReference = cfg.ImageReference
 	// Materialized files remain in place for restart reconstruction. A later
 	// session-retention pass owns their eventual removal.
 	return handle, nil
@@ -456,7 +509,7 @@ func (r *DockerRuntime) initVolumePermissions(ctx context.Context, image string,
 
 func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	req := cfg.Request
-	image := resolvedDockerImage(r.cfg.Image, cfg)
+	image := resolvedDockerImage(r.cfg, cfg)
 	if image == "" {
 		return nil, fmt.Errorf("no container image configured")
 	}
@@ -503,17 +556,27 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 			}
 		}
 
-		// Create named volume for session persistence if requested.
+		// Create a named volume for provider-native conversation state if
+		// requested. Codex stores resumable rollout files under .codex/sessions;
+		// Claude stores project transcripts under .claude/projects.
 		// Skip if a volume mount already targets the same container path
 		// (e.g., the chat manager's per-chat volume). Adding a second
 		// volume at the same path would shadow the first, breaking resume
 		// because the JSONL from the previous session lives on the chat
 		// volume while the new session reads from the per-session volume.
-		if req.PersistSession && !hasVolumeMountAt(mounts, "/home/agent/.claude/projects") {
+		providerStateTarget := persistentProviderStateTarget(req)
+		if req.PersistSession && providerStateTarget != "" && !hasVolumeMountAt(mounts, providerStateTarget) {
 			var err error
 			// Use provided volume name (for resume) or create a new one
 			if cfg.VolumeName != "" {
 				volumeName = cfg.VolumeName
+				inspectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, inspectErr := dockerOutputHost(inspectCtx, r.cfg.Host, "volume", "inspect", volumeName)
+				cancel()
+				if inspectErr != nil {
+					cleanup()
+					return nil, fmt.Errorf("persistent provider volume %q is unavailable: %w", volumeName, inspectErr)
+				}
 			} else {
 				volumeName, err = r.createSessionVolume(context.Background(), cfg.SessionID)
 				if err != nil {
@@ -525,10 +588,11 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 					_ = r.RemoveSessionVolume(context.Background(), volumeName)
 				})
 			}
-			// Add volume mount for Claude's project cache
+			// Overlay only the provider's resumable state. Credentials and
+			// configuration remain in the separately materialized bind mount.
 			mounts = append(mounts, apischema.Mount{
 				Host:      volumeName,
-				Container: "/home/agent/.claude/projects",
+				Container: providerStateTarget,
 				Mode:      "rw",
 				Type:      "volume",
 			})
@@ -693,14 +757,40 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	}, nil
 }
 
-func resolvedDockerImage(defaultImage string, cfg SpawnConfig) string {
+func persistentProviderStateTarget(req *apischema.SessionRequest) string {
+	if req == nil {
+		return ""
+	}
+	switch {
+	case req.Agent == "codex" || (req.Codex != nil && req.Claude == nil):
+		return "/home/agent/.codex/sessions"
+	case req.Agent == "claude" || req.Claude != nil:
+		return "/home/agent/.claude/projects"
+	default:
+		return ""
+	}
+}
+
+func resolvedDockerImage(config DockerConfig, cfg SpawnConfig) string {
 	if cfg.ImageReference != "" {
 		return cfg.ImageReference
 	}
 	if cfg.Request != nil && cfg.Request.Container != nil && cfg.Request.Container.Image != "" {
 		return cfg.Request.Container.Image
 	}
-	return defaultImage
+	if cfg.Request != nil {
+		switch cfg.Request.Agent {
+		case "codex":
+			if config.CodexImage != "" {
+				return config.CodexImage
+			}
+		case "claude":
+			if config.ClaudeImage != "" {
+				return config.ClaudeImage
+			}
+		}
+	}
+	return config.Image
 }
 
 func requestEnv(cfg SpawnConfig) map[string]string {

@@ -17,6 +17,11 @@ type HealthResponse struct {
 //
 // Minimum valid request: Agent + Prompt + (WorkDir or a Mount).
 type SessionRequest struct {
+	// AdmittedSessionID is an AgentD-internal handoff from synchronous durable
+	// admission to supervised asynchronous activation. It never crosses JSON or
+	// YAML request boundaries and therefore never changes the request hash.
+	AdmittedSessionID string `json:"-" yaml:"-"`
+
 	// Task identity
 	SessionID string `json:"session_id,omitempty" yaml:"session_id,omitempty"` // caller-defined session ID (must be valid UUID if set)
 	// IdempotencyKey is required by POST /api/v1/sessions. Repeating the same

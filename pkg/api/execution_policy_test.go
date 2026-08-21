@@ -215,6 +215,7 @@ func TestResolveExecutionPolicyRejectsUnsupportedOrWidenedRequests(t *testing.T)
 		{name: "lifecycle hook", runtime: "docker", mutate: func(request *SessionRequest) { request.Lifecycle = &LifecycleConfig{PreInit: "steer.sh"} }},
 		{name: "approval widening", runtime: "docker", mutate: func(request *SessionRequest) { request.ExecutionPolicy.ApprovalPolicy = "on_request" }},
 		{name: "retention widening", runtime: "docker", mutate: func(request *SessionRequest) { request.ExecutionPolicy.WorkspaceRetention = "forever" }},
+		{name: "provider resume", runtime: "docker", mutate: func(request *SessionRequest) { request.ResumeSession = "retained-session" }},
 		{name: "claude private context", runtime: "docker", mutate: func(request *SessionRequest) { request.Claude = &ClaudeConfig{ClaudeMD: "private"} }},
 		{name: "claude credential path", runtime: "docker", mutate: func(request *SessionRequest) {
 			request.Claude = &ClaudeConfig{CredentialsPath: "/private/credentials.json"}

@@ -1,0 +1,349 @@
+.console-shell {
+    display: grid;
+    grid-template-columns: minmax(360px, 0.82fr) minmax(440px, 1.18fr);
+    gap: 1rem;
+    min-height: calc(100vh - 210px);
+}
+
+.console-config,
+.console-stream {
+    background: linear-gradient(155deg, rgba(22, 33, 62, 0.98), rgba(11, 18, 36, 0.98));
+    border: 1px solid #2d3a58;
+    border-radius: 12px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.2);
+}
+
+.console-config {
+    padding: 1.25rem;
+    align-self: start;
+}
+
+.console-heading,
+.stream-header,
+.launch-row,
+.steer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.console-heading,
+.stream-header {
+    margin-bottom: 1rem;
+}
+
+.console-heading h2,
+.stream-header h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.eyebrow {
+    color: #7e91b6;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    margin-bottom: 0.2rem;
+    text-transform: uppercase;
+}
+
+.console-connection,
+.session-pill {
+    background: rgba(0, 212, 255, 0.1);
+    border: 1px solid rgba(0, 212, 255, 0.25);
+    border-radius: 999px;
+    color: #73e7ff;
+    font: 600 11px/1.2 'SF Mono', 'Fira Code', monospace;
+    padding: 0.35rem 0.65rem;
+}
+
+.console-connection.live {
+    background: rgba(76, 175, 80, 0.13);
+    border-color: rgba(76, 175, 80, 0.35);
+    color: #8ce99a;
+}
+
+.console-connection.error {
+    background: rgba(244, 67, 54, 0.12);
+    border-color: rgba(244, 67, 54, 0.35);
+    color: #ff8d85;
+}
+
+.field {
+    display: grid;
+    gap: 0.4rem;
+}
+
+.field > span {
+    color: #9cacc9;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+}
+
+.field-wide {
+    margin-bottom: 0.9rem;
+}
+
+.field input,
+.field select,
+.field textarea,
+.steer-row input {
+    background: #0d1528;
+    border: 1px solid #34425f;
+    border-radius: 7px;
+    color: #edf5ff;
+    font: inherit;
+    outline: none;
+    padding: 0.65rem 0.7rem;
+    resize: vertical;
+    width: 100%;
+}
+
+.field textarea,
+.live-output,
+.activity-log {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+.steer-row input:focus {
+    border-color: #00b8dd;
+    box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.09);
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+}
+
+.advanced-config {
+    border-top: 1px solid #293652;
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+}
+
+.advanced-config summary,
+.activity-drawer summary {
+    color: #b9c8df;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.advanced-content {
+    display: grid;
+    gap: 0.8rem;
+    padding-top: 0.9rem;
+}
+
+.toggle-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    color: #aab9d1;
+    font-size: 12px;
+}
+
+.toggle-row label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.launch-row {
+    border-top: 1px solid #293652;
+    margin-top: 1rem;
+    padding-top: 1rem;
+}
+
+.primary-btn,
+.stream-actions button,
+.steer-row button {
+    background: #17243d;
+    border: 1px solid #3a4b6a;
+    border-radius: 7px;
+    color: #dcecff;
+    cursor: pointer;
+    font: 650 12px/1 inherit;
+    padding: 0.65rem 0.85rem;
+}
+
+.primary-btn {
+    background: #00b8dd;
+    border-color: #00c6ed;
+    color: #06111e;
+    min-width: 130px;
+}
+
+.primary-btn:hover { background: #29d5f6; }
+.stream-actions button:hover,
+.steer-row button:hover { border-color: #00b8dd; }
+
+button:disabled,
+input:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.form-note {
+    color: #7486a5;
+    font-size: 10px;
+    line-height: 1.45;
+    text-align: right;
+}
+
+.console-stream {
+    display: grid;
+    grid-template-rows: auto auto minmax(260px, 1fr) auto auto;
+    min-height: 620px;
+    overflow: hidden;
+}
+
+.stream-header {
+    border-bottom: 1px solid #293652;
+    margin: 0;
+    padding: 1.1rem 1.25rem;
+}
+
+.stream-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.session-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding: 0.8rem 1.25rem 0;
+}
+
+.live-output {
+    background: #080e1b;
+    border: 0;
+    border-bottom: 1px solid #293652;
+    border-top: 1px solid #1d2940;
+    color: #d7e6f8;
+    font-size: 12px;
+    line-height: 1.65;
+    margin-top: 0.8rem;
+    overflow: auto;
+    padding: 1rem 1.25rem;
+    white-space: pre-wrap;
+}
+
+.activity-drawer {
+    border-bottom: 1px solid #293652;
+    max-height: 190px;
+    overflow: auto;
+    padding: 0.75rem 1.25rem;
+}
+
+.activity-drawer summary {
+    display: flex;
+    justify-content: space-between;
+}
+
+.activity-log {
+    color: #7f93b2;
+    display: grid;
+    font-size: 10px;
+    gap: 0.35rem;
+    padding-top: 0.65rem;
+}
+
+.activity-entry.error { color: #ff938c; }
+.activity-entry.tool { color: #85d9eb; }
+.activity-entry.terminal { color: #8ce99a; }
+
+.steer-row {
+    padding: 0.9rem 1.25rem;
+}
+
+.steer-row input { flex: 1; }
+
+@media (max-width: 980px) {
+    .console-shell { grid-template-columns: 1fr; }
+    .console-stream { min-height: 680px; }
+}
+
+@media (max-width: 620px) {
+    .form-grid { grid-template-columns: 1fr 1fr; }
+    .console-heading,
+    .stream-header,
+    .launch-row { align-items: flex-start; flex-direction: column; }
+    .form-note { text-align: left; }
+}
+.auth-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(4, 8, 13, 0.86);
+    backdrop-filter: blur(14px);
+}
+
+.auth-gate.hidden,
+.auth-error.hidden {
+    display: none;
+}
+
+.auth-card {
+    width: min(440px, 100%);
+    padding: 30px;
+    border: 1px solid rgba(0, 212, 255, 0.22);
+    border-radius: 18px;
+    background: #0b121b;
+    box-shadow: 0 26px 80px rgba(0, 0, 0, 0.55);
+}
+
+.auth-card h2 {
+    margin: 5px 0 10px;
+}
+
+.auth-card > p:not(.eyebrow):not(.auth-error) {
+    margin: 0 0 22px;
+    color: #8d9aaa;
+    line-height: 1.55;
+}
+
+.auth-card code {
+    color: #d8e4ec;
+}
+
+.auth-card .launch-button {
+    width: 100%;
+    margin-top: 18px;
+}
+
+.auth-error {
+    margin: 12px 0 0;
+    color: #ff7b7b;
+    font-size: 0.82rem;
+}
+
+.tool-event-details summary {
+    cursor: pointer;
+    color: #c5f5ff;
+}
+
+.tool-event-details pre {
+    max-height: 260px;
+    margin: 10px 0 0;
+    padding: 12px;
+    overflow: auto;
+    border: 1px solid rgba(0, 212, 255, 0.12);
+    border-radius: 8px;
+    background: rgba(2, 7, 12, 0.7);
+    color: #aebdca;
+    font-size: 0.74rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

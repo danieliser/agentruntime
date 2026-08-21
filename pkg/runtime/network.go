@@ -22,6 +22,7 @@ const (
 	dockerProxyReadinessProbe      = "if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 3128; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/3128'; else exit 127; fi"
 	dockerBridgeName               = "br-agentruntime"
 	defaultAgentRuntimePort        = "8090"
+	defaultProxyReadinessTimeout   = 45 * time.Second
 )
 
 // NetworkManager owns the Docker bridge network and Squid proxy sidecar used
@@ -33,8 +34,8 @@ type NetworkManager struct {
 	DataDir       string // owner-private root for generated proxy policies
 	DiagnosticDir string // empty disables retained policy-egress diagnostics
 
-	ensureOnce    sync.Once
-	ensureErr     error
+	ensureMu      sync.Mutex
+	proxyReady    bool
 	policyEnsures sync.Map
 }
 
@@ -131,13 +132,27 @@ func (m *NetworkManager) ApplyIPTablesRules(ctx context.Context) error {
 	return nil
 }
 
-// EnsureProxy starts the proxy sidecar if it is not already running.
-// Uses sync.Once to prevent concurrent callers from racing on container creation.
+// EnsureProxy starts the proxy sidecar if it is not already running. Calls are
+// serialized so concurrent admissions cannot race on container creation. Only
+// successful readiness is cached; a timeout or daemon error remains retryable.
 func (m *NetworkManager) EnsureProxy(ctx context.Context) error {
-	m.ensureOnce.Do(func() {
-		m.ensureErr = m.ensureProxyOnce(ctx)
-	})
-	return m.ensureErr
+	m.ensureMu.Lock()
+	defer m.ensureMu.Unlock()
+
+	if m.proxyReady {
+		running, err := dockerInspectRunningHost(ctx, m.dockerHost(), dockerProxyContainerName)
+		if err == nil && running {
+			if err := m.prepareRunningProxy(ctx); err == nil {
+				return nil
+			}
+		}
+		m.proxyReady = false
+	}
+	if err := m.ensureProxyOnce(ctx); err != nil {
+		return err
+	}
+	m.proxyReady = true
+	return nil
 }
 
 func (m *NetworkManager) ensureProxyOnce(ctx context.Context) error {
@@ -203,7 +218,7 @@ func (m *NetworkManager) waitForProxyReady(ctx context.Context) error {
 }
 
 func (m *NetworkManager) waitForNamedProxyReady(ctx context.Context, containerName string) error {
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	readyCtx, cancel := context.WithTimeout(ctx, defaultProxyReadinessTimeout)
 	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -250,10 +265,10 @@ func (m *NetworkManager) RestrictedProxyEnv() map[string]string {
 }
 
 // Cleanup stops the proxy sidecar and removes the managed network.
-// Resets the ensure-once gate so EnsureProxy can be called again after cleanup.
 func (m *NetworkManager) Cleanup(ctx context.Context) error {
-	m.ensureOnce = sync.Once{}
-	m.ensureErr = nil
+	m.ensureMu.Lock()
+	m.proxyReady = false
+	m.ensureMu.Unlock()
 	var errs []error
 	if err := m.cleanupPolicyNetworks(ctx, ""); err != nil {
 		errs = append(errs, err)

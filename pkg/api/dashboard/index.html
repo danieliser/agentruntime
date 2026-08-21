@@ -5,8 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>agentruntime Dashboard</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="console.css">
 </head>
 <body>
+    <div class="auth-gate hidden" id="dashboard-auth" role="dialog" aria-modal="true" aria-labelledby="dashboard-auth-title">
+        <form class="auth-card" id="dashboard-auth-form">
+            <p class="eyebrow">Local access</p>
+            <h2 id="dashboard-auth-title">Connect to AgentD</h2>
+            <p>Paste the token from this daemon's <code>auth.token</code>. It stays in this tab's session storage.</p>
+            <label class="field field-wide">
+                <span>Bearer token</span>
+                <input id="dashboard-auth-token" type="password" required autocomplete="off" spellcheck="false">
+            </label>
+            <p class="auth-error hidden" id="dashboard-auth-error" role="alert">That token was not accepted.</p>
+            <button class="launch-button" type="submit">Connect</button>
+        </form>
+    </div>
     <div class="container">
         <!-- Header -->
         <header class="header">
@@ -44,12 +58,135 @@
         <main class="main">
             <!-- Tab Navigation -->
             <div class="tabs-nav">
-                <button class="tab-btn active" data-tab="active">Active</button>
+                <button class="tab-btn active" data-tab="console">Console</button>
+                <button class="tab-btn" data-tab="active">Active</button>
                 <button class="tab-btn" data-tab="history">History</button>
             </div>
 
+            <!-- Live Agent Console -->
+            <div class="tab-content active" id="tab-console">
+                <section class="console-shell">
+                    <form class="console-config" id="console-form">
+                        <div class="console-heading">
+                            <div>
+                                <p class="eyebrow">New session</p>
+                                <h2>Launch an agent</h2>
+                            </div>
+                            <span class="console-connection" id="console-connection">Ready</span>
+                        </div>
+
+                        <label class="field field-wide">
+                            <span>Prompt</span>
+                            <textarea id="console-prompt" rows="7" required placeholder="Ask the agent to investigate, build, explain, or test something…"></textarea>
+                        </label>
+
+                        <div class="form-grid">
+                            <label class="field">
+                                <span>Provider</span>
+                                <select id="console-agent">
+                                    <option value="codex">Codex</option>
+                                    <option value="claude">Claude Code</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>Model</span>
+                                <select id="console-model"></select>
+                            </label>
+                            <label class="field">
+                                <span>Effort</span>
+                                <select id="console-effort"></select>
+                            </label>
+                            <label class="field">
+                                <span>Runtime</span>
+                                <select id="console-runtime">
+                                    <option value="docker">Docker</option>
+                                    <option value="local">Local</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>Timeout</span>
+                                <select id="console-timeout">
+                                    <option value="90">90 seconds</option>
+                                    <option value="300" selected>5 minutes</option>
+                                    <option value="900">15 minutes</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>Trace</span>
+                                <select id="console-trace">
+                                    <option value="off">Off</option>
+                                    <option value="best_effort" selected>Best effort</option>
+                                    <option value="required">Required</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <details class="advanced-config">
+                            <summary>Advanced controls</summary>
+                            <div class="advanced-content">
+                                <div class="toggle-row">
+                                    <label><input type="checkbox" id="console-fast"> Priority / fast mode</label>
+                                    <label><input type="checkbox" id="console-clean" checked> Clean context</label>
+                                    <label><input type="checkbox" id="console-restricted"> Restricted public egress</label>
+                                </div>
+                                <label class="field restricted-field" hidden>
+                                    <span>Allowed HTTPS hosts</span>
+                                    <input id="console-hosts" value="api.openai.com, auth.openai.com, chatgpt.com">
+                                </label>
+                                <label class="field restricted-field" hidden>
+                                    <span>Codex auth.json (memory only)</span>
+                                    <input type="file" id="console-auth-file" accept="application/json,.json">
+                                </label>
+                                <label class="field">
+                                    <span>Host working directory (optional)</span>
+                                    <input id="console-workdir" placeholder="/absolute/path/to/project">
+                                </label>
+                                <label class="field claude-field" hidden>
+                                    <span>Claude max turns</span>
+                                    <input id="console-max-turns" type="number" min="1" max="100" value="12">
+                                </label>
+                                <label class="field">
+                                    <span>Structured JSON Schema (optional)</span>
+                                    <textarea id="console-schema" rows="4" placeholder='{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'></textarea>
+                                </label>
+                            </div>
+                        </details>
+
+                        <div class="launch-row">
+                            <button class="primary-btn" id="console-launch" type="submit">Launch session</button>
+                            <span class="form-note" id="console-form-note">Credentials are discovered by AgentD unless explicitly supplied for restricted Codex.</span>
+                        </div>
+                    </form>
+
+                    <section class="console-stream" aria-live="polite">
+                        <div class="stream-header">
+                            <div>
+                                <p class="eyebrow">Live session</p>
+                                <h2 id="console-session-title">Waiting for launch</h2>
+                            </div>
+                            <div class="stream-actions">
+                                <button type="button" id="console-interrupt" disabled>Interrupt</button>
+                                <button type="button" id="console-cancel" disabled>Cancel</button>
+                            </div>
+                        </div>
+                        <div class="session-strip" id="console-session-strip">
+                            <span class="session-pill">No active session</span>
+                        </div>
+                        <pre class="live-output" id="console-output">Streaming output will appear here.</pre>
+                        <details class="activity-drawer" open>
+                            <summary>Activity <span id="console-event-count">0 events</span></summary>
+                            <div class="activity-log" id="console-activity"></div>
+                        </details>
+                        <form class="steer-row" id="console-steer-form">
+                            <input id="console-steer" placeholder="Steer the active turn…" disabled>
+                            <button type="submit" id="console-steer-button" disabled>Send steer</button>
+                        </form>
+                    </section>
+                </section>
+            </div>
+
             <!-- Active Sessions Tab -->
-            <div class="tab-content active" id="tab-active">
+            <div class="tab-content" id="tab-active">
                 <div class="sessions-section">
                     <h2>Active Sessions</h2>
                     <table class="sessions-table" id="sessions-table">
@@ -124,5 +261,6 @@
     </div>
 
     <script src="app.js"></script>
+    <script src="console.js"></script>
 </body>
 </html>

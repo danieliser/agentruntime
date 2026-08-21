@@ -39,6 +39,22 @@ type AdmissionChecker interface {
 	CheckAdmission(context.Context) error
 }
 
+// AdmissionReporter returns the verified, non-secret runtime identity captured
+// by the same probe used for admission.
+type AdmissionReporter interface {
+	CheckAdmissionReport(context.Context) (AdmissionReport, error)
+}
+
+type AdmissionReport struct {
+	Docker *DockerAdmissionReport `json:"docker,omitempty"`
+}
+
+// Prewarmer prepares reusable runtime infrastructure before work arrives.
+// Implementations must be idempotent and safe for periodic revalidation.
+type Prewarmer interface {
+	Prewarm(context.Context) error
+}
+
 // EphemeralSessionReleaser is implemented by runtimes that retain resources
 // only until AgentD commits the immutable terminal receipt.
 type EphemeralSessionReleaser interface {
@@ -113,6 +129,12 @@ type RuntimeIdentifiedHandle interface {
 // produced a concrete runtime generation.
 type RuntimeImageIdentifiedHandle interface {
 	RuntimeImageDigest() string
+}
+
+// RuntimeImageReferencedHandle exposes the exact configured image reference
+// selected for a concrete runtime generation.
+type RuntimeImageReferencedHandle interface {
+	RuntimeImageReference() string
 }
 
 // NativeStdioHandle marks a process handle whose stdio is the provider's exact
