@@ -24,6 +24,38 @@
   failed first on missing HTTP-401/network classification. Both focused tests,
   the existing transcript/authentication regressions, JavaScript syntax, and
   `git diff --check` now pass.
+- Final source gates pass: full `go test ./...`, full `go test -race ./...`,
+  `go vet ./...`, syntax checks for all dashboard JavaScript, and `git diff
+  --check`. The source commit and annotated `v2.3.3` tag both contain SSH
+  signatures; the immutable release commit is
+  `ae8c8b03a7aa329fc73efdc14443263b5b36f6b2`.
+- Pre-build Docker 29.4.0/overlay2 was healthy, AgentD had zero active sessions,
+  and the host had 189 GiB free. No cache, container, volume, or host-file
+  cleanup was needed. All four exact images were rebuilt/restamped and release
+  verification with Docker checks enabled passed: all
+  `sha256:f3988ef1f446e656087a4fa7771ebede2839271998c497ad107bc1097e5fa151`,
+  Codex `sha256:51418564ab5e167aef7de1ffc35780570b0760be3bacc7cff5db839b29254b57`,
+  Claude `sha256:d188d4b4e5a14e0766cde0bd361a5fbcfaa8c5e7446f44f368ad5adeae5995d7`,
+  and proxy
+  `sha256:fca631c84186221ea99017bcc61526b5d641ce681260cb1f3db7dbb5d7a61a45`.
+  Both Codex-capable images independently report bubblewrap 0.8.0.
+- The installer replaced the idle live daemon on port 38093. The installed
+  binary passes exact `--require-build`; ports 38093 and 38094 serve the same
+  embedded dashboard asset hash and exact v2.3.3 capabilities. Live browser
+  qualification loaded 48 persisted History sessions, opened completed
+  `77ef5504-b5fc-448c-a3fc-75d4a6c2e6f8` with its readable
+  `Return only {"ok":true}.` / `{"ok":true}` transcript, then cycled the still-open
+  drawer to negative `d412d686-026d-4aee-893f-ed7f330baeca`. The new session
+  ID appeared immediately, then its metadata/transcript replaced the old
+  contents. The live DOM has no Actions header and every history action group
+  is inside the ID cell. The loopback-only qualification proxy never exposed
+  the real token to browser automation and was removed afterward.
+- **AgentD v2.3.3 readiness attestation:** installed AgentD
+  `2.3.3@ae8c8b03a7aa329fc73efdc14443263b5b36f6b2`; images
+  `all=sha256:f3988ef1...`, `codex=sha256:51418564...`,
+  `claude=sha256:d188d4b4...`, `proxy=sha256:fca631c8...`; live `/health` is
+  HTTP 200 with `status=ok`, default Docker, Docker/local `ready`, all checks
+  fresh (`stale=false`), and zero active sessions.
 
 ## v2.3.2 restricted dashboard admission correction
 
