@@ -360,10 +360,16 @@ async function showDetailPanel(sessionId) {
         const envelope = await res.json();
         const info = envelope.data;
         renderDetailPanel(info);
-        connectWebSocket(sessionId);
+		const transcript = await fetchConversationTranscript(sessionId);
+		if (state.currentSessionId !== sessionId) return;
+		renderConversationTranscript(document.getElementById('event-log'), transcript.messages);
+		state.eventSequences[sessionId] = transcript.lastSequence;
+		if (!terminalStates.has(info.state)) connectWebSocket(sessionId);
     } catch (err) {
         console.error('Session info fetch error:', err);
-        document.getElementById('detail-panel').style.display = 'none';
+		if (state.currentSessionId === sessionId) {
+			renderConversationTranscript(document.getElementById('event-log'), [], 'Conversation history could not be loaded.');
+		}
     }
 }
 
@@ -436,7 +442,7 @@ function renderDetailPanel(info) {
     eventLog.innerHTML = '';
     const systemEntry = document.createElement('div');
     systemEntry.className = 'event-log-entry system';
-    systemEntry.textContent = 'Connecting to live event stream...';
+    systemEntry.textContent = 'Loading conversation...';
     eventLog.appendChild(systemEntry);
 
     state.eventLogs[state.currentSessionId] = [];
@@ -453,9 +459,7 @@ function connectWebSocket(sessionId) {
 		['agentd.v1', `agentd.auth.${state.authToken}`],
 	);
 
-    ws.onopen = () => {
-        addEventLogEntry('system', 'Connected to session');
-    };
+    ws.onopen = () => {};
 
     ws.onmessage = (event) => {
         try {
@@ -468,81 +472,43 @@ function connectWebSocket(sessionId) {
 
     ws.onerror = (err) => {
         console.error('WebSocket error:', err);
-        addEventLogEntry('error', 'WebSocket error');
     };
 
-    ws.onclose = () => {
-        addEventLogEntry('system', 'Disconnected from session');
-    };
+    ws.onclose = () => {};
 
     state.ws = ws;
 }
 
 // Handle session events
 function handleSessionEvent(event) {
-    if (event.frame_type === 'stream.ready') {
-        addEventLogEntry('system', `Replay ready through sequence ${event.replay_through}`);
-        return;
-    }
+	if (event.frame_type === 'stream.ready') return;
     if (event.frame_type === 'error') {
-        addEventLogEntry('error', event.error?.message || 'Event stream failed');
+		console.error('Session stream error:', event.error?.message || 'Event stream failed');
         return;
     }
-    const type = event.type || 'unknown';
-    const data = event.payload || {};
     if (event.sequence) {
         const previous = state.eventSequences[event.session_id] || 0;
         if (event.sequence !== previous + 1) {
-            addEventLogEntry('error', `Sequence gap: expected ${previous + 1}, received ${event.sequence}`);
+			console.error(`Sequence gap: expected ${previous + 1}, received ${event.sequence}`);
             state.ws?.close();
             return;
         }
         state.eventSequences[event.session_id] = event.sequence;
     }
-
-    let message = '';
-
-    switch (type) {
-        case 'content.delta':
-            message = data.text || JSON.stringify(data);
-            addEventLogEntry('tool', message);
-            break;
-        case 'tool.call':
-            message = `Tool: ${data.name} (${data.input ? 'with input' : 'no input'})`;
-            addEventLogEntry('tool', message);
-            break;
-        case 'tool.result':
-            message = `Result: ${data.output ? data.output.substring(0, 50) : 'empty'}`;
-            addEventLogEntry('tool', message);
-            break;
-        case 'runtime.stderr':
-            message = data.message || JSON.stringify(data);
-            addEventLogEntry('error', message);
-            break;
-        default:
-            if (event.stream === 'terminal') {
-                message = `${data.reason || type} (exit ${data.exit_code ?? '-'})`;
-                addEventLogEntry('system', message);
-                return;
-            }
-            message = JSON.stringify(data);
-            addEventLogEntry('system', message);
-    }
-}
-
-// Add event log entry
-function addEventLogEntry(type, message) {
-    const eventLog = document.getElementById('event-log');
-    if (!eventLog) return;
-
-    const entry = document.createElement('div');
-    entry.className = `event-log-entry ${type}`;
-
-    const timeStr = new Date().toLocaleTimeString();
-    entry.textContent = `[${timeStr}] ${message}`;
-
-    eventLog.appendChild(entry);
-    eventLog.scrollTop = eventLog.scrollHeight;
+	const eventLog = document.getElementById('event-log');
+	const userText = userTextFromConversationEvent(event);
+	if (userText) {
+		appendConversationMessageTo(eventLog, 'user', userText);
+		return;
+	}
+	if (event.type === 'content.delta') {
+		appendConversationDeltaTo(eventLog, event.payload?.text || '');
+		return;
+	}
+	const assistantText = completedAssistantTextFromConversationEvent(event);
+	const lastBody = eventLog.lastElementChild?.dataset.role === 'assistant' ?
+		eventLog.lastElementChild.querySelector('.conversation-text') : null;
+	if (assistantText && !lastBody?.textContent) appendConversationMessageTo(eventLog, 'assistant', assistantText);
 }
 
 // Close detail panel

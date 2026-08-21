@@ -1,5 +1,37 @@
 # AgentD overnight qualification worklog
 
+## v2.3.1 dashboard conversation replay
+
+- Started: 2026-08-21 (America/New_York), from released and installed v2.3.0
+  commit `e9590ffbfaccdacf551783a2c9e1e231b05a6303`. This is an explicit reviewed
+  patch because the requested dashboard behavior is a code change; the
+  immutable v2.3.0 tag and images will not be moved or silently replaced.
+- Clarified UI contract: the History table remains metadata/status-only;
+  **View** shows a readable retained user/assistant transcript; **Continue**
+  opens that transcript in the Console/chat UI with the composer ready for a
+  warm prompt or resumable cold follow-up.
+- Actual pre-fix behavior: **View** replayed the raw durable WebSocket event log;
+  **Continue** discarded message history and rendered only `Continuing
+  <session>. Enter a follow-up below...`; terminal finalization then replaced
+  the visible output with the JSON result envelope.
+- TDD red: `TestEmbeddedDashboardReplaysConversationForViewAndContinue` failed
+  with `dashboard continuation transcript behavior missing "function
+  conversationMessagesFromEvents"` before implementation.
+- Implementation: added one bounded, cycle-safe continuation-lineage/event
+  replay path, provider-shape normalization for Codex and Claude user messages,
+  assistant-delta aggregation, text-only DOM rendering, active-view streaming,
+  and transcript-preserving warm prompts, steering, and cold continuation.
+  The parser is isolated in `dashboard/conversation.js`; a direct JavaScript
+  provider fixture and the targeted embedded-dashboard Go tests pass.
+- The previously exported installed qualification session
+  `31219bb2-a2cd-4189-8ebe-f3421b54ea85` was already `completed` when cleanup
+  was requested (`invalid_state`); Docker confirms no container remains for
+  that session. Its retained provider volume and portable export were not
+  removed.
+- Source qualification passes: `go test ./...`, `go test -race ./...`, `go
+  vet ./...`, syntax checks for all three dashboard JavaScript files, and `git
+  diff --check` are clean.
+
 ## v2.3.0 warm resume, retention, and portable provider state
 
 - Started: 2026-08-21 (America/New_York), from released v2.2.5 commit

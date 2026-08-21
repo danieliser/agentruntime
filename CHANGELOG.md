@@ -2,6 +2,18 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [2.3.1] — 2026-08-21
+
+- Dashboard **View** now reconstructs a readable user/assistant transcript from
+  durable session events while keeping the History table metadata-only. Active
+  views continue streaming new conversation text without exposing raw event
+  payloads in the transcript.
+- Dashboard **Continue** now opens the selected session in the live Console,
+  replays its full continuation lineage oldest-to-newest, and preserves those
+  messages while warm prompts, steering, and cold follow-ups stream. Terminal
+  receipts no longer replace the visible conversation with result-envelope
+  JSON.
+
 ## [2.3.0] — 2026-08-21
 
 - Native unrestricted Docker calls can declare a bounded maintained-container

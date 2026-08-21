@@ -96,6 +96,7 @@ func TestEmbeddedDashboardProvidesLiveAgentConsole(t *testing.T) {
 		[]byte(`id="console-form"`),
 		[]byte(`id="console-output"`),
 		[]byte(`id="dashboard-auth"`),
+		[]byte(`conversation.js`),
 		[]byte(`console.js`),
 	} {
 		if !bytes.Contains(index, required) {
@@ -145,6 +146,53 @@ func TestEmbeddedDashboardProvidesLiveAgentConsole(t *testing.T) {
 	for _, required := range [][]byte{[]byte(`data-action="resume"`), []byte(`resumeConsoleSession`)} {
 		if !bytes.Contains(app, required) {
 			t.Fatalf("dashboard history resume behavior missing %q", required)
+		}
+	}
+}
+
+func TestEmbeddedDashboardReplaysConversationForViewAndContinue(t *testing.T) {
+	console, err := dashboardFS.ReadFile("dashboard/console.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard console: %v", err)
+	}
+	app, err := dashboardFS.ReadFile("dashboard/app.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard app: %v", err)
+	}
+	conversation, err := dashboardFS.ReadFile("dashboard/conversation.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard conversation helpers: %v", err)
+	}
+	for _, required := range [][]byte{
+		[]byte(`function conversationMessagesFromEvents`),
+		[]byte(`async function fetchConversationTranscript`),
+	} {
+		if !bytes.Contains(conversation, required) {
+			t.Fatalf("dashboard conversation helper missing %q", required)
+		}
+	}
+	for _, required := range [][]byte{
+		[]byte(`renderConversationTranscript(document.getElementById('console-output')`),
+		[]byte(`appendConversationMessage('user', text)`),
+	} {
+		if !bytes.Contains(console, required) {
+			t.Fatalf("dashboard continuation transcript behavior missing %q", required)
+		}
+	}
+	for _, required := range [][]byte{
+		[]byte(`await fetchConversationTranscript(sessionId)`),
+		[]byte(`renderConversationTranscript(document.getElementById('event-log')`),
+	} {
+		if !bytes.Contains(app, required) {
+			t.Fatalf("dashboard view transcript behavior missing %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{
+		[]byte(`Continuing ${session.session_id.slice(0, 8)}`),
+		[]byte(`document.getElementById('console-output').textContent = JSON.stringify(result, null, 2)`),
+	} {
+		if bytes.Contains(console, forbidden) {
+			t.Fatalf("dashboard still discards the conversation through %q", forbidden)
 		}
 	}
 }

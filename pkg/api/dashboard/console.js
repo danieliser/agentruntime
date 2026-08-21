@@ -161,7 +161,8 @@ async function launchConsoleSession(event) {
     setConsoleConnection('Admitting…');
     resetConsoleStream();
     try {
-        await admitConsoleRequest(buildConsoleRequest());
+        const request = buildConsoleRequest();
+        await admitConsoleRequest(request, {prompt: request.prompt});
     } catch (error) {
         setConsoleConnection('Launch failed', true);
         appendConsoleActivity('error', error.message);
@@ -171,7 +172,8 @@ async function launchConsoleSession(event) {
     }
 }
 
-async function admitConsoleRequest(request, resetBeforeRender = false) {
+async function admitConsoleRequest(request, options = {}) {
+	const {resetBeforeRender = false, preserveTranscript = false, prompt = ''} = options;
     const response = await apiFetch('/api/v1/sessions', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -181,10 +183,14 @@ async function admitConsoleRequest(request, resetBeforeRender = false) {
     if (!response.ok || !envelope.data?.session_id) {
         throw new Error(envelope.error?.message || `AgentD returned HTTP ${response.status}`);
     }
-    if (resetBeforeRender) resetConsoleStream();
+    if (resetBeforeRender) resetConsoleStream({preserveTranscript});
     consoleState.sessionId = envelope.data.session_id;
     consoleState.terminal = terminalStates.has(envelope.data.state);
     renderConsoleSession(envelope.data);
+	if (prompt) {
+		appendConversationMessage('user', prompt);
+		appendConversationMessage('assistant', '');
+	}
     connectConsoleStream();
     fetchSessions();
 }
@@ -247,7 +253,8 @@ function addRestrictedPolicy(request) {
     request.secret_grants = ['AGENTD_CODEX_AUTH_JSON'];
 }
 
-function resetConsoleStream() {
+function resetConsoleStream(options = {}) {
+	const {preserveTranscript = false} = options;
     closeConsoleStream();
     consoleState.sessionId = null;
     consoleState.sequence = 0;
@@ -258,7 +265,7 @@ function resetConsoleStream() {
     consoleState.terminal = false;
 	consoleState.maintained = false;
 	consoleState.turnIdle = false;
-    document.getElementById('console-output').textContent = '';
+	if (!preserveTranscript) document.getElementById('console-output').replaceChildren();
     document.getElementById('console-activity').replaceChildren();
     document.getElementById('console-event-count').textContent = '0 events';
     setConsoleControls(false);
@@ -285,8 +292,8 @@ function renderConsoleSession(session) {
 async function resumeConsoleSession(session) {
     closeConsoleStream();
     consoleState.sessionId = session.session_id;
-    consoleState.sequence = session.last_sequence || 0;
-    consoleState.eventCount = session.last_sequence || 0;
+	consoleState.sequence = 0;
+	consoleState.eventCount = 0;
 	consoleState.terminal = terminalStates.has(session.state);
 	consoleState.maintained = session.container_lease?.mode === 'maintain';
 	consoleState.turnIdle = session.next_input_kind === 'prompt';
@@ -297,14 +304,26 @@ async function resumeConsoleSession(session) {
     document.getElementById('console-runtime').value = session.runtime;
     renderConsoleSession(session);
     setConsoleControls(false, true);
-    document.getElementById('console-output').textContent =
-        `Continuing ${session.session_id.slice(0, 8)}. Enter a follow-up below to resume its provider conversation.`;
-    document.getElementById('console-event-count').textContent = `${consoleState.eventCount} prior events`;
+	renderConversationTranscript(document.getElementById('console-output'), [], 'Loading conversation…');
+	document.getElementById('console-event-count').textContent = 'Loading history…';
     document.getElementById('console-activity').replaceChildren();
-    appendConsoleActivity('system', `Loading provider identity for ${session.session_id}`);
+	appendConsoleActivity('system', `Loading conversation for ${session.session_id}`);
     setConsoleConnection('Loading history…');
     closeDetailPanel();
     switchTab('console');
+	try {
+		const transcript = await fetchConversationTranscript(session.session_id);
+		if (consoleState.sessionId !== session.session_id) return;
+		consoleState.sequence = transcript.lastSequence;
+		consoleState.eventCount = transcript.eventCount;
+		renderConversationTranscript(document.getElementById('console-output'), transcript.messages);
+		document.getElementById('console-event-count').textContent = `${transcript.eventCount} retained events`;
+	} catch (error) {
+		consoleState.sequence = session.last_sequence || 0;
+		consoleState.eventCount = session.last_sequence || 0;
+		renderConversationTranscript(document.getElementById('console-output'), [], 'Conversation history could not be loaded.');
+		appendConsoleActivity('error', error.message);
+	}
 	if (!consoleState.terminal && consoleState.maintained) {
 		setConsoleConnection(consoleState.turnIdle ? 'Warm · ready' : 'Streaming', false, true);
 		setConsoleControls(!consoleState.turnIdle);
@@ -413,10 +432,9 @@ function handleConsoleFrame(event) {
 	consoleState.resumeID ||= providerResumeIDFromEvent(event);
 	if (consoleState.resumeID && consoleState.runtime === 'docker' && consoleState.maintained) {
 		consoleState.resumable = true;
-	}
+    }
     if (event.type === 'content.delta') {
-        document.getElementById('console-output').textContent += payload.text || '';
-        scrollConsoleOutput();
+		appendConversationDeltaTo(document.getElementById('console-output'), payload.text || '');
     } else if (event.type === 'output.final') {
         appendConsoleActivity('terminal', 'Structured final output committed');
     } else if (event.type === 'tool.call') {
@@ -451,11 +469,6 @@ async function finalizeConsoleSession() {
         const sessionResponse = await apiFetch(`/api/v1/sessions/${consoleState.sessionId}`);
         const session = (await sessionResponse.json()).data;
         renderConsoleSession(session);
-        const resultResponse = await apiFetch(`/api/v1/sessions/${consoleState.sessionId}/result`);
-        if (resultResponse.ok) {
-            const result = await resultResponse.json();
-            document.getElementById('console-output').textContent = JSON.stringify(result, null, 2);
-        }
         const receiptResponse = await apiFetch(`/api/v1/sessions/${consoleState.sessionId}/receipt`);
         if (receiptResponse.ok) {
             const receipt = (await receiptResponse.json()).data;
@@ -479,6 +492,8 @@ async function steerConsoleSession(event) {
     }
 	const kind = consoleState.maintained && consoleState.turnIdle ? 'prompt' : 'steer';
 	await postConsoleControl('input', {idempotency_key: `${kind}:${crypto.randomUUID()}`, kind, text});
+	appendConversationMessage('user', text);
+	appendConversationMessage('assistant', '');
 	if (kind === 'prompt') {
 		consoleState.turnIdle = false;
 		setConsoleControls(true);
@@ -504,7 +519,11 @@ async function followUpConsoleSession(text) {
         request.name = 'dashboard console follow-up';
         request.prompt = text;
 		request.resume_session = previousSessionID;
-        await admitConsoleRequest(request, true);
+		await admitConsoleRequest(request, {
+			resetBeforeRender: true,
+			preserveTranscript: true,
+			prompt: text,
+		});
         document.getElementById('console-steer').value = '';
     } catch (error) {
 		consoleState.sessionId = previousSessionID;

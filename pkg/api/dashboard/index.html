@@ -179,7 +179,7 @@
                         <div class="session-strip" id="console-session-strip">
                             <span class="session-pill">No active session</span>
                         </div>
-                        <pre class="live-output" id="console-output">Streaming output will appear here.</pre>
+                        <div class="live-output conversation" id="console-output" role="log" aria-label="Conversation"></div>
                         <details class="activity-drawer" open>
                             <summary>Activity <span id="console-event-count">0 events</span></summary>
                             <div class="activity-log" id="console-activity"></div>
@@ -268,6 +268,7 @@
     </div>
 
     <script src="app.js"></script>
+    <script src="conversation.js"></script>
     <script src="console.js"></script>
 </body>
 </html>
