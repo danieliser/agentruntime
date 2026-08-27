@@ -335,6 +335,22 @@ func TestRestoreRecoveredSessionsMarksMissingGenerationLost(t *testing.T) {
 	if err != nil || stored.State != durable.StateRunning {
 		t.Fatalf("resumable logical session = %+v err=%v", stored, err)
 	}
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	response, err := http.Get(httpServer.URL + "/api/v1/sessions/" + sessionID)
+	if err != nil {
+		t.Fatalf("get lost session: %v", err)
+	}
+	defer response.Body.Close()
+	var envelope struct {
+		Data v1SessionData `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode lost session: %v", err)
+	}
+	if response.StatusCode != http.StatusOK || envelope.Data.GenerationState != durable.GenerationLost {
+		t.Fatalf("lost session response status=%d generation_state=%q", response.StatusCode, envelope.Data.GenerationState)
+	}
 }
 
 func TestRestoreRecoveredSessionsMarksDuplicateGenerationIndeterminate(t *testing.T) {
@@ -381,15 +397,21 @@ func TestV1ResumeLostSessionCreatesOneNextGeneration(t *testing.T) {
 	httpServer := httptest.NewServer(server.router)
 	defer httpServer.Close()
 	body := []byte(`{"prompt":"continue after loss"}`)
-	response, err := http.Post(httpServer.URL+"/api/v1/sessions/"+sessionID+"/resume", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post resume: %v", err)
-	}
+	response := postResume(t, httpServer.URL, sessionID, "resume-after-loss", body)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusAccepted {
 		var failure any
 		_ = json.NewDecoder(response.Body).Decode(&failure)
 		t.Fatalf("resume status=%d body=%v", response.StatusCode, failure)
+	}
+	var resumedEnvelope struct {
+		Data v1SessionData `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&resumedEnvelope); err != nil {
+		t.Fatalf("decode resumed session: %v", err)
+	}
+	if resumedEnvelope.Data.GenerationState != durable.GenerationRunning {
+		t.Fatalf("resumed generation_state = %q, want %q", resumedEnvelope.Data.GenerationState, durable.GenerationRunning)
 	}
 	select {
 	case config := <-resumeAgent.configs:
@@ -420,16 +442,55 @@ func TestV1ResumeLostSessionCreatesOneNextGeneration(t *testing.T) {
 	if err != nil || len(generations) != 2 || generations[1].ProviderID != "provider-missing" {
 		t.Fatalf("resumed generations = %+v err=%v", generations, err)
 	}
-	response = postResume(t, httpServer.URL, sessionID, body)
+	response = postResume(t, httpServer.URL, sessionID, "resume-after-loss", body)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK || spawns.Load() != 1 {
 		t.Fatalf("idempotent resume status=%d spawns=%d", response.StatusCode, spawns.Load())
 	}
+	conflict := postResume(t, httpServer.URL, sessionID, "resume-after-loss", []byte(`{"prompt":"different retry"}`))
+	defer conflict.Body.Close()
+	var conflictEnvelope struct {
+		Error apiErrorEnvelope `json:"error"`
+	}
+	if err := json.NewDecoder(conflict.Body).Decode(&conflictEnvelope); err != nil {
+		t.Fatalf("decode idempotency conflict: %v", err)
+	}
+	if conflict.StatusCode != http.StatusConflict || conflictEnvelope.Error.Code != durable.CodeImmutableConflict || spawns.Load() != 1 {
+		t.Fatalf("changed idempotent retry status=%d error=%+v spawns=%d", conflict.StatusCode, conflictEnvelope.Error, spawns.Load())
+	}
 }
 
-func postResume(t *testing.T, baseURL, sessionID string, body []byte) *http.Response {
+func TestV1ResumeRequiresIdempotencyKey(t *testing.T) {
+	store, sessionID := runningRecoveryStore(t)
+	if _, err := store.TransitionGeneration(context.Background(), durable.TransitionGenerationParams{
+		SessionID: sessionID, Generation: 1, From: durable.GenerationRunning, To: durable.GenerationLost, At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("mark first generation lost: %v", err)
+	}
+	server := NewServer(session.NewManager(), &resumeTestRuntime{}, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+
+	response := postResume(t, httpServer.URL, sessionID, "", []byte(`{"prompt":"continue after loss"}`))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("resume without idempotency key status=%d, want %d", response.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func postResume(t *testing.T, baseURL, sessionID, idempotencyKey string, body []byte) *http.Response {
 	t.Helper()
-	response, err := http.Post(baseURL+"/api/v1/sessions/"+sessionID+"/resume", "application/json", bytes.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/sessions/"+sessionID+"/resume", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build resume request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("post resume: %v", err)
 	}

@@ -26,27 +26,28 @@ import (
 )
 
 type v1SessionData struct {
-	SessionID           string               `json:"session_id"`
-	IdempotencyKey      string               `json:"idempotency_key"`
-	Agent               string               `json:"agent"`
-	Runtime             string               `json:"runtime"`
-	State               durable.SessionState `json:"state"`
-	Generation          int64                `json:"generation"`
-	LastSequence        int64                `json:"last_sequence"`
-	CreatedAt           time.Time            `json:"created_at"`
-	UpdatedAt           time.Time            `json:"updated_at"`
-	EventsURL           string               `json:"events_url"`
-	EventStreamURL      string               `json:"event_stream_url"`
-	ExecutionPolicy     *ExecutionPolicy     `json:"execution_policy,omitempty"`
-	ExecutionPolicyHash string               `json:"execution_policy_hash,omitempty"`
-	StructuredOutput    *StructuredOutput    `json:"structured_output,omitempty"`
-	OutputSchemaHash    string               `json:"output_schema_hash,omitempty"`
-	ProviderSessionID   string               `json:"provider_session_id,omitempty"`
-	Resumable           bool                 `json:"resumable"`
-	ResumeSourceSession string               `json:"resume_source_session_id,omitempty"`
-	ResumeStateID       string               `json:"resume_state_id,omitempty"`
-	ContainerLease      *ContainerLease      `json:"container_lease,omitempty"`
-	NextInputKind       string               `json:"next_input_kind,omitempty"`
+	SessionID           string                  `json:"session_id"`
+	IdempotencyKey      string                  `json:"idempotency_key"`
+	Agent               string                  `json:"agent"`
+	Runtime             string                  `json:"runtime"`
+	State               durable.SessionState    `json:"state"`
+	Generation          int64                   `json:"generation"`
+	GenerationState     durable.GenerationState `json:"generation_state,omitempty"`
+	LastSequence        int64                   `json:"last_sequence"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
+	EventsURL           string                  `json:"events_url"`
+	EventStreamURL      string                  `json:"event_stream_url"`
+	ExecutionPolicy     *ExecutionPolicy        `json:"execution_policy,omitempty"`
+	ExecutionPolicyHash string                  `json:"execution_policy_hash,omitempty"`
+	StructuredOutput    *StructuredOutput       `json:"structured_output,omitempty"`
+	OutputSchemaHash    string                  `json:"output_schema_hash,omitempty"`
+	ProviderSessionID   string                  `json:"provider_session_id,omitempty"`
+	Resumable           bool                    `json:"resumable"`
+	ResumeSourceSession string                  `json:"resume_source_session_id,omitempty"`
+	ResumeStateID       string                  `json:"resume_state_id,omitempty"`
+	ContainerLease      *ContainerLease         `json:"container_lease,omitempty"`
+	NextInputKind       string                  `json:"next_input_kind,omitempty"`
 }
 
 type v1TerminalReceiptData struct {
@@ -356,9 +357,11 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 	}
 	_ = json.Unmarshal(stored.RequestManifest, &continuation)
 	providerID := ""
+	var generationState durable.GenerationState
 	if s.durableStore != nil && stored.ActiveGeneration > 0 {
 		if generation, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, stored.ActiveGeneration); err == nil {
 			providerID = generation.ProviderID
+			generationState = generation.State
 		}
 	}
 	resumable := providerID != ""
@@ -375,7 +378,7 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 	return v1SessionData{
 		SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
 		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
-		Generation: stored.ActiveGeneration, LastSequence: stored.LastSequence,
+		Generation: stored.ActiveGeneration, GenerationState: generationState, LastSequence: stored.LastSequence,
 		CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt,
 		EventsURL: sessionEventsURL(c, stored.ID), EventStreamURL: sessionEventStreamURL(c, stored.ID),
 		ExecutionPolicy: policy, ExecutionPolicyHash: policyHash,

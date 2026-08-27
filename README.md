@@ -222,6 +222,7 @@ Both close the logical session, but the immutable receipt/event reason is
 ```sh
 agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/resume \
   -H 'content-type: application/json' \
+  -H 'Idempotency-Key: resume-001' \
   -d '{"prompt":"Continue after runtime loss"}'
 ```
 

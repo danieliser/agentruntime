@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
@@ -39,23 +41,6 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		writeDurableError(c, err)
 		return
 	}
-	if stored.State.Terminal() {
-		s.writeV1Session(c, http.StatusOK, stored)
-		return
-	}
-	previous, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, stored.ActiveGeneration)
-	if err != nil {
-		writeDurableError(c, err)
-		return
-	}
-	if previous.State != durable.GenerationLost {
-		s.writeV1Session(c, http.StatusOK, stored)
-		return
-	}
-	if previous.ProviderID == "" {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "lost generation has no recoverable provider session identity", nil))
-		return
-	}
 	var resume v1ResumeRequest
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -65,6 +50,51 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	}
 	if strings.TrimSpace(resume.Prompt) == "" {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "resume prompt is required", nil))
+		return
+	}
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if idempotencyKey == "" {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "Idempotency-Key header is required", nil))
+		return
+	}
+	activeGeneration, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, stored.ActiveGeneration)
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	controlGeneration := activeGeneration.Number
+	if activeGeneration.State != durable.GenerationLost && controlGeneration > 1 {
+		controlGeneration--
+	}
+	control, err := resumeControlParams(stored, controlGeneration, idempotencyKey, resume)
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	previous, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, control.Generation)
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	probe, err := s.eventBroker.ProbeControl(c.Request.Context(), control)
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	if probe.AlreadyDispatched {
+		s.writeV1Session(c, http.StatusOK, stored)
+		return
+	}
+	if previous.State != durable.GenerationLost {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "active generation is not durably lost", nil))
+		return
+	}
+	if stored.State.Terminal() {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "terminal session cannot be resumed", nil))
+		return
+	}
+	if previous.ProviderID == "" {
+		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "lost generation has no recoverable provider session identity", nil))
 		return
 	}
 	var request SessionRequest
@@ -120,6 +150,15 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 			return
 		}
 		s.sessions.Remove(stored.ID)
+	}
+	begin, err := s.eventBroker.BeginControl(c.Request.Context(), control)
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	if begin.AlreadyDispatched {
+		s.writeV1Session(c, http.StatusOK, stored)
+		return
 	}
 	sess := session.NewSessionWithID(stored.ID, request.TaskID, stored.Agent, stored.Runtime, request.Tags)
 	if err := s.prepareSessionDir(sess, &request, workDir); err != nil {
@@ -235,12 +274,35 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		writeDurableError(c, classified)
 		return
 	}
+	if _, err := s.eventBroker.CompleteControl(context.Background(), control); err != nil {
+		writeDurableError(c, err)
+		return
+	}
 	resumed, err := s.durableStore.GetSession(c.Request.Context(), stored.ID)
 	if err != nil {
 		writeDurableError(c, err)
 		return
 	}
 	s.writeV1Session(c, http.StatusAccepted, resumed)
+}
+
+func resumeControlParams(stored durable.Session, generation int64, idempotencyKey string, resume v1ResumeRequest) (eventstream.ControlParams, error) {
+	envKeys := make([]string, 0, len(resume.Env))
+	for key := range resume.Env {
+		envKeys = append(envKeys, key)
+	}
+	sort.Strings(envKeys)
+	payload, err := json.Marshal(struct {
+		Prompt  string   `json:"prompt"`
+		EnvKeys []string `json:"env_keys,omitempty"`
+	}{Prompt: resume.Prompt, EnvKeys: envKeys})
+	if err != nil {
+		return eventstream.ControlParams{}, durable.NewError(durable.CodeInvalidArgument, "resume_v1_session", "encode resume control", err)
+	}
+	return eventstream.ControlParams{
+		SessionID: stored.ID, Generation: generation, IdempotencyKey: idempotencyKey,
+		Timestamp: time.Now().UTC(), Kind: "resume", Payload: payload,
+	}, nil
 }
 
 func applyResumeSecrets(request *SessionRequest, grants []string, supplied map[string]string) error {

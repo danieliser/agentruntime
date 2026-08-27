@@ -36,7 +36,7 @@ func (store *Store) AppendEvent(ctx context.Context, params durable.AppendEventP
 	if err != nil {
 		return durable.AppendEventResult{}, err
 	}
-	if generation.State.Terminal() {
+	if generation.State.Terminal() && !resumeControlForLostGeneration(params, generation) {
 		return durable.AppendEventResult{}, durable.NewError(durable.CodeInvalidState, op, "terminal generation cannot accept events", nil)
 	}
 
@@ -56,6 +56,12 @@ func (store *Store) AppendEvent(ctx context.Context, params durable.AppendEventP
 	}
 	store.sessions[session.ID] = session
 	return durable.AppendEventResult{Event: cloneEvent(event), Created: true}, nil
+}
+
+func resumeControlForLostGeneration(params durable.AppendEventParams, generation durable.Generation) bool {
+	return generation.State == durable.GenerationLost &&
+		params.Stream == durable.StreamControl &&
+		(params.Type == "control.resume.requested" || params.Type == "control.resume.dispatched")
 }
 
 func (store *Store) GetEventByID(ctx context.Context, eventID string) (durable.Event, error) {
