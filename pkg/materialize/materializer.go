@@ -9,12 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
-	"strconv"
 	"strings"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Result is the output of materializing agent config into an agent home directory.
@@ -720,103 +719,5 @@ func sanitizeSessionID(sessionID string) string {
 }
 
 func marshalSimpleTOML(values map[string]any) ([]byte, error) {
-	var b strings.Builder
-	if err := writeTOMLTable(&b, "", values); err != nil {
-		return nil, err
-	}
-	return []byte(b.String()), nil
-}
-
-func writeTOMLTable(b *strings.Builder, prefix string, values map[string]any) error {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	wroteTableHeader := false
-	if prefix != "" {
-		b.WriteString("[")
-		b.WriteString(prefix)
-		b.WriteString("]\n")
-		wroteTableHeader = true
-	}
-
-	var tables []string
-	for _, key := range keys {
-		value := values[key]
-		if _, ok := value.(map[string]any); ok {
-			tables = append(tables, key)
-			continue
-		}
-
-		encoded, err := encodeTOMLValue(value)
-		if err != nil {
-			return fmt.Errorf("encode %q: %w", key, err)
-		}
-		b.WriteString(key)
-		b.WriteString(" = ")
-		b.WriteString(encoded)
-		b.WriteString("\n")
-	}
-
-	for i, key := range tables {
-		if (prefix != "" || len(keys) > len(tables)) && (i == 0 || wroteTableHeader || b.Len() > 0) {
-			if !strings.HasSuffix(b.String(), "\n\n") {
-				b.WriteString("\n")
-			}
-		}
-		nextPrefix := key
-		if prefix != "" {
-			nextPrefix = prefix + "." + key
-		}
-		nested := values[key].(map[string]any)
-		if err := writeTOMLTable(b, nextPrefix, nested); err != nil {
-			return err
-		}
-		if i < len(tables)-1 {
-			b.WriteString("\n")
-		}
-	}
-
-	return nil
-}
-
-func encodeTOMLValue(value any) (string, error) {
-	switch v := value.(type) {
-	case nil:
-		return "\"\"", nil
-	case string:
-		return strconv.Quote(v), nil
-	case bool:
-		if v {
-			return "true", nil
-		}
-		return "false", nil
-	case int:
-		return strconv.Itoa(v), nil
-	case int8, int16, int32, int64:
-		return strconv.FormatInt(reflect.ValueOf(v).Int(), 10), nil
-	case uint, uint8, uint16, uint32, uint64:
-		return strconv.FormatUint(reflect.ValueOf(v).Uint(), 10), nil
-	case float32:
-		return strconv.FormatFloat(float64(v), 'f', -1, 32), nil
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64), nil
-	}
-
-	rv := reflect.ValueOf(value)
-	if rv.IsValid() && rv.Kind() == reflect.Slice {
-		items := make([]string, 0, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			item, err := encodeTOMLValue(rv.Index(i).Interface())
-			if err != nil {
-				return "", err
-			}
-			items = append(items, item)
-		}
-		return "[" + strings.Join(items, ", ") + "]", nil
-	}
-
-	return "", fmt.Errorf("unsupported TOML value type %T", value)
+	return toml.Marshal(values)
 }

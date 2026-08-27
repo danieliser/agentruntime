@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 const (
@@ -26,7 +28,7 @@ type DiscoverOptions struct {
 	MCP        bool `json:"mcp"`
 	Rules      bool `json:"rules"`
 	Agents     bool `json:"agents"`
-	AgentsMD   bool `json:"agents_md"`  // Codex
+	AgentsMD   bool `json:"agents_md"`   // Codex
 	ConfigTOML bool `json:"config_toml"` // Codex
 }
 
@@ -104,11 +106,11 @@ type ClaudeDiscovery struct {
 
 // CodexDiscovery holds discovered Codex configuration files.
 type CodexDiscovery struct {
-	AgentsMD       string           // Concatenated AGENTS.md root-to-work_dir
-	ConfigTOML     map[string]any   // Merged config.toml cascade
-	InstructionsMD string           // instructions.md if exists
-	ProjectRoot    string           // Detected project root
-	TrustLevel     string           // "trusted" or "untrusted"
+	AgentsMD       string         // Concatenated AGENTS.md root-to-work_dir
+	ConfigTOML     map[string]any // Merged config.toml cascade
+	InstructionsMD string         // instructions.md if exists
+	ProjectRoot    string         // Detected project root
+	TrustLevel     string         // "trusted" or "untrusted"
 }
 
 // DiscoverClaudeFiles returns discovered Claude configuration files.
@@ -723,45 +725,14 @@ func cloneSlice(s []any) []any {
 	return cloned
 }
 
-// parseTOMLSimple does a naive TOML parse for flat key=value pairs.
-// This is a simplified parser for basic TOML files with top-level keys only.
+// parseTOMLSimple preserves the historical helper boundary while using a full
+// TOML parser. Codex config commonly contains nested tables; flattening those
+// keys changes their meaning and can make strict-config startup fail.
 func parseTOMLSimple(content string) (map[string]any, error) {
 	result := map[string]any{}
-
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Skip section headers for now
-		if strings.HasPrefix(line, "[") {
-			continue
-		}
-
-		// Parse key=value
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		// Simple value parsing (strings only for now)
-		if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
-			result[key] = value[1 : len(value)-1]
-		} else if value == "true" {
-			result[key] = true
-		} else if value == "false" {
-			result[key] = false
-		} else {
-			result[key] = value
-		}
+	if err := toml.Unmarshal([]byte(content), &result); err != nil {
+		return nil, err
 	}
-
 	return result, nil
 }
 

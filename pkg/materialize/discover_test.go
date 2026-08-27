@@ -556,11 +556,56 @@ func TestCodexConfigTOMLCascade(t *testing.T) {
 	}
 
 	// Project value should win
-	if temp, ok := disc.ConfigTOML["temperature"].(string); !ok || temp != "0.5" {
+	if temp, ok := disc.ConfigTOML["temperature"].(float64); !ok || temp != 0.5 {
 		t.Errorf("Expected temperature=0.5 (project wins), got %v", disc.ConfigTOML["temperature"])
 	}
 
 	os.Setenv("HOME", home)
+}
+
+func TestCodexConfigTOMLCascadePreservesNestedTables(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	codexDir := filepath.Join(os.Getenv("HOME"), ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `model = "gpt-5.6-sol"
+
+[features]
+multi_agent = true
+memories = true
+
+[plugins."github@openai-curated"]
+enabled = true
+`
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := DiscoverCodexFiles(project, DiscoverOptions{ConfigTOML: true})
+	if err != nil {
+		t.Fatalf("DiscoverCodexFiles failed: %v", err)
+	}
+
+	features, ok := discovered.ConfigTOML["features"].(map[string]any)
+	if !ok || features["memories"] != true || features["multi_agent"] != true {
+		t.Fatalf("nested features table was flattened: %+v", discovered.ConfigTOML)
+	}
+	plugins, ok := discovered.ConfigTOML["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested plugins table was flattened: %+v", discovered.ConfigTOML)
+	}
+	github, ok := plugins["github@openai-curated"].(map[string]any)
+	if !ok || github["enabled"] != true {
+		t.Fatalf("quoted nested plugin key was not preserved: %+v", plugins)
+	}
+	if _, flattened := discovered.ConfigTOML["memories"]; flattened {
+		t.Fatalf("nested memories key leaked to the top level: %+v", discovered.ConfigTOML)
+	}
 }
 
 // TestBuildPathList tests the path list building from root to workDir.

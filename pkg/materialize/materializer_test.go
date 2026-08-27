@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	api "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestMaterialize_ClaudeWritesSettingsJSON(t *testing.T) {
@@ -327,12 +328,12 @@ func TestMaterialize_CodexWritesConfigAndInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config.toml: %v", err)
 	}
-	config := string(configData)
-	if !strings.Contains(config, "model = \"gpt-5-codex\"") {
-		t.Fatalf("expected model in config.toml, got %q", config)
+	var config map[string]any
+	if err := toml.Unmarshal(configData, &config); err != nil {
+		t.Fatalf("parse config.toml: %v", err)
 	}
-	if !strings.Contains(config, "quiet = true") {
-		t.Fatalf("expected quiet in config.toml, got %q", config)
+	if config["model"] != "gpt-5-codex" || config["quiet"] != true {
+		t.Fatalf("unexpected config.toml values: %+v", config)
 	}
 
 	instructions, err := os.ReadFile(filepath.Join(mount.Host, "instructions.md"))
@@ -357,21 +358,71 @@ func TestMaterialize_CodexAppliesRequestedModelControlsWithoutHighDefault(t *tes
 	if err != nil {
 		t.Fatalf("read config.toml: %v", err)
 	}
-	config := string(configData)
-	for _, expected := range []string{
-		`model = "gpt-5.6-sol"`,
-		`model_reasoning_effort = "ultra"`,
-		`service_tier = "priority"`,
-	} {
-		if !strings.Contains(config, expected) {
-			t.Errorf("requested Codex config missing %q: %s", expected, config)
-		}
+	var config map[string]any
+	if err := toml.Unmarshal(configData, &config); err != nil {
+		t.Fatalf("parse config.toml: %v", err)
 	}
-	if strings.Contains(config, `model_reasoning_effort = "high"`) {
-		t.Fatalf("materializer widened requested effort: %s", config)
+	for key, expected := range map[string]any{
+		"model": "gpt-5.6-sol", "model_reasoning_effort": "ultra", "service_tier": "priority",
+	} {
+		if config[key] != expected {
+			t.Errorf("requested Codex config %s=%v, want %v", key, config[key], expected)
+		}
 	}
 	if len(request.Codex.ConfigTOML) != 1 || request.Codex.ConfigTOML["quiet"] != true {
 		t.Fatalf("materializer mutated caller config: %+v", request.Codex.ConfigTOML)
+	}
+}
+
+func TestMaterialize_CodexPreservesAutoDiscoveredNestedConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostConfig := `model = "gpt-5.6-sol"
+
+[features]
+memories = true
+multi_agent = true
+
+[plugins."github@openai-curated"]
+enabled = true
+`
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(hostConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+		Agent: "codex", WorkDir: project, Codex: &api.CodexConfig{},
+	}, "session-nested-config", t.TempDir())
+	defer result.CleanupFn()
+	configData, err := os.ReadFile(filepath.Join(findMount(t, result.Mounts, "/home/agent/.codex").Host, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := toml.Unmarshal(configData, &config); err != nil {
+		t.Fatalf("materialized config.toml is invalid: %v\n%s", err, configData)
+	}
+	features, ok := config["features"].(map[string]any)
+	if !ok || features["memories"] != true || features["multi_agent"] != true {
+		t.Fatalf("nested features were not preserved: %+v", config)
+	}
+	plugins, ok := config["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested plugins table was not preserved: %+v", config)
+	}
+	github, ok := plugins["github@openai-curated"].(map[string]any)
+	if !ok || github["enabled"] != true {
+		t.Fatalf("quoted plugin key was not preserved: %+v", plugins)
+	}
+	if _, flattened := config["memories"]; flattened {
+		t.Fatalf("nested memories key leaked to top level: %+v", config)
 	}
 }
 
