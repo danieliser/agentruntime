@@ -353,6 +353,42 @@ func TestRestoreRecoveredSessionsMarksMissingGenerationLost(t *testing.T) {
 	}
 }
 
+func TestRestoreRecoveredSessionsReapsContainerForTerminalDurableSession(t *testing.T) {
+	store, sessionID := runningRecoveryStore(t)
+	ctx := context.Background()
+	exitCode := 0
+	if _, err := store.FinalizeSession(ctx, durable.FinalizeSessionParams{
+		From: durable.StateRunning, GenerationFrom: durable.GenerationRunning, GenerationTo: durable.GenerationExited,
+		Receipt: durable.TerminalReceipt{
+			SessionID: sessionID, Generation: 1, State: durable.StateCompleted, ExitCode: &exitCode,
+			StartedAt: time.Unix(2_002, 0).UTC(), EndedAt: time.Now().UTC(), OutputHash: "sha256:terminal",
+		},
+	}); err != nil {
+		t.Fatalf("finalize terminal fixture: %v", err)
+	}
+
+	handle := newBlockingRecoveredNativeTestHandle(sessionID, "missing-container")
+	manager := session.NewManager()
+	rt := &terminalContainerRuntime{released: make(chan string, 1)}
+	server := NewServer(manager, rt, agent.DefaultRegistry(), ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	server.RestoreRecoveredSessions(manager.Recover([]runtime.ProcessHandle{handle}, "docker"), "docker")
+
+	select {
+	case released := <-rt.released:
+		if released != sessionID {
+			t.Fatalf("released terminal session = %q, want %q", released, sessionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery did not reap terminal session container")
+	}
+	stored, err := store.GetSession(ctx, sessionID)
+	if err != nil || stored.State != durable.StateCompleted {
+		t.Fatalf("terminal durable history changed: session=%+v err=%v", stored, err)
+	}
+}
+
 func TestRestoreRecoveredSessionsMarksDuplicateGenerationIndeterminate(t *testing.T) {
 	store, sessionID := runningRecoveryStore(t)
 	first := newRecoveredNativeTestHandle("")

@@ -132,6 +132,7 @@ func (s *Server) reconcileTerminalRetention(confirmedRuntimes []string) {
 			continue
 		}
 		s.releaseEphemeralSession(stored)
+		s.releaseTerminalContainer(stored)
 	}
 }
 

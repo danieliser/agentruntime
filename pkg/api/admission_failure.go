@@ -82,17 +82,36 @@ func (s *Server) checkRuntimeAdmission(ctx context.Context, request SessionReque
 			if err != nil {
 				return durable.NewError(durable.CodeRuntimeUnavailable, "check_runtime_admission", "execution runtime is unavailable", err)
 			}
-			return nil
+			return s.checkRuntimeRequestAdmission(ctx, request, rt)
 		}
 	}
 	checker, ok := rt.(runtime.AdmissionChecker)
+	if ok {
+		if err := checker.CheckAdmission(ctx); err != nil {
+			return durable.NewError(durable.CodeRuntimeUnavailable, "check_runtime_admission", "execution runtime is unavailable", err)
+		}
+	}
+	return s.checkRuntimeRequestAdmission(ctx, request, rt)
+}
+
+func (s *Server) checkRuntimeRequestAdmission(ctx context.Context, request SessionRequest, rt runtime.Runtime) error {
+	checker, ok := rt.(runtime.RequestAdmissionChecker)
 	if !ok {
 		return nil
 	}
-	if err := checker.CheckAdmission(ctx); err != nil {
-		return durable.NewError(durable.CodeRuntimeUnavailable, "check_runtime_admission", "execution runtime is unavailable", err)
+	err := checker.CheckRequestAdmission(ctx, runtime.SpawnConfig{
+		AgentName: request.Agent,
+		WorkDir:   request.WorkDir,
+		Request:   &request,
+	})
+	if err == nil {
+		return nil
 	}
-	return nil
+	var requestErr *runtime.RequestAdmissionError
+	if errors.As(err, &requestErr) {
+		return durable.NewError(durable.CodeInvalidArgument, "check_runtime_request_admission", requestErr.Error(), requestErr)
+	}
+	return durable.NewError(durable.CodeRuntimeUnavailable, "check_runtime_admission", "execution runtime is unavailable", err)
 }
 
 func (s *Server) writeAdmittedFailure(c *gin.Context, sessionID string, cause error) {

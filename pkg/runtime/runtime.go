@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -37,6 +38,40 @@ type Runtime interface {
 // bounded by the caller context.
 type AdmissionChecker interface {
 	CheckAdmission(context.Context) error
+}
+
+// RequestAdmissionChecker proves that a concrete request can be accepted by
+// the runtime before AgentD writes a durable logical-session admission.
+// Implementations may use bounded, immediately-cleaned probes when static
+// validation cannot prove an external runtime contract such as bind mounts.
+type RequestAdmissionChecker interface {
+	CheckRequestAdmission(context.Context, SpawnConfig) error
+}
+
+// RequestAdmissionError identifies a caller-controlled field that the runtime
+// cannot honor. API adapters expose this as an invalid-argument response rather
+// than admitting work that can only fail asynchronously.
+type RequestAdmissionError struct {
+	Field string
+	Value string
+	Err   error
+}
+
+func (err *RequestAdmissionError) Error() string {
+	if err == nil {
+		return "runtime request is not admissible"
+	}
+	if err.Err == nil {
+		return fmt.Sprintf("%s %q is not usable by the runtime", err.Field, err.Value)
+	}
+	return fmt.Sprintf("%s %q is not usable by the runtime: %v", err.Field, err.Value, err.Err)
+}
+
+func (err *RequestAdmissionError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Err
 }
 
 // AdmissionReporter returns the verified, non-secret runtime identity captured
@@ -193,12 +228,13 @@ type ProcessHandle interface {
 
 // Compile-time interface assertions.
 var (
-	_ Runtime       = (*LocalRuntime)(nil)
-	_ Runtime       = (*DockerRuntime)(nil)
-	_ ProcessHandle = (*localHandle)(nil)
-	_ ProcessHandle = (*dockerHandle)(nil)
-	_ ProcessHandle = (*nativeDockerHandle)(nil)
-	_ ProcessHandle = (*recoveredDockerHandle)(nil)
+	_ Runtime                 = (*LocalRuntime)(nil)
+	_ Runtime                 = (*DockerRuntime)(nil)
+	_ RequestAdmissionChecker = (*DockerRuntime)(nil)
+	_ ProcessHandle           = (*localHandle)(nil)
+	_ ProcessHandle           = (*dockerHandle)(nil)
+	_ ProcessHandle           = (*nativeDockerHandle)(nil)
+	_ ProcessHandle           = (*recoveredDockerHandle)(nil)
 )
 
 // ExitResult holds the outcome of a process termination.

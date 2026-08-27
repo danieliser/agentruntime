@@ -3,14 +3,20 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
+	"github.com/danieliser/agentruntime/pkg/durable"
+	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
+	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -168,6 +174,42 @@ func TestSessionAdmissionUsesPassiveRuntimeSnapshot(t *testing.T) {
 	}
 	if got := rt.checks.Load(); got != 1 {
 		t.Fatalf("session admission ran live runtime probe; checks=%d", got)
+	}
+}
+
+func TestSessionAdmissionRejectsRuntimeInaccessibleWorkDirBeforeDurableAdmission(t *testing.T) {
+	store, err := durablesqlite.Open(filepath.Join(t.TempDir(), "agentd.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	workDir := t.TempDir()
+	rt := &admissionTestRuntime{requestAdmissionErr: &runtime.RequestAdmissionError{
+		Field: "work_dir", Value: workDir, Err: errors.New("Docker daemon rejected bind mount"),
+	}}
+	registry := agent.NewRegistry()
+	registry.Register(&sleepAgent{})
+	server := NewServer(session.NewManager(), rt, registry, ServerConfig{
+		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
+	})
+	httpServer := httptest.NewServer(server.router)
+	t.Cleanup(httpServer.Close)
+
+	response := postV1Session(t, httpServer.URL, map[string]any{
+		"idempotency_key": "unavailable-work-dir", "agent": "sleep-test", "runtime": "test",
+		"prompt": "must not launch", "work_dir": workDir,
+	})
+	defer response.Body.Close()
+	var failure struct {
+		Error apiErrorEnvelope `json:"error"`
+	}
+	decodeJSON(t, response.Body, &failure)
+	if response.StatusCode != http.StatusBadRequest || failure.Error.Code != durable.CodeInvalidArgument ||
+		!strings.Contains(failure.Error.Message, "work_dir") || !strings.Contains(failure.Error.Message, workDir) {
+		t.Fatalf("work_dir admission status=%d error=%+v", response.StatusCode, failure.Error)
+	}
+	if _, err := store.GetSessionByIdempotencyKey(context.Background(), "unavailable-work-dir"); !durable.IsCode(err, durable.CodeNotFound) {
+		t.Fatalf("rejected work_dir created durable admission: %v", err)
 	}
 }
 

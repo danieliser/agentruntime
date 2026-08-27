@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -96,6 +97,82 @@ exit 2
 	data, err := os.ReadFile(logFile)
 	if err != nil || strings.Contains(string(data), "run ") {
 		t.Fatalf("missing-image admission created a container: log=%q err=%v", data, err)
+	}
+}
+
+func TestDockerRuntimeRequestAdmissionRejectsUnavailableWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+if [ "$1" = "create" ]; then
+	echo "Error response from daemon: Mounts denied: The path `+workDir+` is not shared from the host" >&2
+	exit 1
+fi
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+
+	runtime := NewDockerRuntime(DockerConfig{Image: "agentruntime-agent:test"})
+	err := runtime.CheckRequestAdmission(context.Background(), SpawnConfig{
+		AgentName: "codex",
+		Request: &apischema.SessionRequest{
+			Agent:   "codex",
+			WorkDir: workDir,
+		},
+	})
+	var requestErr *RequestAdmissionError
+	if !errors.As(err, &requestErr) {
+		t.Fatalf("request admission error = %T %v, want RequestAdmissionError", err, err)
+	}
+	if requestErr.Field != "work_dir" || requestErr.Value != workDir || !strings.Contains(requestErr.Error(), workDir) {
+		t.Fatalf("request admission error = %+v", requestErr)
+	}
+}
+
+func TestDockerRuntimeRequestAdmissionRemovesSuccessfulMountProbe(t *testing.T) {
+	workDir := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "docker.log")
+	installFakeDocker(t, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "`+logFile+`"
+if [ "$1" = "create" ]; then
+	echo "probe-container"
+	exit 0
+fi
+if [ "$1" = "rm" ] && [ "$2" = "-f" ] && [ "$3" = "probe-container" ]; then
+	exit 0
+fi
+echo "unexpected docker command: $*" >&2
+exit 2
+`)
+
+	runtime := NewDockerRuntime(DockerConfig{Image: "agentruntime-agent:test"})
+	err := runtime.CheckRequestAdmission(context.Background(), SpawnConfig{
+		AgentName: "codex",
+		Request: &apischema.SessionRequest{
+			Agent:   "codex",
+			WorkDir: workDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("request admission failed: %v", err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(data)
+	if !strings.Contains(logged, "create ") || !strings.Contains(logged, "src="+workDir) ||
+		!strings.Contains(logged, "-v "+workDir+":/__agentruntime_admission_volume/0:rw") ||
+		!strings.Contains(logged, "rm -f probe-container") || strings.Contains(logged, "run ") {
+		t.Fatalf("request admission Docker calls = %q", logged)
+	}
+}
+
+func TestDockerMountCSVFieldQuotesCommaInHostPath(t *testing.T) {
+	got := dockerMountCSVField("src", "/private/tmp/project,with-comma")
+	if got != `"src=/private/tmp/project,with-comma"` {
+		t.Fatalf("Docker mount CSV field = %q", got)
 	}
 }
 

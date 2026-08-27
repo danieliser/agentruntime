@@ -1579,13 +1579,17 @@ type terminalResultHandle struct {
 func (handle *terminalResultHandle) Wait() <-chan runtime.ExitResult { return handle.wait }
 
 type admissionTestRuntime struct {
-	admissionErr error
-	spawnErr     error
+	admissionErr        error
+	requestAdmissionErr error
+	spawnErr            error
 }
 
 func (*admissionTestRuntime) Name() string { return "test" }
 func (rt *admissionTestRuntime) CheckAdmission(context.Context) error {
 	return rt.admissionErr
+}
+func (rt *admissionTestRuntime) CheckRequestAdmission(context.Context, runtime.SpawnConfig) error {
+	return rt.requestAdmissionErr
 }
 func (rt *admissionTestRuntime) Spawn(context.Context, runtime.SpawnConfig) (runtime.ProcessHandle, error) {
 	return nil, rt.spawnErr
