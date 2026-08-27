@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -373,6 +374,10 @@ func TestRestoreRecoveredSessionsReapsContainerForTerminalDurableSession(t *test
 	server := NewServer(manager, rt, agent.DefaultRegistry(), ServerConfig{
 		LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store),
 	})
+	var recoveryLogs bytes.Buffer
+	previousLogWriter := log.Writer()
+	log.SetOutput(&recoveryLogs)
+	t.Cleanup(func() { log.SetOutput(previousLogWriter) })
 	server.RestoreRecoveredSessions(manager.Recover([]runtime.ProcessHandle{handle}, "docker"), "docker")
 
 	select {
@@ -386,6 +391,12 @@ func TestRestoreRecoveredSessionsReapsContainerForTerminalDurableSession(t *test
 	stored, err := store.GetSession(ctx, sessionID)
 	if err != nil || stored.State != durable.StateCompleted {
 		t.Fatalf("terminal durable history changed: session=%+v err=%v", stored, err)
+	}
+	if recovered := manager.Get(sessionID); recovered != nil {
+		t.Fatalf("terminal recovery remained registered in memory: %+v", recovered.Snapshot())
+	}
+	if strings.Contains(recoveryLogs.String(), "durable recovery failed") {
+		t.Fatalf("terminal container was treated as a recovery failure: %s", recoveryLogs.String())
 	}
 }
 

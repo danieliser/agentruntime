@@ -59,6 +59,9 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 			log.Printf("[session %s] stopped recovered process without durable generation proof", sess.ID)
 			continue
 		}
+		if s.discardRecoveredTerminalSession(sess) {
+			continue
+		}
 		if err := s.adoptRecoveredStartingGeneration(sess, *info); err != nil {
 			log.Printf("[session %s] durable generation adoption failed: %v", sess.ID, err)
 			_ = sess.Handle.Kill()
@@ -76,6 +79,23 @@ func (s *Server) RestoreRecoveredSessions(recovered []*session.Session, confirme
 	s.reconcileGenerationlessAdmissions(confirmedRuntimes)
 	s.reconcileMissingGenerations(discovered, confirmedRuntimes)
 	s.reconcileTerminalRetention(confirmedRuntimes)
+}
+
+// discardRecoveredTerminalSession handles the normal crash window where the
+// durable terminal receipt was committed before its Docker container was
+// removed. It is cleanup work, not a failed recovery attempt, and must not
+// leave an orphaned in-memory session consuming an admission slot.
+func (s *Server) discardRecoveredTerminalSession(sess *session.Session) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stored, err := s.durableStore.GetSession(ctx, sess.ID)
+	if err != nil || !stored.State.Terminal() {
+		return false
+	}
+	_ = sess.Handle.Kill()
+	sess.Replay.Close()
+	s.sessions.Remove(sess.ID)
+	return true
 }
 
 func (s *Server) reconcileGenerationlessAdmissions(confirmedRuntimes []string) {
