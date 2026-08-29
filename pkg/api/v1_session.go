@@ -23,6 +23,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
+	"github.com/danieliser/agentruntime/pkg/skills"
 )
 
 type v1SessionData struct {
@@ -168,6 +169,9 @@ func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, run
 	if err := s.validateTraceAdmission(ctx, request); err != nil {
 		return durable.CreateSessionResult{}, err
 	}
+	if err := s.validateSkillAdmission(request, runtimeName); err != nil {
+		return durable.CreateSessionResult{}, err
+	}
 	manifest, grants, requestHash, err := durableRequestManifest(request, runtimeName)
 	if err != nil {
 		return durable.CreateSessionResult{}, err
@@ -181,6 +185,45 @@ func (s *Server) admitV1Session(ctx context.Context, request SessionRequest, run
 		RequestHash: requestHash, RequestManifest: manifest, SecretGrants: grants,
 		Agent: request.Agent, Runtime: runtimeName, CreatedAt: time.Now().UTC(),
 	})
+}
+
+func (s *Server) validateSkillAdmission(request SessionRequest, runtimeName string) error {
+	const op = "validate_skill_admission"
+	if request.Skills == nil {
+		return nil
+	}
+	if runtimeName != "docker" {
+		return durable.NewError(durable.CodeInvalidArgument, op, "skills currently require the docker runtime", nil)
+	}
+	if request.Agent != "claude" && request.Agent != "codex" {
+		return durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("skills are unsupported for agent %q", request.Agent), nil)
+	}
+	if request.Skills.SchemaVersion != "1.0" {
+		return durable.NewError(durable.CodeInvalidArgument, op, "skills.schema_version must be 1.0", nil)
+	}
+	if request.Skills.Mode != "replace" {
+		return durable.NewError(durable.CodeInvalidArgument, op, "skills.mode must be replace", nil)
+	}
+	if len(request.Skills.Entries) > skills.MaxEntries {
+		return durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("skills.entries exceeds %d", skills.MaxEntries), nil)
+	}
+	previous := ""
+	for _, entry := range request.Skills.Entries {
+		if !skills.ValidName(entry.Name) || strings.ToLower(entry.Name) != entry.Name {
+			return durable.NewError(durable.CodeInvalidArgument, op, "skill names must be non-empty lowercase canonical names", nil)
+		}
+		if previous != "" && entry.Name <= previous {
+			return durable.NewError(durable.CodeInvalidArgument, op, "skill entries must be uniquely sorted by name", nil)
+		}
+		previous = entry.Name
+		if s.skillBundles == nil {
+			return durable.NewError(durable.CodeIndeterminate, op, "skill bundle store unavailable", nil)
+		}
+		if err := s.skillBundles.EnsureNamed(entry.BundleSHA256, entry.Name); err != nil {
+			return durable.NewError(durable.CodeInvalidArgument, op, fmt.Sprintf("skill bundle %q is unavailable or invalid", entry.Name), err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) validateTraceAdmission(ctx context.Context, request SessionRequest) error {

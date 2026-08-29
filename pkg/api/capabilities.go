@@ -10,6 +10,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
+	"github.com/danieliser/agentruntime/pkg/skills"
 )
 
 type replayCapabilities struct {
@@ -93,6 +94,20 @@ type containerLifecycleCapabilities struct {
 	ResumeStateMediaType string `json:"resume_state_media_type"`
 }
 
+type skillCapabilities struct {
+	SchemaVersions     []string          `json:"schema_versions"`
+	Modes              []string          `json:"modes"`
+	SupportedAgents    []string          `json:"supported_agents"`
+	UnsupportedAgents  []string          `json:"unsupported_agents"`
+	RuntimeEnforcement map[string]string `json:"runtime_enforcement"`
+	BundleEndpoint     string            `json:"bundle_endpoint"`
+	MaxArchiveBytes    int               `json:"max_archive_bytes"`
+	MaxExpandedBytes   int               `json:"max_expanded_bytes"`
+	MaxFiles           int               `json:"max_files"`
+	MaxDepth           int               `json:"max_depth"`
+	MaxEntries         int               `json:"max_entries"`
+}
+
 type v1Capabilities struct {
 	AgentDVersion           string                         `json:"agentd_version"`
 	CommitHash              string                         `json:"commit_hash"`
@@ -115,6 +130,7 @@ type v1Capabilities struct {
 	EgressPolicy            egressPolicyCapabilities       `json:"egress_policy"`
 	ResourceLimits          resourceLimitCapabilities      `json:"resource_limits"`
 	ContainerLifecycle      containerLifecycleCapabilities `json:"container_lifecycle"`
+	Skills                  skillCapabilities              `json:"skills"`
 }
 
 func (s *Server) handleV1Capabilities(c *gin.Context) {
@@ -205,6 +221,14 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			StoppedCleanup:   stoppedCleanup, StoppedCleanupGrace: defaultStoppedContainerGrace.String(),
 			PortableResume: portableResume && durableReplay, ResumeStateSchema: portableResumeSchemaVersion,
 			ResumeStateMediaType: PortableResumeContentType,
+		},
+		Skills: skillCapabilities{
+			SchemaVersions: []string{"1.0"}, Modes: []string{"replace"},
+			SupportedAgents: []string{"claude", "codex"}, UnsupportedAgents: []string{"autojack"},
+			RuntimeEnforcement: map[string]string{"docker": "read_only", "local": "ambient_host"},
+			BundleEndpoint:     "/api/v1/skill-bundles/{sha256}",
+			MaxArchiveBytes:    skills.MaxArchiveBytes, MaxExpandedBytes: skills.MaxExpandedBytes, MaxFiles: skills.MaxFiles,
+			MaxDepth: skills.MaxDepth, MaxEntries: skills.MaxEntries,
 		},
 	}})
 }

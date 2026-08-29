@@ -3,10 +3,45 @@ package runtime
 import (
 	"context"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 )
+
+func TestPrepareLocalCommand_AppendsScopedMCPWithoutReplacingHome(t *testing.T) {
+	const token = "local-runtime-token"
+	req := &apischema.SessionRequest{
+		Agent: "codex",
+		MCPServers: []apischema.MCPServer{{
+			Name: "persist", Type: "http",
+			URL: "http://${HOST_GATEWAY}:8803/api/v1/mcp", Token: token,
+		}},
+	}
+	cfg := SpawnConfig{
+		AgentName: "codex",
+		Cmd:       []string{"codex", "app-server", "--listen", "stdio://", "--strict-config"},
+		Request:   req,
+	}
+	command, err := prepareLocalCommand(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Equal(command, cfg.Cmd) || !strings.Contains(strings.Join(command, " "), `mcp_servers.persist.url=`) {
+		t.Fatalf("prepared command = %#v", command)
+	}
+	if strings.Contains(strings.Join(command, " "), token) {
+		t.Fatal("plaintext MCP token reached process argv")
+	}
+	if _, found := req.Env["HOME"]; found {
+		t.Fatal("local runtime replaced HOME and hid ambient AutoVault skills")
+	}
+	if got := requestEnv(cfg); len(got) != 1 {
+		t.Fatalf("spawn env = %#v, want only generated token reference", got)
+	}
+}
 
 func TestLocalRuntime_Name(t *testing.T) {
 	rt := NewLocalRuntime()

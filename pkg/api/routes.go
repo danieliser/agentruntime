@@ -11,6 +11,7 @@ func RegisterRoutes(r *gin.Engine, s *Server) {
 	{
 		v1.GET("/capabilities", s.handleV1Capabilities)
 		v1.GET("/plugins", s.handleV1Plugins)
+		v1.PUT("/skill-bundles/:digest", s.handleV1PutSkillBundle)
 		v1.POST("/sessions", s.handleV1CreateSession)
 		v1.GET("/sessions", s.handleV1ListSessions)
 		v1.GET("/sessions/:id", s.handleV1GetSession)

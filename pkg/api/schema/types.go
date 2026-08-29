@@ -116,6 +116,10 @@ type SessionRequest struct {
 	// MCP servers — materialized into agent's config at spawn time.
 	MCPServers []MCPServer `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 
+	// Skills is the complete, content-addressed skill set for this session.
+	// AgentD accepts only explicit replacement sets; callers resolve inheritance.
+	Skills *SkillSet `json:"skills,omitempty" yaml:"skills,omitempty"`
+
 	// Clean-room env: only these vars enter the container. Never inherits host env.
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
 	// SecretGrants lists Env keys whose values may be used for this launch but
@@ -131,6 +135,17 @@ type SessionRequest struct {
 	// flags and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 env var.
 	// The orchestrator must scaffold the team directory before spawning.
 	Team *TeamConfig `json:"team,omitempty" yaml:"team,omitempty"`
+}
+
+type SkillSet struct {
+	SchemaVersion string     `json:"schema_version" yaml:"schema_version"`
+	Mode          string     `json:"mode" yaml:"mode"`
+	Entries       []SkillRef `json:"entries" yaml:"entries"`
+}
+
+type SkillRef struct {
+	Name         string `json:"name" yaml:"name"`
+	BundleSHA256 string `json:"bundle_sha256" yaml:"bundle_sha256"`
 }
 
 // ContainerLease is an explicit lifecycle contract for a native Docker

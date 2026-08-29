@@ -6,6 +6,8 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+
+	"github.com/danieliser/agentruntime/pkg/materialize"
 )
 
 // LocalRuntime spawns agent processes as local OS subprocesses.
@@ -25,11 +27,15 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 		return nil, &SpawnError{Reason: "cmd is empty"}
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.Cmd[0], cfg.Cmd[1:]...)
+	command, err := prepareLocalCommand(cfg)
+	if err != nil {
+		return nil, &SpawnError{Reason: "mcp config", Err: err}
+	}
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cfg.WorkDir
 	configureLocalProcessGroup(cmd)
 
-	env, err := buildSpawnEnv(cfg.Env)
+	env, err := buildSpawnEnv(requestEnv(cfg))
 	if err != nil {
 		return nil, &SpawnError{Reason: "env", Err: err}
 	}
@@ -78,6 +84,15 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 	go h.fanoutLoop()
 
 	return h, nil
+}
+
+func prepareLocalCommand(cfg SpawnConfig) ([]string, error) {
+	command := append([]string(nil), cfg.Cmd...)
+	args, err := materialize.PrepareLocalMCP(cfg.Request)
+	if err != nil {
+		return nil, err
+	}
+	return append(command, args...), nil
 }
 
 // Recover returns an empty slice — local processes don't survive daemon restarts.

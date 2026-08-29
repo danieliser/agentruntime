@@ -162,7 +162,7 @@ func TestMaterialize_MCPServerCmdDoesNotResolveHostGateway(t *testing.T) {
 }
 
 func TestMaterialize_MCPServerTokenSanitized(t *testing.T) {
-	result := mustMaterialize(t, &apischema.SessionRequest{
+	req := &apischema.SessionRequest{
 		Claude: &apischema.ClaudeConfig{},
 		MCPServers: []apischema.MCPServer{
 			{
@@ -172,11 +172,18 @@ func TestMaterialize_MCPServerTokenSanitized(t *testing.T) {
 				Token: "line1\nline2\x00tail\r",
 			},
 		},
-	}, "session-12345678")
+	}
+	result := mustMaterialize(t, req, "session-12345678")
 	defer result.CleanupFn()
 
 	servers := readMCPServers(t, result)
-	token := servers["tokenized"].(map[string]any)["token"].(string)
+	server := servers["tokenized"].(map[string]any)
+	if _, found := server["token"]; found {
+		t.Fatal("plaintext token field reached durable MCP config")
+	}
+	authorization := server["headers"].(map[string]any)["Authorization"].(string)
+	envName := strings.TrimSuffix(strings.TrimPrefix(authorization, "Bearer ${"), "}")
+	token := req.Env[envName]
 	if strings.ContainsAny(token, "\n\r") || strings.ContainsRune(token, '\x00') {
 		t.Fatalf("expected control characters to be removed from token, got %q", token)
 	}
@@ -280,6 +287,11 @@ func TestMaterialize_ClaudeAndCodexMaterializeIndependently(t *testing.T) {
 
 	claudeMount := findMount(t, result.Mounts, "/home/agent/.claude")
 	codexMount := findMount(t, result.Mounts, "/home/agent/.codex")
+	for _, mount := range result.Mounts {
+		if mount.Container == "/home/agent/./skills" {
+			t.Fatal("provider-neutral materialization created a malformed skill mount")
+		}
+	}
 
 	claudeData, err := os.ReadFile(filepath.Join(claudeMount.Host, "CLAUDE.md"))
 	if err != nil {
@@ -388,7 +400,7 @@ func readMCPServers(t *testing.T, result *Result) map[string]any {
 }
 
 func TestMaterialize_MCPServerURLResolutionStillAppliesToURLsOnly(t *testing.T) {
-	result := mustMaterialize(t, &apischema.SessionRequest{
+	req := &apischema.SessionRequest{
 		Claude: &apischema.ClaudeConfig{},
 		MCPServers: []apischema.MCPServer{
 			{
@@ -398,7 +410,8 @@ func TestMaterialize_MCPServerURLResolutionStillAppliesToURLsOnly(t *testing.T) 
 				Token: "${HOST_GATEWAY}",
 			},
 		},
-	}, "session-12345678")
+	}
+	result := mustMaterialize(t, req, "session-12345678")
 	defer result.CleanupFn()
 
 	servers := readMCPServers(t, result)
@@ -406,7 +419,9 @@ func TestMaterialize_MCPServerURLResolutionStillAppliesToURLsOnly(t *testing.T) 
 	if got := server["url"].(string); !strings.Contains(got, ResolveHostGateway()) {
 		t.Fatalf("expected URL to resolve host gateway, got %q", got)
 	}
-	if got := server["token"].(string); got != "${HOST_GATEWAY}" {
+	authorization := server["headers"].(map[string]any)["Authorization"].(string)
+	envName := strings.TrimSuffix(strings.TrimPrefix(authorization, "Bearer ${"), "}")
+	if got := req.Env[envName]; got != "${HOST_GATEWAY}" {
 		t.Fatalf("expected token to remain literal, got %q", got)
 	}
 }

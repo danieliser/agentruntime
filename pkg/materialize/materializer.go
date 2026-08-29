@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
+	"github.com/danieliser/agentruntime/pkg/skills"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -48,6 +50,8 @@ func Materialize(req *apischema.SessionRequest, sessionID, dataDir string) (*Res
 	}
 
 	cleanup := result.CleanupFn
+	skillSessionDir := ""
+	providerRoot := ""
 
 	if req.Claude != nil || req.Agent == "claude" {
 		if req.Claude == nil {
@@ -59,6 +63,10 @@ func Materialize(req *apischema.SessionRequest, sessionID, dataDir string) (*Res
 			return nil, err
 		}
 		result.SessionDir = sessionDir
+		if req.Agent == "claude" {
+			skillSessionDir = sessionDir
+			providerRoot = "/home/agent/.claude"
+		}
 	}
 
 	if req.Codex != nil || req.Agent == "codex" {
@@ -71,6 +79,40 @@ func Materialize(req *apischema.SessionRequest, sessionID, dataDir string) (*Res
 			return nil, err
 		}
 		result.SessionDir = sessionDir
+		if req.Agent == "codex" {
+			skillSessionDir = sessionDir
+			providerRoot = "/home/agent/.codex"
+		}
+	}
+
+	if skillSessionDir != "" {
+		skillRoot := filepath.Join(skillSessionDir, "skills")
+		if err := os.RemoveAll(skillRoot); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("reset provider skill root: %w", err)
+		}
+		if err := os.Mkdir(skillRoot, 0o700); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("create provider skill root: %w", err)
+		}
+		if req.Skills != nil && len(req.Skills.Entries) > 0 {
+			if dataDir == "" {
+				cleanup()
+				return nil, errors.New("skills require a durable data directory")
+			}
+			store := skills.NewStore(filepath.Join(dataDir, "skill-bundles"))
+			for _, entry := range req.Skills.Entries {
+				destination := filepath.Join(skillRoot, entry.Name)
+				if err := store.Extract(entry.BundleSHA256, entry.Name, destination); err != nil {
+					cleanup()
+					return nil, fmt.Errorf("materialize skill %q: %w", entry.Name, err)
+				}
+			}
+		}
+		result.Mounts = append(result.Mounts, apischema.Mount{Host: skillRoot, Container: providerRoot + "/skills", Mode: "ro"})
+	} else if req.Skills != nil {
+		cleanup()
+		return nil, fmt.Errorf("skills are unsupported for agent %q", req.Agent)
 	}
 
 	return result, nil
@@ -149,7 +191,7 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 		}
 	}
 
-	mcpJSON, err := buildClaudeMCPJSON(mcpJSONBase, req.MCPServers)
+	mcpJSON, err := buildClaudeMCPJSON(mcpJSONBase, req)
 	if err != nil {
 		return "", err
 	}
@@ -279,6 +321,7 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 	if req.Fast {
 		config["service_tier"] = "priority"
 	}
+	mergeCodexMCPServers(req, config)
 
 	// Merge AGENTS.md: discovered first, then explicit
 	agentsMD := req.Codex.Instructions
@@ -441,7 +484,7 @@ func claudeProjectPath() string {
 	return "/workspace"
 }
 
-func buildClaudeMCPJSON(base map[string]any, servers []apischema.MCPServer) (map[string]any, error) {
+func buildClaudeMCPJSON(base map[string]any, req *apischema.SessionRequest) (map[string]any, error) {
 	merged, ok := cloneValue(base).(map[string]any)
 	if !ok || merged == nil {
 		merged = map[string]any{}
@@ -452,8 +495,8 @@ func buildClaudeMCPJSON(base map[string]any, servers []apischema.MCPServer) (map
 		serverMap = map[string]any{}
 	}
 
-	for _, server := range servers {
-		serverMap[server.Name] = mcpServerToMap(server)
+	for _, server := range req.MCPServers {
+		serverMap[server.Name] = mcpServerToMap(req, server)
 	}
 
 	merged["mcpServers"] = serverMap
@@ -465,7 +508,7 @@ func buildClaudeMCPJSON(base map[string]any, servers []apischema.MCPServer) (map
 	return resolved, nil
 }
 
-func mcpServerToMap(server apischema.MCPServer) map[string]any {
+func mcpServerToMap(req *apischema.SessionRequest, server apischema.MCPServer) map[string]any {
 	out := map[string]any{
 		"type": server.Type,
 	}
@@ -491,7 +534,10 @@ func mcpServerToMap(server apischema.MCPServer) map[string]any {
 		out["env"] = env
 	}
 	if server.Token != "" {
-		out["token"] = server.Token
+		envName := injectMCPTokenEnv(req, server)
+		out["headers"] = map[string]any{
+			"Authorization": "Bearer ${" + envName + "}",
+		}
 	}
 	return out
 }

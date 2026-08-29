@@ -2,6 +2,55 @@
 
 This guide covers how to configure Claude Code skills, agents, and plugins within agentruntime sessions. It also addresses the equivalent patterns for Codex.
 
+## Content-addressed session skills
+
+AgentD v1 accepts an explicit, reproducible skill snapshot for Docker sessions:
+
+```json
+{
+  "skills": {
+    "schema_version": "1.0",
+    "mode": "replace",
+    "entries": [
+      {
+        "name": "persist-comms",
+        "bundle_sha256": "sha256:<64 lowercase hex>"
+      }
+    ]
+  }
+}
+```
+
+Upload each deterministic tar bundle first with
+`PUT /api/v1/skill-bundles/{sha256}` and
+`Content-Type: application/x-tar`. The archive must contain exactly one
+skill directory, including `SKILL.md`, whose root matches `name`.
+Current advertised limits are 32 MiB of archive bytes and expanded data, 512 regular
+files, 16 nested path components, and 50 skills per session request.
+
+The request contains digests, never source host paths. AgentD validates every
+bundle before durable admission, includes the skill set in the request hash,
+and materializes it read-only at:
+
+- Claude: `/home/agent/.claude/skills/<name>`
+- Codex: `/home/agent/.codex/skills/<name>`
+
+Only Docker currently accepts an explicit content-addressed skill set and
+provides enforced read-only skill mounts. Local runtime inherits the daemon
+user's provider-native AutoVault sync through `HOME`; callers omit the
+`skills` request there rather than claiming a reproducible scoped set.
+AutoJack skill admission fails closed until it has a provider-root contract.
+Docker resets and read-only mounts the selected provider's complete `skills/`
+root, so omitted or empty sets stay clean and replace mode cannot retain
+unrequested entries from an earlier generation.
+Skill metadata is instruction/data only: it cannot
+widen tools, MCP access, network, host mounts, credentials, or approvals.
+
+Bundle bytes are stored at `<data-dir>/skill-bundles/<sha256>.tar`; the
+default data directory makes this `~/.agentd/skill-bundles/`. This is an
+AgentD-private content-addressed store, not an AutoVault directory or a path
+that appears in the durable session request.
+
 ## Claude Code: CLAUDE.md Injection
 
 The primary mechanism for extending Claude Code's behavior is injecting a `CLAUDE.md` file containing custom instructions, context, and persona configuration.
@@ -65,7 +114,9 @@ Each server in the array specifies:
 - **url** — for HTTP/WebSocket types, the endpoint URL (supports `${HOST_GATEWAY}` substitution in Docker mode)
 - **cmd** — for stdio type, the command array to spawn the server process
 - **env** — optional environment variables passed to the server
-- **token** — optional authentication token
+- **token** — optional one-session bearer token. AgentD moves it into an
+  ephemeral process environment variable and writes only the environment
+  reference into provider configuration.
 
 ### Example: Custom Filesystem Tool via stdio
 
@@ -101,7 +152,10 @@ mcp_servers:
     token: "sk-secret-key-here"
 ```
 
-In Docker mode, `${HOST_GATEWAY}` is automatically resolved to the host's IP address so the agent can reach services on the host.
+In Docker mode, `${HOST_GATEWAY}` resolves to the container's host gateway. In
+local mode it resolves to `127.0.0.1`; AgentD appends provider-native MCP
+overrides without changing `HOME`, so host-synced AutoVault skills remain
+available.
 
 ### MCP JSON Merging
 
@@ -166,8 +220,12 @@ The sidecar controls the agent process lifecycle. Plugins that modify startup be
 Codex uses a different configuration model:
 
 - **Instructions** — Use `codex.instructions` field (instead of `claude_md`) for custom instructions
-- **No plugin/skill system** — Codex does not have a plugins mechanism
-- **Custom tools** — Add tools via Codex's native tool system in `codex.config_toml`
+- **Skills** — Use the same content-addressed `skills` request; AgentD
+  materializes entries under `~/.codex/skills/<name>`
+- **Plugins** — Codex plugins remain outside this AgentD skill contract
+- **Custom tools** — The top-level `mcp_servers` request is merged into
+  Codex's native `mcp_servers` configuration. `codex.config_toml` remains
+  available for other provider settings.
 
 Example:
 
@@ -183,7 +241,7 @@ codex:
     - Follow PEP 8 with black formatter
 ```
 
-Codex does not support MCP servers; custom tools must be defined within Codex's configuration.
+Codex and Claude both consume the same top-level `mcp_servers` contract.
 
 ## Complete Example: Claude with Skills and MCP
 
@@ -232,21 +290,20 @@ mcp_servers:
   - name: "db-query-mcp"
     type: "http"
     url: "http://${HOST_GATEWAY}:8765"
-    token: "${DB_MCP_TOKEN}"
+    token: "<one-session bearer supplied at dispatch>"
 
 container:
   memory: "2g"
   cpus: 1.5
 
 env:
-  DB_MCP_TOKEN: "sk-1234567890abcdef"
-  DATABASE_URL: "postgresql://user:pass@localhost/mydb"
+  DATABASE_URL: "<injected secret grant>"
 ```
 
 When this request runs:
 
 1. **CLAUDE.md is written** to `~/.claude/CLAUDE.md` with project standards and tool guidance
-2. **MCP servers are materialized** into `.mcp.json` with both stdio and HTTP configurations
+2. **MCP servers are materialized** into `.mcp.json` with both stdio and HTTP configurations; bearer values remain in ephemeral process environment only
 3. **Settings are applied**, pre-approving dangerous mode and tool permissions
 4. **Environment variables** are passed to the container for tool authentication
 5. **Container is allocated** 2GB memory and 1.5 CPUs for the resource-intensive scraping task

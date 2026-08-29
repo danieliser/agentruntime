@@ -17,5 +17,7 @@ type ResourceLimits = apischema.ResourceLimits
 type LifecycleConfig = apischema.LifecycleConfig
 type StructuredOutput = apischema.StructuredOutput
 type ContainerLease = apischema.ContainerLease
+type SkillSet = apischema.SkillSet
+type SkillRef = apischema.SkillRef
 
 const CodexAuthJSONEnv = apischema.CodexAuthJSONEnv

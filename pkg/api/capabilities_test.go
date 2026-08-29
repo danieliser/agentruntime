@@ -108,6 +108,19 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 				Maximums    ResourceLimits `json:"maximums"`
 				BreachCode  string         `json:"breach_code"`
 			} `json:"resource_limits"`
+			Skills struct {
+				SchemaVersions     []string          `json:"schema_versions"`
+				Modes              []string          `json:"modes"`
+				SupportedAgents    []string          `json:"supported_agents"`
+				UnsupportedAgents  []string          `json:"unsupported_agents"`
+				RuntimeEnforcement map[string]string `json:"runtime_enforcement"`
+				BundleEndpoint     string            `json:"bundle_endpoint"`
+				MaxArchiveBytes    int               `json:"max_archive_bytes"`
+				MaxExpandedBytes   int               `json:"max_expanded_bytes"`
+				MaxFiles           int               `json:"max_files"`
+				MaxDepth           int               `json:"max_depth"`
+				MaxEntries         int               `json:"max_entries"`
+			} `json:"skills"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
@@ -156,6 +169,14 @@ func TestV1CapabilitiesExposeNativeReplayAndRuntimeCompatibility(t *testing.T) {
 		envelope.Data.ResourceLimits.Minimums != MinimumResourceLimits ||
 		envelope.Data.ResourceLimits.Maximums != MaximumResourceLimits || envelope.Data.ResourceLimits.BreachCode != "resource_limit_exceeded" {
 		t.Fatalf("resource limit capabilities = %+v", envelope.Data.ResourceLimits)
+	}
+	if !containsString(envelope.Data.Skills.SchemaVersions, "1.0") || !containsString(envelope.Data.Skills.Modes, "replace") ||
+		!containsString(envelope.Data.Skills.SupportedAgents, "claude") || !containsString(envelope.Data.Skills.SupportedAgents, "codex") ||
+		!containsString(envelope.Data.Skills.UnsupportedAgents, "autojack") || envelope.Data.Skills.RuntimeEnforcement["docker"] != "read_only" ||
+		envelope.Data.Skills.RuntimeEnforcement["local"] != "ambient_host" || envelope.Data.Skills.BundleEndpoint != "/api/v1/skill-bundles/{sha256}" ||
+		envelope.Data.Skills.MaxArchiveBytes <= 0 || envelope.Data.Skills.MaxExpandedBytes <= 0 || envelope.Data.Skills.MaxFiles <= 0 ||
+		envelope.Data.Skills.MaxDepth <= 0 || envelope.Data.Skills.MaxEntries <= 0 {
+		t.Fatalf("skill capabilities = %+v", envelope.Data.Skills)
 	}
 }
 

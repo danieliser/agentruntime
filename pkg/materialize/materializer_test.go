@@ -1,6 +1,8 @@
 package materialize
 
 import (
+	"archive/tar"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,8 +12,30 @@ import (
 	"testing"
 
 	api "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/skills"
 	"github.com/pelletier/go-toml/v2"
 )
+
+func testSkillBundle(t *testing.T, name, body string) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	if err := tw.WriteHeader(&tar.Header{Name: name + "/SKILL.md", Mode: 0o444, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func testSkillDigest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 func TestMaterialize_ClaudeWritesSettingsJSON(t *testing.T) {
 	result := mustMaterializeWithDataDir(t, &api.SessionRequest{
@@ -106,6 +130,115 @@ func TestMaterialize_ClaudeWritesMcpJSON_MergesServers(t *testing.T) {
 	addedArgs := addedServer["args"].([]any)
 	if len(addedArgs) != 1 || addedArgs[0] != "--serve" {
 		t.Fatalf("unexpected added args: %#v", addedArgs)
+	}
+}
+
+func TestMaterialize_MCPTokenUsesEphemeralEnvironmentReference(t *testing.T) {
+	const token = "scoped-session-token"
+	req := &api.SessionRequest{
+		Agent:  "claude",
+		Claude: &api.ClaudeConfig{},
+		MCPServers: []api.MCPServer{{
+			Name:  "persist",
+			Type:  "http",
+			URL:   "http://${HOST_GATEWAY}:8803/api/v1/mcp",
+			Token: token,
+		}},
+	}
+	result := mustMaterializeWithDataDir(t, req, "session-token-reference", t.TempDir())
+	defer result.CleanupFn()
+
+	data, err := os.ReadFile(filepath.Join(result.SessionDir, ".mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(token)) {
+		t.Fatal("plaintext MCP token reached durable Claude config")
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	server := got["mcpServers"].(map[string]any)["persist"].(map[string]any)
+	headers := server["headers"].(map[string]any)
+	authorization, _ := headers["Authorization"].(string)
+	if !strings.HasPrefix(authorization, "Bearer ${AGENTRUNTIME_MCP_TOKEN_") || !strings.HasSuffix(authorization, "}") {
+		t.Fatalf("authorization reference = %q", authorization)
+	}
+	envName := strings.TrimSuffix(strings.TrimPrefix(authorization, "Bearer ${"), "}")
+	if got := req.Env[envName]; got != token {
+		t.Fatalf("ephemeral token env = %q, want scoped token", got)
+	}
+}
+
+func TestMaterialize_CodexMergesTopLevelMCPServersWithoutPersistingToken(t *testing.T) {
+	const token = "codex-scoped-session-token"
+	req := &api.SessionRequest{
+		Agent: "codex",
+		Codex: &api.CodexConfig{},
+		MCPServers: []api.MCPServer{{
+			Name:  "persist",
+			Type:  "http",
+			URL:   "http://${HOST_GATEWAY}:8803/api/v1/mcp",
+			Token: token,
+		}},
+	}
+	result := mustMaterializeWithDataDir(t, req, "codex-mcp-reference", t.TempDir())
+	defer result.CleanupFn()
+
+	data, err := os.ReadFile(filepath.Join(result.SessionDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(token)) {
+		t.Fatal("plaintext MCP token reached durable Codex config")
+	}
+
+	var got map[string]any
+	if err := toml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	server := got["mcp_servers"].(map[string]any)["persist"].(map[string]any)
+	urlValue, _ := server["url"].(string)
+	if strings.Contains(urlValue, "${HOST_GATEWAY}") || !strings.Contains(urlValue, ResolveHostGateway()) {
+		t.Fatalf("resolved URL = %q", urlValue)
+	}
+	envName, _ := server["bearer_token_env_var"].(string)
+	if !strings.HasPrefix(envName, "AGENTRUNTIME_MCP_TOKEN_") {
+		t.Fatalf("bearer token env var = %q", envName)
+	}
+	if got := req.Env[envName]; got != token {
+		t.Fatalf("ephemeral token env = %q, want scoped token", got)
+	}
+}
+
+func TestMaterialize_CodexStdioMCPUsesNativeCommandShape(t *testing.T) {
+	req := &api.SessionRequest{
+		Agent: "codex",
+		Codex: &api.CodexConfig{},
+		MCPServers: []api.MCPServer{{
+			Name: "worker", Type: "stdio", Cmd: []string{"node", "server.js", "--stdio"},
+		}},
+	}
+	result := mustMaterializeWithDataDir(t, req, "codex-stdio-mcp", t.TempDir())
+	defer result.CleanupFn()
+
+	data, err := os.ReadFile(filepath.Join(result.SessionDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := toml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	server := got["mcp_servers"].(map[string]any)["worker"].(map[string]any)
+	if command, ok := server["command"].(string); !ok || command != "node" {
+		t.Fatalf("Codex MCP command = %#v, want scalar node", server["command"])
+	}
+	args, ok := server["args"].([]any)
+	if !ok || len(args) != 2 || args[0] != "server.js" || args[1] != "--stdio" {
+		t.Fatalf("Codex MCP args = %#v", server["args"])
 	}
 }
 
@@ -467,6 +600,72 @@ func TestMaterialize_UsesAgentSessionDir(t *testing.T) {
 	codexMount := findMount(t, result.Mounts, "/home/agent/.codex")
 	if want := filepath.Join(dataDir, "codex-sessions", sessionID); codexMount.Host != want {
 		t.Fatalf("expected Codex mount host %q, got %q", want, codexMount.Host)
+	}
+}
+
+func TestMaterialize_ContentAddressedSkillsAsReadOnlyNestedMounts(t *testing.T) {
+	dataDir := t.TempDir()
+	bundle := testSkillBundle(t, "persist-comms", "skill body")
+	digest := testSkillDigest(bundle)
+	store := skills.NewStore(filepath.Join(dataDir, "skill-bundles"))
+	if _, err := store.Put(digest, bytes.NewReader(bundle)); err != nil {
+		t.Fatalf("put bundle: %v", err)
+	}
+	for _, tc := range []struct{ agent, root string }{{"claude", "/home/agent/.claude"}, {"codex", "/home/agent/.codex"}} {
+		t.Run(tc.agent, func(t *testing.T) {
+			result := mustMaterializeWithDataDir(t, &api.SessionRequest{Agent: tc.agent, Skills: &api.SkillSet{
+				SchemaVersion: "1.0", Mode: "replace", Entries: []api.SkillRef{{Name: "persist-comms", BundleSHA256: digest}},
+			}}, "skills-"+tc.agent, dataDir)
+			mount := findMount(t, result.Mounts, tc.root+"/skills")
+			if mount.Mode != "ro" {
+				t.Fatalf("skill mount mode = %q", mount.Mode)
+			}
+			body, err := os.ReadFile(filepath.Join(mount.Host, "persist-comms", "SKILL.md"))
+			if err != nil || string(body) != "skill body" {
+				t.Fatalf("skill body = %q, err %v", body, err)
+			}
+		})
+	}
+}
+
+func TestMaterialize_EmptySkillSetMountsReadOnlyProviderSkillRoot(t *testing.T) {
+	for _, tc := range []struct{ agent, root string }{{"claude", "/home/agent/.claude"}, {"codex", "/home/agent/.codex"}} {
+		t.Run(tc.agent, func(t *testing.T) {
+			result := mustMaterializeWithDataDir(t, &api.SessionRequest{
+				Agent:  tc.agent,
+				Skills: &api.SkillSet{SchemaVersion: "1.0", Mode: "replace", Entries: []api.SkillRef{}},
+			}, "empty-skills-"+tc.agent, t.TempDir())
+			mount := findMount(t, result.Mounts, tc.root+"/skills")
+			if mount.Mode != "ro" {
+				t.Fatalf("skill root mount mode = %q", mount.Mode)
+			}
+			entries, err := os.ReadDir(mount.Host)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("empty skill root entries = %v, err %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestMaterialize_SkillReplaceRemovesUnrequestedSessionEntries(t *testing.T) {
+	dataDir := t.TempDir()
+	bundle := testSkillBundle(t, "persist-comms", "skill body")
+	digest := testSkillDigest(bundle)
+	store := skills.NewStore(filepath.Join(dataDir, "skill-bundles"))
+	if _, err := store.Put(digest, bytes.NewReader(bundle)); err != nil {
+		t.Fatal(err)
+	}
+	request := &api.SessionRequest{Agent: "codex", Skills: &api.SkillSet{
+		SchemaVersion: "1.0", Mode: "replace", Entries: []api.SkillRef{{Name: "persist-comms", BundleSHA256: digest}},
+	}}
+	first := mustMaterializeWithDataDir(t, request, "replace-skills", dataDir)
+	skillRoot := filepath.Join(first.SessionDir, "skills")
+	if err := os.MkdirAll(filepath.Join(skillRoot, "stale-skill"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	second := mustMaterializeWithDataDir(t, request, "replace-skills", dataDir)
+	if _, err := os.Lstat(filepath.Join(second.SessionDir, "skills", "stale-skill")); !os.IsNotExist(err) {
+		t.Fatalf("replace mode retained unrequested skill: %v", err)
 	}
 }
 

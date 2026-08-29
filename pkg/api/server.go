@@ -21,6 +21,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
+	"github.com/danieliser/agentruntime/pkg/skills"
 )
 
 // Server holds the HTTP server and its dependencies.
@@ -55,6 +56,7 @@ type Server struct {
 	cleanupOnce   sync.Once
 	cleanupWG     sync.WaitGroup
 	resumeStates  *resumeStateStore
+	skillBundles  *skills.Store
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry
@@ -233,6 +235,7 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 		activationEnd: activationEnd,
 		progress:      newActivationProgressBroker(),
 		resumeStates:  newResumeStateStore(filepath.Join(dataDir, "resume-states")),
+		skillBundles:  skills.NewStore(filepath.Join(dataDir, "skill-bundles")),
 	}
 	if len(cfgs) > 0 {
 		s.listenerScope = cfgs[0].ListenerScope

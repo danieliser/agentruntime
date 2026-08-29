@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/danieliser/agentruntime/pkg/skills"
 	"github.com/gin-gonic/gin"
 )
 
@@ -129,6 +130,8 @@ func (s *Server) requireAuth() gin.HandlerFunc {
 			limit := int64(maxRequestBodyBytes)
 			if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/api/v1/resume-states" {
 				limit = maxPortableBundleBytes + 1
+			} else if c.Request.Method == http.MethodPut && strings.HasPrefix(c.Request.URL.Path, "/api/v1/skill-bundles/") {
+				limit = int64(skills.MaxArchiveBytes) + 1
 			}
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		}
