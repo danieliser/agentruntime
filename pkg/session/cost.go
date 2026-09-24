@@ -28,7 +28,8 @@ type tokenPricing struct {
 	OutputPerToken float64
 }
 
-// Pricing as of August 2026. Per-token = per-million-token price / 1_000_000.
+// Standard short-context reference pricing as of September 2026. Per-token =
+// per-million-token price / 1_000_000; actual Codex subscription usage differs.
 var modelPricing = map[string]tokenPricing{
 	// Claude 5 family
 	"claude-fable-5":  {InputPerToken: 10.0 / 1e6, OutputPerToken: 50.0 / 1e6},
@@ -43,10 +44,15 @@ var modelPricing = map[string]tokenPricing{
 	// Claude 3.5 (retired; kept for historical sessions)
 	"claude-sonnet-3-5": {InputPerToken: 3.0 / 1e6, OutputPerToken: 15.0 / 1e6},
 	// Codex / OpenAI (rough estimates; codex CLI OAuth usage is subscription-billed)
-	"gpt-5.6-sol": {InputPerToken: 2.50 / 1e6, OutputPerToken: 20.0 / 1e6},
-	"gpt-5.5":     {InputPerToken: 1.25 / 1e6, OutputPerToken: 10.0 / 1e6},
-	"o3":          {InputPerToken: 2.0 / 1e6, OutputPerToken: 8.0 / 1e6},
-	"o4-mini":     {InputPerToken: 1.10 / 1e6, OutputPerToken: 4.40 / 1e6},
+	"gpt-6-astra":   {InputPerToken: 10.0 / 1e6, OutputPerToken: 50.0 / 1e6},
+	"gpt-6-sol":     {InputPerToken: 2.0 / 1e6, OutputPerToken: 10.0 / 1e6},
+	"gpt-6-luna":    {InputPerToken: 0.10 / 1e6, OutputPerToken: 0.50 / 1e6},
+	"gpt-5.6-sol":   {InputPerToken: 4.0 / 1e6, OutputPerToken: 20.0 / 1e6},
+	"gpt-5.6-terra": {InputPerToken: 2.0 / 1e6, OutputPerToken: 12.0 / 1e6},
+	"gpt-5.6-luna":  {InputPerToken: 0.20 / 1e6, OutputPerToken: 1.20 / 1e6},
+	"gpt-5.5":       {InputPerToken: 1.25 / 1e6, OutputPerToken: 10.0 / 1e6},
+	"o3":            {InputPerToken: 2.0 / 1e6, OutputPerToken: 8.0 / 1e6},
+	"o4-mini":       {InputPerToken: 1.10 / 1e6, OutputPerToken: 4.40 / 1e6},
 	// Fallback aliases (current-generation rates)
 	"claude": {InputPerToken: 3.0 / 1e6, OutputPerToken: 15.0 / 1e6}, // default to Sonnet pricing
 	"fable":  {InputPerToken: 10.0 / 1e6, OutputPerToken: 50.0 / 1e6},

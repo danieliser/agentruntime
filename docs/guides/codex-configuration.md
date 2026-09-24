@@ -133,15 +133,27 @@ Agentruntime will automatically use synced credentials if available in the data 
 
 ## Model Override
 
-Override Codex's default model via the `AGENT_CONFIG` environment variable (set by the daemon):
+Set the top-level session `model` to an exact Codex model ID:
 
 ```json
 {
-  "model": "gpt-4o"
+  "agent": "codex",
+  "model": "gpt-6-sol",
+  "effort": "high"
 }
 ```
 
-This adds `--model gpt-4o` to the Codex command line, overriding `config_toml` settings.
+AgentD passes the model and effort through to Codex. The dashboard Console offers
+`gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna`, with Sol selected by default.
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` remain available for manual
+selection. The dashboard offers Fast mode for the GPT-6 models. AgentD does not
+automatically choose a model for API requests.
+
+Fallback cost estimates use OpenAI's September 2026 Standard short-context
+input/output token rates for GPT-6. Provider-reported cost takes precedence;
+Codex subscription usage and long-context or Fast mode charges can differ from
+these estimates. See the [OpenAI model catalog](https://developers.openai.com/api/docs/models)
+and [pricing](https://developers.openai.com/api/docs/pricing).
 
 ## Examples
 

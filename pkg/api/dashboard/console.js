@@ -15,14 +15,17 @@ const consoleState = {
 
 const modelProfiles = {
     codex: {
-        models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'],
+        models: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'],
         effortsByModel: {
+            'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+            'gpt-6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+            'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
             'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
             'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
             'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
             'gpt-5.5': ['low', 'medium', 'high', 'xhigh'],
         },
-        defaultModel: 'gpt-5.6-sol',
+        defaultModel: 'gpt-6-sol',
         defaultEffort: 'high',
     },
     claude: {
@@ -105,7 +108,7 @@ function updateFastControl() {
     const agent = document.getElementById('console-agent').value;
     const model = document.getElementById('console-model').value;
     const fast = document.getElementById('console-fast');
-    const supported = (agent === 'codex' && model === 'gpt-5.5') ||
+    const supported = (agent === 'codex' && ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5'].includes(model)) ||
         (agent === 'claude' && (model === 'claude-opus-5' || model === 'claude-opus-4-8'));
     fast.disabled = !supported;
     if (!supported) fast.checked = false;

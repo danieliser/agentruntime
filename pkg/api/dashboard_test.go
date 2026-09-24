@@ -150,6 +150,25 @@ func TestEmbeddedDashboardProvidesLiveAgentConsole(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDashboardOffersGPT6WithLegacyManualChoices(t *testing.T) {
+	console, err := dashboardFS.ReadFile("dashboard/console.js")
+	if err != nil {
+		t.Fatalf("read embedded dashboard console: %v", err)
+	}
+	for _, required := range [][]byte{
+		[]byte(`models: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5']`),
+		[]byte(`'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']`),
+		[]byte(`'gpt-6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']`),
+		[]byte(`'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max']`),
+		[]byte(`defaultModel: 'gpt-6-sol'`),
+		[]byte(`['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5'].includes(model)`),
+	} {
+		if !bytes.Contains(console, required) {
+			t.Fatalf("dashboard Codex model profile missing %q", required)
+		}
+	}
+}
+
 func TestEmbeddedDashboardReplaysConversationForViewAndContinue(t *testing.T) {
 	console, err := dashboardFS.ReadFile("dashboard/console.js")
 	if err != nil {

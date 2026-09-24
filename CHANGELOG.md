@@ -2,6 +2,15 @@
 
 All notable changes to agentruntime are documented in this file.
 
+## [Unreleased]
+
+- The dashboard Console now offers GPT-6 Astra, Sol, and Luna and defaults new
+  Codex sessions to Sol, with Fast mode available for the new models. GPT-5.6
+  models remain selectable manually.
+- Fallback session cost estimates recognize the GPT-6 family using current
+  Standard short-context reference prices and retain current GPT-5.6 prices for
+  manual sessions; provider-reported costs still win.
+
 ## [2.3.3] — 2026-08-21
 
 - Session **View** now opens in a non-modal right-side drawer. Clicking another

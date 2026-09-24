@@ -34,9 +34,9 @@ type SessionRequest struct {
 	// What to run
 	Agent   string `json:"agent"              yaml:"agent"`
 	Runtime string `json:"runtime,omitempty"  yaml:"runtime,omitempty"` // "local" | "docker" (default: server default)
-	Model   string `json:"model,omitempty"    yaml:"model,omitempty"`   // cross-agent convenience (e.g. "claude-fable-5", "claude-opus-5", "gpt-5.6-sol")
+	Model   string `json:"model,omitempty"    yaml:"model,omitempty"`   // cross-agent convenience (e.g. "claude-fable-5", "claude-opus-5", "gpt-6-sol")
 	Effort  string `json:"effort,omitempty"   yaml:"effort,omitempty"`  // cross-agent effort tier (claude: low..max; codex: low..xhigh/ultra; grok --reasoning-effort)
-	Fast    bool   `json:"fast,omitempty"     yaml:"fast,omitempty"`    // fast mode (claude: Opus 5/4.8 fastMode; codex: priority tier, gpt-5.5 only)
+	Fast    bool   `json:"fast,omitempty"     yaml:"fast,omitempty"`    // fast mode where supported (claude: Opus 5/4.8; codex: priority tier)
 	Prompt  string `json:"prompt"             yaml:"prompt"`
 
 	// Timing
