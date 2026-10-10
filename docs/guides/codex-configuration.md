@@ -155,6 +155,18 @@ Codex subscription usage and long-context or Fast mode charges can differ from
 these estimates. See the [OpenAI model catalog](https://developers.openai.com/api/docs/models)
 and [pricing](https://developers.openai.com/api/docs/pricing).
 
+## Native failures
+
+Native provider errors retain their nested message and `will_retry` flag.
+A `turn/completed` notification with native status `failed` or `interrupted`
+is recorded as `turn.failed`, including its native status, error and turn ID.
+The notification name alone does not establish a successful turn. Successful
+completion remains `turn.completed`.
+
+Model availability depends on the authenticated provider account. An account
+rejecting a model is a failed execution; it does not establish a quota problem
+or authorize a credential change.
+
 ## Examples
 
 ### Minimal Configuration
