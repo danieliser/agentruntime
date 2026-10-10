@@ -4,6 +4,11 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Restricted Codex Docker workers use a pinned default-deny seccomp profile
+  for nested bubblewrap namespaces, without privileged containers or added
+  capabilities. Caller security overrides remain rejected; other worker
+  policies are unchanged.
+
 - Restricted Codex coding workers retain local file and command tools inside
   their container workspace. Workspace-write sandboxing and approval policy
   stay enforced; separate web-only workers still have no local environment.

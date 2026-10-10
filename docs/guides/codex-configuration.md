@@ -316,3 +316,21 @@ thread and subsequent turn settings retain those restrictions.
 The separate web-only execution policy still disables local environment
 access and its disallowed tools. Environment selection is derived by the
 host, not exposed as a caller permission override.
+
+## Docker sandbox compatibility
+
+Restricted Codex coding containers use an embedded, hash-verified seccomp
+profile pinned from OpenAI Codex Security. It permits bubblewrap nested
+user/mount namespaces while retaining a default-deny syscall policy. The
+worker drops all outer capabilities and keeps no-new-privileges, project-only
+host mounts, its existing network configuration, and workspace-write/on-request
+(or explicitly admitted never) provider policy. No SYS_ADMIN or privileged
+container is enabled.
+
+The profile is selected by the host, not caller configuration. Caller
+container security overrides are rejected. Private temporary profile files
+are removed with run resources; no profile is downloaded at boot. Web-only,
+Claude and explicitly unrestricted workers retain their existing policy.
+Codex may use its supported proc-mount fallback while retaining PID isolation
+and inherited container proc masks. This does not approve execution outside
+the provider sandbox.

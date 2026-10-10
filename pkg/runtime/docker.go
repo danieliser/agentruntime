@@ -693,12 +693,19 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		}
 	}
 
+	seccompPath, seccompCleanup, err := prepareCodexSeccomp(req)
+	if err != nil {
+		return nil, err
+	}
+	cleanups = append(cleanups, seccompCleanup)
+
 	mounts := requestMounts(cfg)
 
 	// Validate all host mount paths (skip volume mounts)
 	for _, mount := range mounts {
 		if mount.Host != "" && mount.Type != "volume" {
 			if err := validateMountPath(mount.Host); err != nil {
+				cleanup()
 				return nil, err
 			}
 		}
@@ -708,6 +715,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 	if req != nil && (req.Agent == "claude" || req.Agent == "codex" || req.Claude != nil || req.Codex != nil) {
 		result, err := r.materializer.Materialize(req, cfg.SessionID)
 		if err != nil {
+			cleanup()
 			return nil, err
 		}
 		if cfg.SessionDir != nil {
@@ -846,6 +854,9 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		"--workdir", "/workspace",
 		"--env-file", envFile,
 	}
+	if seccompPath != "" {
+		args = append(args, "--security-opt", "seccomp="+seccompPath)
+	}
 	if restricted {
 		memory, cpus, pids, openFiles := "2g", "2", int64(256), int64(1024)
 		if limits := req.ExecutionPolicy.Resources; limits != nil {
@@ -865,7 +876,7 @@ func (r *DockerRuntime) prepareRun(cfg SpawnConfig) (*dockerRunSpec, error) {
 		if req.ExecutionPolicy.Filesystem == "workspace_write" {
 			args = append(args, "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m")
 		}
-	} else {
+	} else if seccompPath == "" {
 		args = append(args, "--cap-add", "DAC_OVERRIDE")
 	}
 	args = append(args,
