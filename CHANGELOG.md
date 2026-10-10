@@ -4,6 +4,10 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Claude native stream sessions now deliver permission prompts to the host
+  approval console instead of silently denying explicit ask rules. Stored deny
+  rules and restricted execution policy remain unchanged.
+
 - Codex MCP tool-consent requests can receive an explicit human approval when
   their form has no input fields. Data and URL elicitation still cannot be
   accepted through the simple approval API; no consent is granted automatically.

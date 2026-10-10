@@ -2,6 +2,13 @@
 
 This guide documents the Claude Code agent configuration for agentruntime. When you spawn a Claude Code session, agentruntime materializes configuration files into the agent's home directory, manages credentials, and passes CLI flags to control behavior.
 
+Native stream sessions route Claude permission prompts to the host approval
+console through the bidirectional protocol. Explicit `ask` rules still require
+a human decision even in `bypassPermissions` mode; `deny` rules remain blocked,
+and `dontAsk` still denies calls that would prompt. Enabling this route does not
+approve tools automatically or change stored permission settings. One-shot and
+interactive commands without the native approval transport do not advertise it.
+
 ## Configuration Fields
 
 ### `settings_json`
