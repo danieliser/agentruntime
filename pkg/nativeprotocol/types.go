@@ -52,10 +52,13 @@ type Input struct {
 // InputPolicy carries the already-admitted provider enforcement settings.
 // It contains no product authority and cannot be widened by provider output.
 type InputPolicy struct {
-	Enforced       bool
-	ApprovalPolicy string
-	Filesystem     string
-	NetworkAccess  bool
+	// AllowLocalEnvironment is derived by the host only for coding workers.
+	// Web-only enforcement retains an empty environment selection.
+	AllowLocalEnvironment bool
+	Enforced              bool
+	ApprovalPolicy        string
+	Filesystem            string
+	NetworkAccess         bool
 }
 
 // DerivedEvent is the query-friendly view of one exact native record.

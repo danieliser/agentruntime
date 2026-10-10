@@ -286,6 +286,9 @@ func TestCodexTransportKeepsAdmittedPolicyAcrossFollowUpTurns(t *testing.T) {
 	_ = process.readInput(t)
 	thread := decodeInputObject(t, process.readInput(t))
 	threadParams := thread["params"].(map[string]any)
+	if environments, exists := threadParams["environments"]; !exists || len(environments.([]any)) != 0 {
+		t.Fatalf("web-only policy enabled local environment: %+v", threadParams)
+	}
 	if threadParams["sandbox"] != "read-only" || threadParams["approvalPolicy"] != "never" {
 		t.Fatalf("restricted thread params = %+v", threadParams)
 	}

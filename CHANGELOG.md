@@ -4,6 +4,10 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Restricted Codex coding workers retain local file and command tools inside
+  their container workspace. Workspace-write sandboxing and approval policy
+  stay enforced; separate web-only workers still have no local environment.
+
 - Codex and combined Docker images now pin CLI 0.162.0 to match the qualified
   host version. Authentication and worker permissions are unchanged; existing
   containers retain their original CLI until replaced.

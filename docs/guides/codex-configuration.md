@@ -306,3 +306,13 @@ A model accepted locally is therefore not proof that an older Docker CLI
 supports it. Rebuild and qualify matching release images before enabling
 them. This pin does not change authentication, permissions, model selection,
 or account entitlement.
+
+## Restricted coding tools
+
+Restricted coding workers keep the container local execution environment,
+with workspace-write sandboxing and their exact approval policy. Native
+thread and subsequent turn settings retain those restrictions.
+
+The separate web-only execution policy still disables local environment
+access and its disallowed tools. Environment selection is derived by the
+host, not exposed as a caller permission override.

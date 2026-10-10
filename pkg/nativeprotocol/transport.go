@@ -189,7 +189,9 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 		params["sandbox"] = sandbox
 		params["cwd"] = "/workspace"
 		params["dynamicTools"] = []any{}
-		params["environments"] = []any{}
+		if !request.Policy.AllowLocalEnvironment {
+			params["environments"] = []any{}
+		}
 	}
 	if request.ProviderID != "" {
 		method = "thread/resume"
