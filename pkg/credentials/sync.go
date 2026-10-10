@@ -49,12 +49,12 @@ func newSyncWithExtractor(dataDir string, ext tokenExtractor) *Sync {
 }
 
 const (
-	credentialsSubdir      = "credentials"
-	throttleInterval       = 30 * time.Second
-	claudeService          = "Claude Code-credentials"
-	claudeCacheFile        = "claude-credentials.json"
-	codexRefreshThrottle   = 12 * time.Hour
-	codexCacheFile         = "codex-auth.json"
+	credentialsSubdir    = "credentials"
+	throttleInterval     = 30 * time.Second
+	claudeService        = "Claude Code-credentials"
+	claudeCacheFile      = "claude-credentials.json"
+	codexRefreshThrottle = 12 * time.Hour
+	codexCacheFile       = "codex-auth.json"
 )
 
 // ClaudeCredentialsFile returns the path to a cached Claude OAuth credentials
@@ -72,6 +72,9 @@ func (s *Sync) ClaudeCredentialsFile() (string, error) {
 	// Check cache freshness.
 	if info, err := os.Stat(cachePath); err == nil {
 		if time.Since(info.ModTime()) < throttleInterval {
+			if err := ValidateClaudeCredentialsFile(cachePath); err != nil {
+				return "", err
+			}
 			return cachePath, nil
 		}
 	}
@@ -81,8 +84,15 @@ func (s *Sync) ClaudeCredentialsFile() (string, error) {
 	if err != nil {
 		// If extraction fails but cache exists, return stale cache.
 		if _, statErr := os.Stat(cachePath); statErr == nil {
+			if err := ValidateClaudeCredentialsFile(cachePath); err != nil {
+				return "", err
+			}
 			return cachePath, nil
 		}
+		return "", ErrClaudeAuthUnavailable
+	}
+
+	if err := ValidateClaudeCredentials([]byte(raw)); err != nil {
 		return "", err
 	}
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/credentials"
 	"github.com/danieliser/agentruntime/pkg/session/agentsessions"
 	"github.com/danieliser/agentruntime/pkg/skills"
 	"github.com/pelletier/go-toml/v2"
@@ -430,6 +431,11 @@ func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.Session
 		}
 	}
 
+	if credentialsPath != "" {
+		if err := credentials.ValidateClaudeCredentialsFile(credentialsPath); err != nil {
+			return "", err
+		}
+	}
 	return agentsessions.InitClaudeSessionDir(dataDir, sessionID, claudeProjectPath(), credentialsPath)
 }
 

@@ -4,6 +4,10 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Claude one-shot sessions stop and report failure after a failed provider turn,
+  even when the provider exits zero. Invalid cached OAuth credentials are rejected
+  before worker launch, and logical session IDs map to valid Claude UUIDs.
+
 - The dashboard Console now offers GPT-6 Astra, Sol, and Luna and defaults new
   Codex sessions to Sol, with Fast mode available for the new models. GPT-5.6
   models remain selectable manually.

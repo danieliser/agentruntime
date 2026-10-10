@@ -112,6 +112,7 @@ func AttachNativeSessionIO(
 	var ingestErr error
 	var structuredErr error
 	turnCompleted := false
+	turnFailed := false
 	var drains sync.WaitGroup
 	drainRecords := func(records <-chan nativeprotocol.Record) {
 		defer drains.Done()
@@ -133,8 +134,9 @@ func AttachNativeSessionIO(
 					}
 					if record.Stream == nativeprotocol.StreamProviderStdout {
 						parseAndTrackEvent(sess, record.Raw)
-						if event.Type == "turn.completed" {
-							turnCompleted = true
+						if event.Type == "turn.completed" || event.Type == "turn.failed" {
+							turnCompleted = event.Type == "turn.completed"
+							turnFailed = event.Type == "turn.failed"
 							if onTurnCompleted != nil {
 								onTurnCompleted()
 							}
@@ -172,6 +174,14 @@ func AttachNativeSessionIO(
 		}
 		artifactHash := ""
 		failureReason := reason
+		// A native failed result is a finished turn even when the provider
+		// remains alive for input or exits zero. Preserve operator/deadline reasons.
+		if turnFailed && reason == "" {
+			nativeExit.Code = 1
+			reason = "failed"
+			failureReason = "failed"
+			nativeExit.ErrorDetail = "provider reported a failed turn"
+		}
 		if collector != nil && streamErr == nil && nativeExit.Code == 0 && reason == "" {
 			result, err := collector.Finalize()
 			if err != nil {
