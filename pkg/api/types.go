@@ -12,6 +12,7 @@ type HealthResponse = apischema.HealthResponse
 type Resources = apischema.Resources
 type TeamConfig = apischema.TeamConfig
 type TraceConfig = apischema.TraceConfig
+type ProviderPermissions = apischema.ProviderPermissions
 type ExecutionPolicy = apischema.ExecutionPolicy
 type ResourceLimits = apischema.ResourceLimits
 type LifecycleConfig = apischema.LifecycleConfig

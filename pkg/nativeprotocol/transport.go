@@ -33,6 +33,7 @@ type StreamTransport struct {
 	inputPolicy  InputPolicy
 	outputSchema json.RawMessage
 	pending      map[string]chan codexRPCResponse
+	approvals    map[string]PendingApproval
 
 	writeMu   sync.Mutex
 	closeOnce sync.Once
@@ -315,6 +316,7 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 		ordinal++
 		raw := append([]byte(nil), scanner.Bytes()...)
 		if stream == StreamProviderStdout {
+			transport.observeApproval(raw)
 			if transport.adapter.Provider() == ProviderCodex {
 				transport.deliverCodexResponse(raw)
 			}

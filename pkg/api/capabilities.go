@@ -113,6 +113,7 @@ type v1Capabilities struct {
 	CommitHash              string                         `json:"commit_hash"`
 	APIVersions             []string                       `json:"api_versions"`
 	EventSchemaVersions     []string                       `json:"event_schema_versions"`
+	ProviderPermissions     []string                       `json:"provider_permissions"`
 	ExecutionPolicyVersions []string                       `json:"execution_policy_versions"`
 	NativeProviders         []string                       `json:"native_providers"`
 	Runtimes                []string                       `json:"runtimes"`
@@ -181,8 +182,9 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, CommitHash: s.commitHash, APIVersions: []string{"v1"},
+		ProviderPermissions: []string{"restricted_docker", "unrestricted"},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{LegacyExecutionPolicyVersion, ExecutionPolicyVersion}, NativeProviders: providers,
-		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "interrupt", "cancel", "terminate", "resume", "receipt", "maintain", "resume_state_export", "resume_state_import"},
+		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "approval", "interrupt", "cancel", "terminate", "resume", "receipt", "maintain", "resume_state_export", "resume_state_import"},
 		Runtimes:          runtimes, Replay: replayCapabilities{
 			SequenceCursor: durableReplay, StoredThenLive: durableReplay, RestartPersistence: durableReplay,
 		},

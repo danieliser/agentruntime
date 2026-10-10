@@ -265,6 +265,9 @@ func (s *Server) validateTraceAdmission(ctx context.Context, request SessionRequ
 
 func durableRequestManifest(request SessionRequest, runtimeName string) (json.RawMessage, []string, string, error) {
 	const op = "build_durable_request_manifest"
+	if err := validateProviderPermissions(&request, runtimeName); err != nil {
+		return nil, nil, "", err
+	}
 	resolvedPolicy, err := resolveExecutionPolicy(&request, runtimeName)
 	if err != nil {
 		return nil, nil, "", err

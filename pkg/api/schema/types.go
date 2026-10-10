@@ -62,6 +62,8 @@ type SessionRequest struct {
 	// ExecutionPolicy is an explicit, versioned least-privilege contract. When
 	// present, AgentD rejects any field it cannot enforce rather than widening
 	// the request. Omitted policy retains the documented legacy profile.
+	ProviderPermissions *ProviderPermissions `json:"provider_permissions,omitempty" yaml:"provider_permissions,omitempty"`
+
 	ExecutionPolicy *ExecutionPolicy `json:"execution_policy,omitempty" yaml:"execution_policy,omitempty"`
 
 	// StructuredOutput requires the final assistant bytes to satisfy a caller
@@ -458,4 +460,12 @@ type ChatMessagesResponse struct {
 // UpdateChatConfigRequest is the body for PATCH /chats/:name/config.
 type UpdateChatConfigRequest struct {
 	Config ChatAPIConfig `json:"config"`
+}
+
+// ProviderPermissions selects provider CLI controls for ordinary coding workers.
+// Unlike ExecutionPolicy, this is not the managed public-research OS boundary.
+// Restricted coding is supported only inside a Docker workspace bind mount.
+type ProviderPermissions struct {
+	Mode           string `json:"mode" yaml:"mode"`
+	ApprovalPolicy string `json:"approval_policy" yaml:"approval_policy"`
 }

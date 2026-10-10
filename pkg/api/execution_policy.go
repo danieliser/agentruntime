@@ -229,6 +229,9 @@ func manifestPolicyHash(manifest json.RawMessage) string {
 
 func nativePolicy(request SessionRequest) nativeprotocol.InputPolicy {
 	if request.ExecutionPolicy == nil {
+		if request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
+			return nativeprotocol.InputPolicy{Enforced: true, Filesystem: "workspace_write", NetworkAccess: true, ApprovalPolicy: request.ProviderPermissions.ApprovalPolicy}
+		}
 		return nativeprotocol.InputPolicy{}
 	}
 	return nativeprotocol.InputPolicy{

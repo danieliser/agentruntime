@@ -35,6 +35,12 @@ func resolveNativeExecution(
 		config.MaxTokens = request.Claude.MaxTurns
 		config.AllowedTools = append([]string(nil), request.Claude.AllowedTools...)
 	}
+	if request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
+		config.PermissionMode = "default"
+		if request.ProviderPermissions.ApprovalPolicy == "never" {
+			config.PermissionMode = "dontAsk"
+		}
+	}
 	if request.ExecutionPolicy != nil {
 		config.EnforcePolicy = true
 		config.PermissionMode = "dontAsk"
@@ -57,6 +63,13 @@ func resolveNativeExecution(
 		}
 		if config.Fast {
 			command = append(command, "-c", `service_tier="priority"`)
+		}
+		if request.ProviderPermissions != nil {
+			sandbox := "danger-full-access"
+			if request.ProviderPermissions.Mode == "restricted" {
+				sandbox = "workspace-write"
+			}
+			command = append(command, "-c", "approval_policy="+strconv.Quote(request.ProviderPermissions.ApprovalPolicy), "-c", "sandbox_mode="+strconv.Quote(sandbox))
 		}
 		if request.ExecutionPolicy != nil {
 			filesystemMode := "read-only"

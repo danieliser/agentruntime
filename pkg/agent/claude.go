@@ -30,6 +30,8 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 			"--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`,
 			"--disable-slash-commands", "--safe-mode",
 		)
+	} else if cfg.PermissionMode != "" {
+		cmd = append(cmd, "--permission-mode", cfg.PermissionMode)
 	} else {
 		cmd = append(cmd, "--dangerously-skip-permissions")
 	}
