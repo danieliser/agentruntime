@@ -101,15 +101,25 @@ func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 	}
 	payload["native_method"] = envelope.Method
 	var params struct {
-		ThreadID string          `json:"threadId"`
-		TurnID   string          `json:"turnId"`
-		Delta    string          `json:"delta"`
-		Message  string          `json:"message"`
-		Item     json.RawMessage `json:"item"`
-		Usage    json.RawMessage `json:"usage"`
+		ThreadID  string          `json:"threadId"`
+		TurnID    string          `json:"turnId"`
+		Delta     string          `json:"delta"`
+		Message   string          `json:"message"`
+		Item      json.RawMessage `json:"item"`
+		Usage     json.RawMessage `json:"usage"`
+		Error     json.RawMessage `json:"error"`
+		WillRetry *bool           `json:"willRetry"`
+		Turn      struct {
+			ID     string          `json:"id"`
+			Status string          `json:"status"`
+			Error  json.RawMessage `json:"error"`
+		} `json:"turn"`
 	}
 	_ = json.Unmarshal(envelope.Params, &params)
 	derived.ProviderID, derived.TurnID = params.ThreadID, params.TurnID
+	if derived.TurnID == "" {
+		derived.TurnID = params.Turn.ID
+	}
 	switch envelope.Method {
 	case "thread/started":
 		derived.Type = "lifecycle.provider.session"
@@ -129,11 +139,39 @@ func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 		payload["request_id"] = envelope.ID
 	case "error":
 		derived.Type = "error.provider"
-		payload["message"] = params.Message
+		payload["message"] = codexErrorMessage(params.Error, params.Message)
+		if len(params.Error) > 0 && string(params.Error) != "null" {
+			payload["error"] = params.Error
+		}
+		if params.WillRetry != nil {
+			payload["will_retry"] = *params.WillRetry
+		}
 	case "turn/completed":
 		derived.Type = "turn.completed"
+		if params.Turn.Status != "" {
+			payload["status"] = params.Turn.Status
+		}
+		if params.Turn.Status == "failed" || params.Turn.Status == "interrupted" {
+			derived.Type = "turn.failed"
+		}
+		if len(params.Turn.Error) > 0 && string(params.Turn.Error) != "null" {
+			payload["error"] = params.Turn.Error
+			payload["message"] = codexErrorMessage(params.Turn.Error, "")
+		}
 		payload["usage"] = params.Usage
 	}
 	derived.Payload = mustPayload(payload)
 	return derived, nil
+}
+
+// Codex app-server errors carry the diagnostic under error.message; older
+// notifications placed it directly on params. Keep both wire forms readable.
+func codexErrorMessage(raw json.RawMessage, fallback string) string {
+	var detail struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &detail) == nil && detail.Message != "" {
+		return detail.Message
+	}
+	return fallback
 }
