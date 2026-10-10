@@ -296,3 +296,13 @@ These are merged into the Codex process environment, layered on top of agentrunt
 | `approval_mode` | Control tool approval prompts (`full-auto`, `auto-edit`, `suggest`). |
 
 Agentruntime materializes these into `~/.codex/` and injects workspace trust defaults. Authentication is discovered automatically from credential sync cache or host defaults. For complex configurations, manage settings in the host's `~/.codex/config.toml` and rely on the daemon's credential sync to pass authentication securely.
+
+## Container CLI version
+
+The Codex and combined agent images pin Codex CLI `0.162.0`, matching the
+macOS CLI used for the current model qualification. Local execution uses the
+installed host binary; its version can differ from an older container image.
+A model accepted locally is therefore not proof that an older Docker CLI
+supports it. Rebuild and qualify matching release images before enabling
+them. This pin does not change authentication, permissions, model selection,
+or account entitlement.

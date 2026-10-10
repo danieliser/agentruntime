@@ -4,6 +4,10 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Codex and combined Docker images now pin CLI 0.162.0 to match the qualified
+  host version. Authentication and worker permissions are unchanged; existing
+  containers retain their original CLI until replaced.
+
 - Codex native errors retain nested messages and retry state. Failed or interrupted
   turns no longer become successful completion receipts.
 
