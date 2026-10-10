@@ -442,6 +442,23 @@ func derive(record nativeprotocol.Record) (string, json.RawMessage, durable.Stre
 		if err != nil {
 			return "", nil, "", "", durable.NewError(durable.CodeIndeterminate, "derive_native_record", "decode provider record", err)
 		}
+		if record.SupersededBySteer && record.Provider == nativeprotocol.ProviderClaude && nativeprotocol.ClaudeSteerBoundary(record.Raw) {
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(derived.Payload, &payload); err != nil {
+				return "", nil, "", "", err
+			}
+			payload["superseded_by_steer"] = json.RawMessage("true")
+			previous, err := json.Marshal(derived.Type)
+			if err != nil {
+				return "", nil, "", "", err
+			}
+			payload["superseded_event_type"] = previous
+			derived.Payload, err = json.Marshal(payload)
+			if err != nil {
+				return "", nil, "", "", err
+			}
+			derived.Type = "turn.superseded"
+		}
 		return derived.Type, derived.Payload, durable.StreamProviderStdout, derived.ProviderID, nil
 	case nativeprotocol.StreamRuntimeStderr:
 		payload, err := json.Marshal(map[string]string{"text": string(record.Raw)})

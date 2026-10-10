@@ -7,6 +7,10 @@ All notable changes to agentruntime are documented in this file.
 - Codex native errors retain nested messages and retry state. Failed or interrupted
   turns no longer become successful completion receipts.
 
+- Claude native steering keeps the worker alive for its queued replacement
+  instead of treating the interrupted turn as a terminal failure. Cancellation,
+  deadlines and genuine provider failures keep their existing behavior.
+
 - Claude native stream sessions now deliver permission prompts to the host
   approval console instead of silently denying explicit ask rules. Stored deny
   rules and restricted execution policy remain unchanged.

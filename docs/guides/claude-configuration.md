@@ -402,3 +402,17 @@ Host environment variables do not leak into the container. Only the variables li
 - Expand `memory_path` manually (`~/` becomes the host home, `$VAR` is resolved).
 - Ensure the directory exists on the host.
 - Check session directory mount permissions (read-write) and memory mount (read-only).
+
+## Steering an active native session
+
+A steer writes the interrupt and replacement prompt together. After that local
+write succeeds, the interrupted turn's `aborted_streaming` result is recorded as
+`turn.superseded`; its exact native JSON remains available. A completion that
+races the steer uses the same superseded boundary. Neither ends a noninteractive
+session before the queued replacement completes. Steering an idle provider does
+not skip the replacement's own completion.
+
+A plain interrupt, failed replacement write, authentication/API error, explicit
+cancel, or deadline does not receive this exemption. A failure in the replacement
+turn still ends the session as failed. Durable event replay preserves the same
+superseded identity rather than adding another completion.

@@ -73,6 +73,8 @@ type Record struct {
 	Ordinal   int64
 	Timestamp time.Time
 	Raw       []byte
+	// Set only by transport after a complete local steer write; never from provider JSON.
+	SupersededBySteer bool
 }
 
 // Exit is the process-level terminal result.

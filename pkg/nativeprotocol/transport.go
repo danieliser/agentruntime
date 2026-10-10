@@ -23,17 +23,20 @@ type StreamTransport struct {
 	process  ProcessIO
 	recovery RecoveryMetadata
 
-	mu           sync.RWMutex
-	started      bool
-	closed       bool
-	providerID   string
-	turnID       string
-	nextRPCID    int64
-	readErr      error
-	inputPolicy  InputPolicy
-	outputSchema json.RawMessage
-	pending      map[string]chan codexRPCResponse
-	approvals    map[string]PendingApproval
+	mu                     sync.RWMutex
+	started                bool
+	closed                 bool
+	providerID             string
+	turnID                 string
+	nextRPCID              int64
+	steerWriteDone         chan struct{}
+	pendingSteerBoundaries int
+	claudeTurnActive       bool
+	readErr                error
+	inputPolicy            InputPolicy
+	outputSchema           json.RawMessage
+	pending                map[string]chan codexRPCResponse
+	approvals              map[string]PendingApproval
 
 	writeMu   sync.Mutex
 	closeOnce sync.Once
@@ -118,7 +121,7 @@ func (transport *StreamTransport) Send(ctx context.Context, input Input) error {
 	if err != nil {
 		return err
 	}
-	return transport.writeMessages(ctx, op, messages)
+	return transport.writeSteerMessages(ctx, op, messages, input.Kind)
 }
 
 // Bootstrap initializes Codex app-server and opens or resumes its thread.
@@ -256,8 +259,10 @@ func (transport *StreamTransport) removePending(key string) {
 }
 
 func (transport *StreamTransport) writeMessages(ctx context.Context, op string, messages [][]byte) error {
-	transport.writeMu.Lock()
-	defer transport.writeMu.Unlock()
+	return transport.writeSteerMessages(ctx, op, messages, "")
+}
+
+func (transport *StreamTransport) writeMessagesLocked(ctx context.Context, op string, messages [][]byte) error {
 	for _, message := range messages {
 		select {
 		case <-ctx.Done():
@@ -315,6 +320,7 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 	for scanner.Scan() {
 		ordinal++
 		raw := append([]byte(nil), scanner.Bytes()...)
+		superseded := false
 		if stream == StreamProviderStdout {
 			transport.observeApproval(raw)
 			if transport.adapter.Provider() == ProviderCodex {
@@ -322,6 +328,7 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 			}
 			derived, err := transport.adapter.Decode(raw)
 			if err == nil {
+				superseded = transport.supersededBySteer(raw, derived.Type)
 				transport.mu.Lock()
 				if derived.ProviderID != "" {
 					transport.providerID = derived.ProviderID
@@ -334,7 +341,7 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 		}
 		target <- Record{
 			Provider: transport.adapter.Provider(), Stream: stream, Ordinal: ordinal,
-			Timestamp: time.Now().UTC().Round(0), Raw: raw,
+			Timestamp: time.Now().UTC().Round(0), Raw: raw, SupersededBySteer: superseded,
 		}
 	}
 	if err := scanner.Err(); err != nil {

@@ -133,7 +133,11 @@ func AttachNativeSessionIO(
 						log.Printf("[session %s] diagnostic output write failed: %v", sess.ID, err)
 					}
 					if record.Stream == nativeprotocol.StreamProviderStdout {
-						parseAndTrackEvent(sess, record.Raw)
+						if event.Type == "turn.superseded" {
+							sess.RecordActivity()
+						} else {
+							parseAndTrackEvent(sess, record.Raw)
+						}
 						if event.Type == "turn.completed" || event.Type == "turn.failed" {
 							turnCompleted = event.Type == "turn.completed"
 							turnFailed = event.Type == "turn.failed"
