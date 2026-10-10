@@ -59,7 +59,7 @@ func TestClaudeBuildCmd_NativeStreamUsesBidirectionalJSON(t *testing.T) {
 	for _, sequence := range [][2]string{
 		{"--input-format", "stream-json"},
 		{"--output-format", "stream-json"},
-		{"--session-id", "logical-session"},
+		{"--session-id", "ee9ca73c-a7d8-5bd9-9801-55a5c27336fe"},
 	} {
 		if !containsSequence(cmd, sequence[0], sequence[1]) {
 			t.Fatalf("expected %v in native command, got %v", sequence, cmd)

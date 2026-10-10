@@ -64,7 +64,7 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	if resumeSessionID != "" {
 		cmd = append(cmd, "--resume", resumeSessionID)
 	} else if cfg.NativeStream && cfg.SessionID != "" {
-		cmd = append(cmd, "--session-id", cfg.SessionID)
+		cmd = append(cmd, "--session-id", claudeProviderSessionID(cfg.SessionID))
 	}
 	if !cfg.EnforcePolicy {
 		for _, tool := range cfg.AllowedTools {
