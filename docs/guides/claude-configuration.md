@@ -102,6 +102,11 @@ Supports `~` and environment variable expansion (e.g., `$HOME`, `$CLAUDE_HOME`).
 1. **Credential sync cache** (populated by daemon `--credential-sync` flag):
    `{daemon-data-dir}/credentials/claude-credentials.json`
 
+   On macOS, sync reads the exact Claude Code keychain account selected by
+   `USER`, falling back to the current system username. It never searches other
+   accounts under the same service. Keychain reads time out after 15 seconds;
+   a still-valid cache remains usable when extraction fails.
+
 2. **Host `~/.claude/.credentials.json`**
 
 3. **Host `~/.claude/credentials.json`**

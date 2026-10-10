@@ -4,6 +4,10 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- macOS Claude credential sync selects the signed-in user's exact keychain
+  account, avoiding obsolete entries under the same service. Unanswered
+  keychain reads time out after 15 seconds instead of stalling indefinitely.
+
 - Claude one-shot sessions stop and report failure after a failed provider turn,
   even when the provider exits zero. Invalid cached OAuth credentials are rejected
   before worker launch, and logical session IDs map to valid Claude UUIDs.
