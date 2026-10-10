@@ -82,3 +82,62 @@ func TestNonApprovalAndInvalidIDsIgnored(t *testing.T) {
 		t.Fatal("invalid requests admitted")
 	}
 }
+
+func TestCodexEmptyMCPToolConsentUsesAcceptContent(t *testing.T) {
+	tr, w := approvalTransport(t, ProviderCodex)
+	tr.observeApproval([]byte(`{"id":"memory-consent","method":"mcpServer/elicitation/request","params":{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":{},"required":[]}}}`))
+	pending := tr.PendingApprovals()
+	if len(pending) != 1 || !pending[0].CanAccept {
+		t.Fatal("empty MCP tool consent cannot be accepted")
+	}
+	if w.Len() != 0 {
+		t.Fatal("tool consent was approved without a human decision")
+	}
+	if err := tr.DecideApproval(context.Background(), json.RawMessage(`"memory-consent"`), "accept"); err != nil {
+		t.Fatal(err)
+	}
+	if w.String() != "{\"id\":\"memory-consent\",\"result\":{\"action\":\"accept\",\"content\":{}}}\n" {
+		t.Fatal(w.String())
+	}
+	if err := tr.DecideApproval(context.Background(), json.RawMessage(`"memory-consent"`), "accept"); err == nil {
+		t.Fatal("consent replay accepted")
+	}
+}
+
+func TestCodexMCPDataAndURLFormsRemainUnsupported(t *testing.T) {
+	for _, params := range []string{
+		`{"mode":"url","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":{}}}`,
+		`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":{"secret":{"type":"string"}}}}`,
+		`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":{},"required":["secret"]}}`,
+		`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":{},"required":null}}`,
+		`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":[]}}`,
+		`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":null}}`,
+		`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object"}}`,
+		`{"mode":"form","requestedSchema":{"type":"object","properties":{}}}`,
+	} {
+		tr, w := approvalTransport(t, ProviderCodex)
+		tr.observeApproval([]byte(`{"id":8,"method":"mcpServer/elicitation/request","params":` + params + `}`))
+		pending := tr.PendingApprovals()
+		if len(pending) != 1 || pending[0].CanAccept {
+			t.Fatalf("data/URL form accepted: %s", params)
+		}
+		if err := tr.DecideApproval(context.Background(), json.RawMessage(`8`), "accept"); err == nil {
+			t.Fatalf("data/URL form decision accepted: %s", params)
+		}
+		if w.Len() != 0 {
+			t.Fatal("unsupported accept wrote provider input")
+		}
+		if err := tr.DecideApproval(context.Background(), json.RawMessage(`8`), "decline"); err != nil {
+			t.Fatal(err)
+		}
+		if w.String() != "{\"id\":8,\"result\":{\"action\":\"decline\"}}\n" {
+			t.Fatal(w.String())
+		}
+	}
+}
+
+func TestCodexEmptyToolConsentAllowsAbsentRequired(t *testing.T) {
+	if !isEmptyCodexToolConsent(json.RawMessage(`{"mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call"},"requestedSchema":{"type":"object","properties":{}}}`)) {
+		t.Fatal("pinned empty form without required was rejected")
+	}
+}

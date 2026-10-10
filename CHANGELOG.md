@@ -4,6 +4,10 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Codex MCP tool-consent requests can receive an explicit human approval when
+  their form has no input fields. Data and URL elicitation still cannot be
+  accepted through the simple approval API; no consent is granted automatically.
+
 - macOS Claude credential sync selects the signed-in user's exact keychain
   account, avoiding obsolete entries under the same service. Unanswered
   keychain reads time out after 15 seconds instead of stalling indefinitely.

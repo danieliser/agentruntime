@@ -64,7 +64,8 @@ func (tr *StreamTransport) observeApproval(raw []byte) {
 		if env.Method != "item/commandExecution/requestApproval" && env.Method != "item/fileChange/requestApproval" && env.Method != "mcpServer/elicitation/request" && env.Method != "item/permissions/requestApproval" {
 			return
 		}
-		p.CanAccept = env.Method == "item/commandExecution/requestApproval" || env.Method == "item/fileChange/requestApproval"
+		p.CanAccept = env.Method == "item/commandExecution/requestApproval" || env.Method == "item/fileChange/requestApproval" ||
+			(env.Method == "mcpServer/elicitation/request" && isEmptyCodexToolConsent(env.Params))
 	}
 	key := approvalKey(p.RequestID)
 	if key == "" {
@@ -130,7 +131,11 @@ func (tr *StreamTransport) DecideApproval(ctx context.Context, id json.RawMessag
 		}
 		message = map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": p.RequestID, "response": body}}
 	} else if p.Method == "mcpServer/elicitation/request" {
-		message = map[string]any{"id": p.RequestID, "result": map[string]any{"action": decision}}
+		result := map[string]any{"action": decision}
+		if decision == "accept" {
+			result["content"] = map[string]any{}
+		}
+		message = map[string]any{"id": p.RequestID, "result": result}
 	} else if p.Method == "item/permissions/requestApproval" {
 		message = map[string]any{"id": p.RequestID, "result": map[string]any{"permissions": map[string]any{}, "scope": "turn"}}
 	} else {
@@ -144,4 +149,34 @@ func (tr *StreamTransport) DecideApproval(ctx context.Context, id json.RawMessag
 		return err
 	}
 	return tr.writeMessages(ctx, op, [][]byte{raw})
+}
+
+// Codex's pinned tool-consent request is an empty form, not a data or auth
+// elicitation. Metadata alone cannot grant permission to accept arbitrary input.
+func isEmptyCodexToolConsent(raw json.RawMessage) bool {
+	var params struct {
+		Mode string `json:"mode"`
+		Meta struct {
+			Kind string `json:"codex_approval_kind"`
+		} `json:"_meta"`
+		Schema struct {
+			Type       string          `json:"type"`
+			Properties json.RawMessage `json:"properties"`
+			Required   json.RawMessage `json:"required"`
+		} `json:"requestedSchema"`
+	}
+	if json.Unmarshal(raw, &params) != nil || params.Mode != "form" || params.Meta.Kind != "mcp_tool_call" || params.Schema.Type != "object" {
+		return false
+	}
+	var properties map[string]json.RawMessage
+	if json.Unmarshal(params.Schema.Properties, &properties) != nil || properties == nil || len(properties) != 0 {
+		return false
+	}
+	if len(params.Schema.Required) != 0 {
+		var required []json.RawMessage
+		if json.Unmarshal(params.Schema.Required, &required) != nil || required == nil || len(required) != 0 {
+			return false
+		}
+	}
+	return true
 }

@@ -55,3 +55,16 @@ The authenticated `/api/v1/capabilities` response is the source of truth for
 supported policy versions, defaults, minimums, maximums, and the stable breach
 code. Its egress section also advertises the diagnostic policy field, default,
 and retained record fields.
+
+## Native tool consent
+
+Pending provider requests are available through authenticated
+`GET /api/v1/sessions/:id/approvals`. An explicit decision is submitted through
+`POST /api/v1/sessions/:id/approvals` with the exact provider request ID.
+
+Codex MCP tool consent can be accepted only when its metadata identifies
+`mcp_tool_call`, its mode is `form`, and its object schema has empty properties
+and no required fields. Acceptance returns the provider's required empty
+content object. Data-entry and URL forms remain unsupported for acceptance;
+they may be declined or cancelled. Requests are never approved automatically,
+and a decision cannot be replayed after it has been sent.
