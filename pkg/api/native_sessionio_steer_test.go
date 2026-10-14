@@ -26,7 +26,7 @@ func (fixture *steeredClaudeFixtureAgent) BuildCmd(string, agent.AgentConfig) ([
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"steer-fixture"}'
 IFS= read -r interrupt
 IFS= read -r replacement
-printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"` + fixture.boundaryReason + `"}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"` + fixture.boundaryReason + `","permission_denials":[],"safety_stops":0}'
 IFS= read -r finish
 `
 	if fixture.finalFailed {
@@ -40,11 +40,14 @@ IFS= read -r finish
 func (*steeredClaudeFixtureAgent) ParseOutput([]byte) (*agent.AgentResult, bool) { return nil, false }
 
 func TestV1ClaudeSteerDoesNotTerminateItsReplacement(t *testing.T) {
-	for _, scenario := range []string{"success", "replacement_failure", "real_error", "cancel", "deadline"} {
+	for _, scenario := range []string{"success", "tools_abort", "replacement_failure", "real_error", "cancel", "deadline"} {
 		t.Run(scenario, func(t *testing.T) {
 			store := durablememory.New()
 			registry := agent.NewRegistry()
 			fixture := &steeredClaudeFixtureAgent{boundaryReason: "aborted_streaming", finalFailed: scenario == "replacement_failure"}
+			if scenario == "tools_abort" {
+				fixture.boundaryReason = "aborted_tools"
+			}
 			if scenario == "real_error" {
 				fixture.boundaryReason = "api_error"
 			}

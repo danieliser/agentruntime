@@ -72,6 +72,14 @@ GET /api/v1/sessions/{session_id}/receipt
 
 ## Reconnect, input, and resume
 
+The locally tested Claude steer correction treats a matching active-turn
+`aborted_tools` result as the superseded turn only after the interrupt and
+replacement input were successfully dispatched, with an explicitly empty
+permission-denial list and zero safety stops. The replacement turn remains
+active. Missing evidence, real permission denials, safety stops, failed writes,
+and interruption without replacement do not receive this treatment. This
+correction is not deployed merely by updating this document.
+
 Event reconnection remains cursor-only and never starts work. While a native
 generation is active, callers may submit typed `prompt` or `steer` input and
 interrupt the current turn:

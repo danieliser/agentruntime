@@ -9,15 +9,33 @@ import (
 // aborts. It never treats authentication/API errors as an interrupted turn.
 func ClaudeSteerBoundary(raw []byte) bool {
 	var result struct {
-		Type           string `json:"type"`
-		Subtype        string `json:"subtype"`
-		IsError        bool   `json:"is_error"`
-		TerminalReason string `json:"terminal_reason"`
+		Type              string          `json:"type"`
+		Subtype           string          `json:"subtype"`
+		IsError           bool            `json:"is_error"`
+		TerminalReason    string          `json:"terminal_reason"`
+		PermissionDenials json.RawMessage `json:"permission_denials"`
+		SafetyStops       *int            `json:"safety_stops"`
 	}
 	if json.Unmarshal(raw, &result) != nil || result.Type != "result" {
 		return false
 	}
-	return (!result.IsError && result.Subtype == "success") || (result.IsError && result.Subtype == "error_during_execution" && result.TerminalReason == "aborted_streaming")
+	if !result.IsError && result.Subtype == "success" {
+		return true
+	}
+	if !result.IsError || result.Subtype != "error_during_execution" {
+		return false
+	}
+	if result.TerminalReason == "aborted_streaming" {
+		return true
+	}
+	// Tool cancellation can use user-rejection wording after our interrupt.
+	// Require explicit absence of permission denials and safety stops; the
+	// transport still requires a successfully dispatched active-turn steer.
+	if result.TerminalReason != "aborted_tools" || result.SafetyStops == nil || *result.SafetyStops != 0 {
+		return false
+	}
+	var denials []json.RawMessage
+	return json.Unmarshal(result.PermissionDenials, &denials) == nil && denials != nil && len(denials) == 0
 }
 
 // A complete interrupt+replacement write must succeed before stdout may claim
