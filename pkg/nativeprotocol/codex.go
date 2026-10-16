@@ -57,7 +57,7 @@ func (codexAdapter) Encode(input Input) ([][]byte, error) {
 			"input": []map[string]any{{"type": "text", "text": input.Text}},
 		})
 	case InputInterrupt:
-		message = codexRequest(requestID, "turn/interrupt", map[string]any{"threadId": input.ProviderID, "reason": "user"})
+		message = codexRequest(requestID, "turn/interrupt", map[string]any{"threadId": input.ProviderID, "turnId": input.TurnID})
 	case InputApproval:
 		decision := "decline"
 		if input.ApprovalAllow {

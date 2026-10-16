@@ -76,6 +76,110 @@ runtimes, replay persistence, Docker reconstruction, structured-output modes,
 workspace profiles, maintained-container/portable-resume support, and observer
 health.
 
+## `agentctl` supervision CLI
+
+Build the stateless CLI with `go build -o agentctl ./cmd/agentctl`. It uses the
+existing v1 API and reads its bearer token from a file, never an argument or URL.
+The default target is `http://127.0.0.1:38093`; `--url` or `AGENTD_URL` overrides it.
+`AGENTD_TOKEN_FILE` defaults to `~/.agentd/auth.token`.
+
+```sh
+# Keep the Docker provider transport alive between turns.
+./agentctl run --provider claude --model claude-haiku-4-5 --cwd "$PWD" \
+  --runtime docker --keep-warm 10m --context clean \
+  'Inspect the current change and summarize it'
+```
+
+`run` prints the session ID immediately. Options are `--provider claude|codex`,
+`--model M`, `--effort E`, `--cwd DIR`, `--runtime local|docker` (default local),
+`--keep-warm DUR` (positive Docker idle TTL, at most 24h), `--portable-resume`
+(snapshot provider state before Docker cleanup), and `--context clean` (omit
+ambient provider configuration). Without `--keep-warm`, a one-turn process can
+exit after its reply; `prompt` then fails because no live transport remains.
+Maintained sessions are available for both Claude and Codex. Portable resume is
+opt-in and requires Docker; it is separate from keeping the transport warm.
+
+For tool approval requests, add `--permissions restricted --approval-policy
+on-request`. Restricted coding requires Docker and defaults to `on-request`;
+`never` denies requests requiring approval. `--permissions unrestricted` requires
+`never`. Omitting both preserves the daemon's provider defaults. These are
+provider permission controls, not the managed research execution-policy boundary.
+Both providers expose pending approvals in restricted mode.
+
+Commands are `run`, `status`, `ls`, `since`, `grep`, `wait`, `prompt`, `steer`,
+`interrupt`, `cancel`, `terminate`, `resume`, `approvals`, `approve`, `deny`,
+and `result`. Use `approve ID REQUEST_ID` or `deny ID REQUEST_ID` with an ID from
+`approvals ID --json`; preserve JSON quoting for string IDs. `prompt` starts a
+follow-up turn; `steer` changes an active turn. Lifecycle/approval commands return
+when accepted; use `wait` and output to confirm the effect. Each prompt and
+lifecycle invocation is a new operation, including identical text on later turns.
+`resume ID PROMPT` is recovery of a lost, nonterminal generation; it does not
+reopen a terminal session.
+
+Output is compact human text by default; `--json` selects JSON. `since ID`
+returns assistant text and tool summaries after its saved sequence, then advances
+the cursor only after successful output. A second call with no new events prints
+nothing, including in JSON mode. `since ID --raw` returns raw provider records.
+`grep ID PATTERN [--type TYPE] --json` searches durable history without moving the
+cursor. `result ID` returns a hash-verified structured result when available,
+otherwise `{receipt, final_assistant_text}` in JSON mode. The fallback includes
+only the latest turn's assistant text, which may be partial or empty after an
+interrupt. A maintained session needs to end (idle expiry, cancel, or terminate)
+before a terminal receipt exists. This API records administrative termination as
+`state=cancelled, reason=terminated`; inspect the reason.
+
+Cursors are independent per caller/session. Set caller identity with `--as NAME`
+or `AGENTD_CALLER` (default `agentctl`). `AGENTCTL_CURSOR_DIR` overrides
+`~/.agentd/agentctl/cursors`; `--cursor-dir DIR` on `since`/`wait` overrides both.
+Use a separate caller for notifications so waiting does not consume unread text.
+Environment options are listed in `config.example.env`; the CLI reads process
+environment directly, without automatically loading that file.
+
+For passive supervision, run this in Claude Code background Bash or Codex's
+background shell, then inspect the exit code when the job wakes:
+
+```sh
+./agentctl --as supervisor-ping wait SESSION_ID \
+  --until turn_end,approval,error,done --timeout 30m &
+# After notification, read output using a different caller cursor:
+./agentctl --as supervisor-read since SESSION_ID
+```
+
+`wait` follows the durable WebSocket stream and reconnects from its last
+contiguous sequence. It prints the triggering event summary. Conditions are
+comma-separated; a matching condition deliberately has a nonzero exit code:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Command succeeded |
+| `2` | Usage error |
+| `3` | Missing or invalid authentication |
+| `4` | Session or resource not found |
+| `5` | API or other command failure |
+| `6` | Wait timed out |
+| `10` | Wait observed `turn_end` |
+| `11` | Wait observed `approval` |
+| `12` | Wait observed `error` (including an interrupted `turn.failed`) |
+| `13` | Wait observed `done` |
+
+Run `scripts/agentctl-live-test.sh claude` and `scripts/agentctl-live-test.sh codex`
+for live acceptance. Each builds the current worktree, starts a separate daemon
+on 18091/18092, and writes private evidence under ignored `.agentctl-live-test/`.
+The test-only Docker proxy labels containers and scopes daemon recovery/pruning
+to that run; it maps development image references to existing
+`2.3.3-persist.10` images from base `f817cb3`. It changes no global Docker tags.
+The isolated credential sync reads the existing provider login and caches only
+under the private test data directory. The harness neither uses nor reconfigures
+the installed launchd daemon or `~/.agentd`, and stops its daemons/containers.
+Requirements: Docker, Python 3, Go, those base images, and working provider logins.
+Optional overrides: `AGENTCTL_LIVE_TEST_PORT` and `AGENTCTL_LIVE_TEST_MODEL`.
+
+Install after review (this command is not run by the tests):
+
+```sh
+go build -o "$HOME/.local/bin/agentctl" ./cmd/agentctl
+```
+
 Restricted Codex sessions may receive an explicit one-session `auth.json` via
 the `AGENTD_CODEX_AUTH_JSON` environment grant. The caller must include that
 exact name in `secret_grants`. AgentD validates the JSON, writes it only to the
