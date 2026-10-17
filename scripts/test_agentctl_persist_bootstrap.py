@@ -56,3 +56,11 @@ class RestartTest(unittest.TestCase):
             old.wait.assert_called_once_with(timeout=30)
             launch.assert_called_once_with(['isolated-agentd'], cwd=Path('/private/work'), env={}, stdout='log', stderr=-2, start_new_session=True)
             self.assertIs(result, launch.return_value)
+
+class CredentialSelectionTest(unittest.TestCase):
+    def test_private_home_uses_exact_native_keychain_account(self) -> None:
+        from unittest.mock import Mock, patch
+        from agentctl_persist_bootstrap import private_claude_credentials
+        with patch('agentctl_persist_bootstrap.getpass.getuser', return_value='native-user'), patch('agentctl_persist_bootstrap.subprocess.run', return_value=Mock(stdout='fixture\n')) as run:
+            self.assertEqual(private_claude_credentials(), 'fixture')
+            run.assert_called_once_with(['security', 'find-generic-password', '-a', 'native-user', '-s', 'Claude Code-credentials', '-w'], capture_output=True, text=True, check=True, timeout=10)

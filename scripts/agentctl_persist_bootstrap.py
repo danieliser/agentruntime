@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Own isolated processes, credentials, ports and teardown for live acceptance."""
 import argparse
+import getpass
 import json
 import ipaddress
 import os
@@ -57,6 +58,15 @@ def isolated_env(root: Path, persist_port: int, agentd_port: int, parent: dict[s
 
 def forbidden_connections(output: str) -> list[str]:
     return [line for line in output.splitlines() if re.search(r'->[^ ]+:(?:8803|38093)(?:$|\s)', line)]
+
+
+def private_claude_credentials() -> str:
+    # Match AgentD's native-account selection; the service can contain stale
+    # credentials for other accounts on the same Mac.
+    result = subprocess.run(['security', 'find-generic-password', '-a', getpass.getuser(),
+                             '-s', 'Claude Code-credentials', '-w'],
+                            capture_output=True, text=True, check=True, timeout=10)
+    return result.stdout.strip()
 
 
 def restart_owned_agentd(proc, command, cwd, env, log):
@@ -152,8 +162,7 @@ model_routing:
             (private_home / name).mkdir(parents=True, mode=0o700)
         shutil.copyfile(Path.home() / '.codex/auth.json', private_home / '.codex/auth.json')
         (private_home / '.codex/auth.json').chmod(0o600)
-        credential = subprocess.run(['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'], capture_output=True, text=True, check=True)
-        (private_home / '.claude/.credentials.json').write_text(credential.stdout.strip())
+        (private_home / '.claude/.credentials.json').write_text(private_claude_credentials())
         (private_home / '.claude/.credentials.json').chmod(0o600)
         marker = 'ISOLATED_HOME_DISCOVERY_CONFIRMED'
         (private_home / '.claude/CLAUDE.md').write_text('For the isolated home discovery test reply exactly ' + marker + ' when asked for the home discovery phrase.\n')
