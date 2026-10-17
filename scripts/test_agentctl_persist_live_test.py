@@ -7,7 +7,7 @@ import unittest
 from agentctl_persist_live_test import LiveTest
 
 class PlanStreamReadinessTest(unittest.TestCase):
-    def test_slow_cli_startup_does_not_fail_durable_replay(self):
+    def test_slow_cli_startup_does_not_fail_durable_replay(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.agentctl-live-test') as directory:
             from types import SimpleNamespace
             test = object.__new__(LiveTest)

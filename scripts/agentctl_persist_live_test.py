@@ -11,12 +11,15 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Callable, TypeVar
+
+T = TypeVar('T')
 
 OUTCOME = '\nEnd your final response with a standalone line: PERSIST_TASK_OUTCOME: {"version":1,"status":"completed","reason":"live acceptance fixture complete"}'
 
 
 class LiveTest:
-    def __init__(self, args):
+    def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.work = args.root / 'work'
         self.persist = [args.persist_cli, '--dir', str(args.persist_root), 'exec', 'tsx', str(args.persist_root / 'src/cli/index.ts')]
@@ -27,7 +30,7 @@ class LiveTest:
         self.results = []
         self.secrets = [p.read_text().strip() for p in (args.root / 'agentd-data/auth.token', args.root / 'persist-data/initial_token.txt') if p.is_file()]
 
-    def run(self, command, *, timeout=240, codes=(0,)):
+    def run(self, command: list[str], *, timeout: int = 240, codes: tuple[int, ...] = (0,)) -> str:
         if any(secret and any(secret in arg for arg in command) for secret in self.secrets):
             raise RuntimeError('Bearer token in command arguments')
         result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
@@ -40,22 +43,22 @@ class LiveTest:
             raise RuntimeError(f'CLI exit {result.returncode} for {command[len(self.persist):] if command[:1] == self.persist[:1] else command[1:]}: {result.stderr[:1500]}')
         return result.stdout
 
-    def pc(self, *args, **kwargs):
+    def pc(self, *args: str, **kwargs: object) -> str:
         return self.run(self.persist + list(args), **kwargs)
 
-    def ac(self, *args, **kwargs):
+    def ac(self, *args: str, **kwargs: object) -> str:
         return self.run(self.ctl + list(args), **kwargs)
 
-    def status(self, ref):
+    def status(self, ref: str) -> dict[str, object]:
         return json.loads(self.ac('status', ref))
 
-    def events(self, ref, pattern='.', kind=None):
+    def events(self, ref: str, pattern: str = '.', kind: str | None = None) -> list[dict[str, object]]:
         args = ['grep', ref, pattern]
         if kind:
             args += ['--type', kind]
         return json.loads(self.ac(*args)) or []
 
-    def assistant_has(self, ref, marker, after=0, generation=None):
+    def assistant_has(self, ref: str, marker: str, after: int = 0, generation: int | None = None) -> bool:
         for event in self.events(ref, marker):
             event = event.get('event', event)
             if event['sequence'] <= after or (generation is not None and event.get('generation') != generation):
@@ -68,7 +71,7 @@ class LiveTest:
                 return True
         return False
 
-    def until(self, check, seconds=180, label='condition'):
+    def until(self, check: Callable[[], T], seconds: int = 180, label: str = 'condition') -> T:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             result = check()
@@ -77,18 +80,18 @@ class LiveTest:
             time.sleep(0.5)
         raise RuntimeError(f'Timed out: {label}')
 
-    def record(self, flow, detail):
+    def record(self, flow: str, detail: str) -> None:
         self.results.append({'provider': self.args.provider, 'flow': flow, 'status': 'PASS', 'detail': detail})
         (self.args.root / 'results.json').write_text(json.dumps(self.results, indent=2))
         print(f'PASS {self.args.provider} {flow}: {detail}', flush=True)
 
-    def task(self, task_id):
+    def task(self, task_id: str) -> dict[str, object]:
         return json.loads(self.pc('task', 'get', task_id))
 
-    def session(self, task_id):
+    def session(self, task_id: str) -> str:
         return self.until(lambda: self.task(task_id).get('session_id'), label='task assigned an AgentD session')
 
-    def dispatch(self, title, prompt, runtime='docker', restricted=False):
+    def dispatch(self, title: str, prompt: str, runtime: str = 'docker', restricted: bool = False) -> dict[str, object]:
         args = ['task', 'dispatch', '--title', title, '--content', prompt + OUTCOME, '--agent', self.args.provider,
                 '--model', self.model, '--cwd', str(self.work), '--runtime', runtime, '--json']
         if not restricted:
@@ -97,15 +100,15 @@ class LiveTest:
         task['session_id'] = self.session(task['id'])
         return task
 
-    def completed(self, ref, generation=1):
-        def check():
+    def completed(self, ref: str, generation: int = 1) -> dict[str, object]:
+        def check() -> dict[str, object] | None:
             s = self.status(ref)
             if s['state'] in ('failed', 'cancelled', 'crashed', 'timed_out', 'indeterminate'):
                 raise RuntimeError(f'{ref} ended {s["state"]}: ' + self.ac('result', ref))
             return s if s['state'] == 'completed' and s.get('generation') == generation else None
         return self.until(check, label=f'{ref} completed generation {generation}')
 
-    def wake(self, runtime):
+    def wake(self, runtime: str) -> None:
         marker = 'RECALL_' + secrets.token_hex(8)
         args = ['model', 'dispatch-auto', '--title', f'Wake {runtime}', '--prompt', f'This is an integration test. Reply with the random test word {marker}. No tools.' + OUTCOME,
                 '--provider', self.provider, '--cwd', str(self.work), '--complexity', 'trivial', '--objectives', 'cost,speed']
@@ -131,7 +134,7 @@ class LiveTest:
         self.pc('task', 'wait', task_id, '--timeout', '30s', '--json')
         self.record(f'a({runtime})', f'task:{task_id} session={sid} generation 1→2; no lease; same provider session; recalled {marker}')
 
-    def watch_plan(self, plan):
+    def watch_plan(self, plan: str) -> None:
         command = self.persist + ['plan', 'watch', plan]
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         required = {'node_started', 'node_completed', 'plan_status_changed'}
@@ -166,7 +169,7 @@ class LiveTest:
             with self.log.open('a') as stream:
                 stream.write(json.dumps({'argv': command, 'code': process.returncode, 'out': data.decode(), 'err': errors.decode()}) + '\n')
 
-    def dag(self):
+    def dag(self) -> None:
         prompt = ('Create exactly two tasks with titles A and B. B depends on A. A must use the shell tool to run `sleep 15` in the foreground, then reply A_DONE_TOKEN. B replies B_DONE_TOKEN with no tools. '
                   'Both tasks must end with PERSIST_TASK_OUTCOME: {"version":1,"status":"completed","reason":"fixture done"}. No other work or tasks.')
         proposal = json.loads(self.pc('plan', 'auto', prompt, '--cwd', str(self.work), '--provider', self.provider, '--skip-permissions', '--json'))
@@ -176,7 +179,7 @@ class LiveTest:
         receipt = json.loads(self.pc('plan', 'approve', proposal['proposal_id'], '--json'))
         plan = receipt['plan_id']
         ref = 'plan:' + plan
-        def dispatched_root():
+        def dispatched_root() -> tuple[dict[str, object], dict[str, object]] | None:
             rows = json.loads(self.ac('plan', 'show', plan))
             roots = [n for n in rows if n.get('session_id')]
             blocked = [n for n in rows if n.get('blocked_on') and not n.get('session_id')]
@@ -201,7 +204,7 @@ class LiveTest:
         self.watch_plan(plan)
         self.record('b', f'{ref}; A session={a["session_id"]}; B initially blocked_on={b["blocked_on"]}, null session; wait: {starts[-1].strip()}; both output tokens; done; SSE replay')
 
-    def approval(self, decision):
+    def approval(self, decision: str) -> None:
         marker = 'fixture_' + secrets.token_hex(4)
         # A single command has an outside-workspace approval trigger and a
         # workspace effect independently visible on the host after consent.
@@ -227,7 +230,7 @@ class LiveTest:
             raise RuntimeError('Missing matching PERSIST approval audit record')
         self.record('c(' + decision + ')', f'{ref} session={task["session_id"]}; broker request={broker_id}; host file exists={exists}; matching audit row')
 
-    def active(self, action):
+    def active(self, action: str) -> None:
         prefix = action + '-' + secrets.token_hex(4)
         prompt = (f'Use the shell tool to run `bash ./long-turn.sh {prefix}` with a 120000ms timeout in the foreground. '
                   'Wait for completion, then reply ORIGINAL_LONG_TURN_FINISHED. Do not background it.')
@@ -244,7 +247,7 @@ class LiveTest:
             self.completed(ref)
         else:
             self.ac('interrupt', ref)
-            def interrupted():
+            def interrupted() -> bool:
                 ends = [e for e in self.events(ref) if e['sequence'] > before and e['type'] in ('turn.completed', 'turn.failed')]
                 return any(e['payload'].get('status') == 'interrupted' or e['payload'].get('result', {}).get('terminal_reason') == 'aborted_tools' for e in ends)
             self.until(interrupted, seconds=60, label='native interrupted turn event')
@@ -252,7 +255,7 @@ class LiveTest:
             raise RuntimeError('Original foreground workload completed; control did not interrupt it')
         self.record('d(' + action + ')', f'{ref} session={task["session_id"]}; active 60s shell; {"STEERED_TOKEN after control" if action == "steer" else "native interrupted turn event"}; original workload did not finish')
 
-    def flow(self):
+    def flow(self) -> None:
         status = self.pc('daemon', 'status')
         if 'Status:  running' not in status:
             raise RuntimeError('CLI is not connected to isolated foreground daemon')
@@ -271,7 +274,7 @@ class LiveTest:
             self.active('interrupt')
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--provider', choices=('claude', 'codex'), required=True)
     parser.add_argument('--root', type=Path, required=True)

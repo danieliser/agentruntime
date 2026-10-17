@@ -5,7 +5,7 @@ import unittest
 from agentctl_persist_bootstrap import resolve_node, isolated_env
 
 class BootstrapTest(unittest.TestCase):
-    def test_pin_wins_over_path_and_default(self):
+    def test_pin_wins_over_path_and_default(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.agentctl-live-test') as tmp:
             root = Path(tmp)
             (root / '.node-version').write_text('25\n')
@@ -15,28 +15,28 @@ class BootstrapTest(unittest.TestCase):
             node.chmod(0o700)
             self.assertEqual(resolve_node(root, {'NVM_DIR': str(root / 'nvm'), 'PATH': '/usr/bin'}), str(node))
 
-    def test_missing_pin_fails_without_falling_back(self):
+    def test_missing_pin_fails_without_falling_back(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.agentctl-live-test') as tmp:
             root = Path(tmp)
             (root / '.nvmrc').write_text('999')
             with self.assertRaisesRegex(RuntimeError, 'Node 999'):
                 resolve_node(root, {'NVM_DIR': str(root / 'nvm'), 'PATH': '/usr/bin'})
 
-    def test_env_uses_supported_port_and_private_token(self):
+    def test_env_uses_supported_port_and_private_token(self) -> None:
         env = isolated_env(Path('/isolated'), 18803, 18091, {'PERSIST_AUTH_TOKEN': 'live', 'PERSIST_V3_TOKEN_FILE': '/live', 'PERSIST_HTTP__PORT': '8803'})
         self.assertNotIn('PERSIST_AUTH_TOKEN', env)
         self.assertEqual(env['PERSIST_HTTP__PORT'], '18803')
         self.assertEqual(env['PERSIST_TOKEN_FILE'], '/isolated/persist-data/initial_token.txt')
         self.assertEqual(env['PERSIST_V3_TOKEN_FILE'], env['PERSIST_TOKEN_FILE'])
 
-    def test_live_ports_rejected(self):
+    def test_live_ports_rejected(self) -> None:
         for p, a in [(8803, 18091), (18803, 38093)]:
             with self.assertRaisesRegex(RuntimeError, 'forbidden'):
                 isolated_env(Path('/isolated'), p, a, {})
 
 
 class ConnectionEvidenceTest(unittest.TestCase):
-    def test_forbidden_destination_detection(self):
+    def test_forbidden_destination_detection(self) -> None:
         from agentctl_persist_bootstrap import forbidden_connections
         self.assertTrue(forbidden_connections('p12\nn127.0.0.1:59112->127.0.0.1:8803\n'))
         self.assertTrue(forbidden_connections('p12\nn127.0.0.1:59112->127.0.0.1:38093\n'))

@@ -135,7 +135,7 @@ model_routing:
     logs = []
     stop_monitor = threading.Event()
     monitor_errors = []
-    def descendants():
+    def descendants() -> list[tuple[int, int, str]]:
         rows = [line.split(None, 3) for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,pgid=,lstart='], text=True, timeout=3).splitlines()]
         owned = {p.pid for p in processes if p.poll() is None}
         for _ in range(20):
@@ -143,7 +143,7 @@ model_routing:
             owned.update(int(r[0]) for r in rows if int(r[1]) in owned)
             if len(owned) == previous: break
         return [(int(r[0]), int(r[2]), r[3]) for r in rows if int(r[0]) in owned]
-    def monitor_connections():
+    def monitor_connections() -> None:
         while not stop_monitor.wait(0.5):
             try:
                 pids = [str(r[0]) for r in descendants()]
