@@ -58,8 +58,8 @@ func TestMigrationV4PreservesReceiptsAndContinuesAfterRestart(t *testing.T) {
 	if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{SessionID: "upgraded", From: durable.StateCompleted, To: durable.StateStarting}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CheckIntegrity(ctx); err != nil {
-		t.Fatalf("integrity during wake: %v", err)
+	if err := store.CheckIntegrity(ctx); err == nil {
+		t.Fatal("integrity accepted unresolved wake")
 	}
 	gen, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{SessionID: "upgraded", Runtime: "docker", ContainerID: "second"})
 	if err != nil {

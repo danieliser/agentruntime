@@ -261,3 +261,26 @@ func TestReadMessages_EmptyChain(t *testing.T) {
 		t.Error("expected empty result for empty chain")
 	}
 }
+
+func TestLegacyReaderIncludesEveryGenerationWithStableOffsets(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"s.ndjson", "s.g2.ndjson", "s.g10.ndjson"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"type":"content.completed","data":{}}`+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := NewLogReader(dir)
+	entries, _, err := reader.ReadMessages([]string{"s"}, 0, 0, nil)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("entries=%+v err=%v", entries, err)
+	}
+	for i, entry := range entries {
+		if entry.Offset != int64(i) {
+			t.Fatalf("offset=%d", entry.Offset)
+		}
+	}
+	entries, more, err := reader.ReadMessages([]string{"s"}, 1, 2, nil)
+	if err != nil || len(entries) != 1 || !more || entries[0].Offset != 0 {
+		t.Fatalf("entries=%+v more=%v err=%v", entries, more, err)
+	}
+}

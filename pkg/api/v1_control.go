@@ -336,6 +336,8 @@ func (s *Server) handleV1NativeStop(c *gin.Context, kind string, outcome durable
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
 		return
 	}
+	unlock := s.sessionLocks.lock(c.Param("id"))
+	defer unlock()
 	reason := "cancelled"
 	if kind == "terminate" {
 		reason = "terminated"
@@ -384,6 +386,19 @@ func (s *Server) handleV1NativeStop(c *gin.Context, kind string, outcome durable
 		return
 	}
 	active := s.nativeSession(c.Param("id"))
+	if active == nil && stored.State == durable.StateStarting {
+		generation, generationErr := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, stored.ActiveGeneration)
+		if generationErr == nil && generation.State == durable.GenerationExited {
+			settleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := s.settleAdmittedSession(settleCtx, stored.ID, outcome, reason, nil); err != nil {
+				writeDurableError(c, err)
+				return
+			}
+			c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": stored.ID, "accepted": true}})
+			return
+		}
+	}
 	if active == nil {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, kind+" intent is durable but the native transport is unavailable", nil))
 		return

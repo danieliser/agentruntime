@@ -22,6 +22,7 @@ import (
 	"github.com/danieliser/agentruntime/pkg/chat"
 	projectconfig "github.com/danieliser/agentruntime/pkg/config"
 	"github.com/danieliser/agentruntime/pkg/credentials"
+	"github.com/danieliser/agentruntime/pkg/durable"
 	durablesqlite "github.com/danieliser/agentruntime/pkg/durable/sqlite"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/observer"
@@ -110,7 +111,7 @@ func main() {
 			log.Printf("durable store close error: %v", err)
 		}
 	}()
-	if err := durableStore.CheckIntegrity(context.Background()); err != nil {
+	if err := durableStore.CheckIntegrity(context.Background()); err != nil && !durable.IsCode(err, durable.CodeWakeRecoveryRequired) {
 		log.Fatalf("durable store integrity check failed: %v", err)
 	}
 	eventBroker := eventstream.New(durableStore)
@@ -248,6 +249,9 @@ func main() {
 		ObserverService: traceObservers,
 	})
 	srv.RestoreRecoveredSessions(recoveredSessions, recoveredRuntimes...)
+	if err := durableStore.CheckIntegrity(context.Background()); err != nil {
+		log.Fatalf("durable store integrity after recovery failed: %v", err)
+	}
 	// Wire the spawner after server creation to break the circular dependency
 	// between api.Server (needs chatManager) and chatManager (needs spawner).
 	chatManager.SetSpawner(srv)

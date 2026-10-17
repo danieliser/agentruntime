@@ -59,3 +59,41 @@ func TestCompletedSessionContinuationPreservesGenerationReceipts(t *testing.T) {
 		})
 	}
 }
+
+func TestStartingExitedGenerationAcceptsStopIntent(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store durable.Store = memory.New()
+			if backend == "sqlite" {
+				var err error
+				store, err = sqlite.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			defer store.Close()
+			ctx := context.Background()
+			createContractSession(t, ctx, store, "wake-stop")
+			for _, tr := range []durable.TransitionSessionParams{{SessionID: "wake-stop", From: durable.StateCreated, To: durable.StateStarting}, {SessionID: "wake-stop", From: durable.StateStarting, To: durable.StateRunning}} {
+				if _, err := store.TransitionSession(ctx, tr); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gen, err := store.CreateGeneration(ctx, durable.CreateGenerationParams{SessionID: "wake-stop", Runtime: "local", ContainerID: "first"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.FinalizeSession(ctx, durable.FinalizeSessionParams{From: durable.StateRunning, GenerationFrom: durable.GenerationStarting, GenerationTo: durable.GenerationExited, Receipt: durable.TerminalReceipt{SessionID: "wake-stop", Generation: 1, State: durable.StateCompleted, StartedAt: gen.CreatedAt, EndedAt: time.Now()}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{SessionID: "wake-stop", From: durable.StateCompleted, To: durable.StateStarting}); err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"cancel", "terminate"} {
+				if _, err := store.AppendEvent(ctx, durable.AppendEventParams{SessionID: "wake-stop", Generation: 1, EventID: kind, SchemaVersion: "1.0", Timestamp: time.Now(), Type: "control." + kind + ".requested", Stream: durable.StreamControl, Raw: []byte(`{}`)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}

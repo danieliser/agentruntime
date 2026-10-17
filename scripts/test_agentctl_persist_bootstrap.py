@@ -26,6 +26,7 @@ class BootstrapTest(unittest.TestCase):
         env = isolated_env(Path('/isolated'), 18803, 18091, {'PERSIST_AUTH_TOKEN': 'live', 'PERSIST_V3_TOKEN_FILE': '/live', 'PERSIST_HTTP__PORT': '8803'})
         self.assertNotIn('PERSIST_AUTH_TOKEN', env)
         self.assertEqual(env['PERSIST_HTTP__PORT'], '18803')
+        self.assertEqual(env['PERSIST_AGENTRUNTIME__CLEAN_CONTEXT'], 'true')
         self.assertEqual(env['PERSIST_TOKEN_FILE'], '/isolated/persist-data/initial_token.txt')
         self.assertEqual(env['PERSIST_V3_TOKEN_FILE'], env['PERSIST_TOKEN_FILE'])
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -978,4 +979,42 @@ func TestSendMessage_BrokenHandle_Respawns(t *testing.T) {
 	if result.SessionID != "fresh-sess" {
 		t.Errorf("SessionID = %q, want fresh-sess", result.SessionID)
 	}
+}
+
+func TestNamedChatActivePromptUsesSteerWithoutRespawn(t *testing.T) {
+	sess := makeSession("busy-session", nil)
+	sess.SetRunning(newFakeHandle())
+	spawner := newFakeSpawner()
+	spawner.inputErr = durable.NewError(durable.CodeInvalidState, "send_v1_native_input", "provider turn is still active; use steer instead of prompt", nil)
+	mgr, sessMgr := newTestManager(t, newFakeVolumeManager(), spawner)
+	sessMgr.Add(sess)
+	mgr.CreateChat("busy-chat", ChatConfig{Agent: "claude"})
+	rec, _ := mgr.GetChat("busy-chat")
+	rec.State = ChatStateRunning
+	rec.CurrentSession = sess.ID
+	rec.SessionChain = []string{sess.ID}
+	mgr.registry.Save(rec)
+	// Reject the prompt only; the same sender accepts a steer.
+	sender := &busyChatSpawner{fakeSpawner: spawner}
+	mgr.spawner = sender
+	result, err := mgr.SendMessage("busy-chat", "next instruction")
+	if err != nil || result.Spawned || result.SessionID != sess.ID {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(sender.kinds) != 2 || sender.kinds[0] != "prompt" || sender.kinds[1] != "steer" {
+		t.Fatalf("kinds=%v", sender.kinds)
+	}
+}
+
+type busyChatSpawner struct {
+	*fakeSpawner
+	kinds []string
+}
+
+func (s *busyChatSpawner) SendSessionInput(ctx context.Context, id, key, kind, text string) error {
+	s.kinds = append(s.kinds, kind)
+	if kind == "steer" {
+		return nil
+	}
+	return s.fakeSpawner.SendSessionInput(ctx, id, key, kind, text)
 }

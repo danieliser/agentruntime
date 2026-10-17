@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -65,5 +67,77 @@ func TestPromptWakesLostIdleGenerationButRejectsUnfinishedTurn(t *testing.T) {
 				t.Fatalf("idle continuation receipt=%+v err=%v", receipt, err)
 			}
 		})
+	}
+}
+
+func TestRecoveredNonMaintainedSessionRestoresIdle(t *testing.T) {
+	store, id := runningRecoveryStore(t)
+	ctx := context.Background()
+	for i, kind := range []string{"turn.completed", "usage.updated"} {
+		if _, err := store.AppendEvent(ctx, durable.AppendEventParams{SessionID: id, Generation: 1, EventID: fmt.Sprintf("idle-%d", i), SchemaVersion: "1.0", Timestamp: time.Now(), Type: kind, Stream: durable.StreamProviderStdout, Raw: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handle := newBlockingRecoveredNativeTestHandle(id, "missing-container")
+	manager := session.NewManager()
+	recovered := manager.Recover([]runtime.ProcessHandle{handle}, "docker")
+	server := NewServer(manager, &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{DataDir: t.TempDir(), LogDir: filepath.Join(t.TempDir(), "logs"), DurableStore: store, EventBroker: eventstream.New(store)})
+	server.RestoreRecoveredSessions(recovered, "docker")
+	defer func() {
+		if err := handle.Kill(); err != nil {
+			t.Error(err)
+		}
+		waitForDurableTerminal(t, store, id)
+	}()
+	active := server.nativeSession(id)
+	if active == nil {
+		t.Fatal("missing recovered transport")
+	}
+	active.mu.Lock()
+	idle := active.idle
+	active.mu.Unlock()
+	if !idle {
+		t.Fatal("non-maintained recovered session rejected its completed turn")
+	}
+	if _, err := server.sendSessionInput(ctx, id, "after-restart", nativeprotocol.InputPrompt, "next"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type eventReadCounter struct {
+	durable.Store
+	reads int
+}
+
+func (s *eventReadCounter) ListEvents(ctx context.Context, q durable.EventQuery) (durable.EventPage, error) {
+	s.reads++
+	return s.Store.ListEvents(ctx, q)
+}
+func TestLostIdleReadoutCachesDurableBoundary(t *testing.T) {
+	store, id := runningRecoveryStore(t)
+	ctx := context.Background()
+	for i, kind := range []string{"turn.completed", "usage.updated"} {
+		if _, err := store.AppendEvent(ctx, durable.AppendEventParams{SessionID: id, Generation: 1, EventID: fmt.Sprintf("boundary-%d", i), SchemaVersion: "1.0", Timestamp: time.Now(), Type: kind, Stream: durable.StreamProviderStdout, Raw: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counted := &eventReadCounter{Store: store}
+	server := NewServer(session.NewManager(), &recoveryTestRuntime{}, agent.DefaultRegistry(), ServerConfig{DataDir: t.TempDir(), DurableStore: counted, EventBroker: eventstream.New(counted)})
+	stored, _ := store.GetSession(ctx, id)
+	for range 10 {
+		if !server.generationEndedNormally(ctx, stored, 1) {
+			t.Fatal("lost idle state not recognized")
+		}
+	}
+	if counted.reads != 1 {
+		t.Fatalf("GETs rescanned durable history %d times", counted.reads)
+	}
+	// A later intent invalidates the cached boundary.
+	if _, err := store.AppendEvent(ctx, durable.AppendEventParams{SessionID: id, Generation: 1, EventID: "next-intent", SchemaVersion: "1.0", Timestamp: time.Now(), Type: "control.prompt.requested", Stream: durable.StreamControl, Raw: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = store.GetSession(ctx, id)
+	if server.generationEndedNormally(ctx, stored, 1) {
+		t.Fatal("stale idle cache accepted later input")
 	}
 }

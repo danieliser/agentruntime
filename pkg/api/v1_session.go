@@ -549,8 +549,8 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 }
 
 func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.ExitResult, override durable.SessionState, reason string, streamErrors ...error) {
-	s.resumeMu.Lock()
-	defer s.resumeMu.Unlock()
+	unlock := s.sessionLocks.lock(sessionID)
+	defer unlock()
 	s.finalizeV1SessionClassifiedLocked(sessionID, result, override, reason, streamErrors...)
 }
 

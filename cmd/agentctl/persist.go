@@ -117,7 +117,10 @@ func (p *PersistClient) resolve(ref SessionReference) (string, error) {
 		if e != nil {
 			return "", e
 		}
-		id, _ := v["session_id"].(string)
+		id, _ := v["current_session_id"].(string)
+		if id == "" {
+			id, _ = v["session_id"].(string)
+		}
 		if id == "" {
 			return "", fmt.Errorf("%w: task has no current session", ErrNotFound)
 		}
@@ -230,15 +233,6 @@ func routePersistControl(ctx *Context, session, command, payload string) (bool, 
 		}
 		return ctx.Persist.controlSession(resolved, command, payload)
 	}
-	if ctx.API != nil {
-		view, err := ctx.API.GetSession(context.Background(), session)
-		if err != nil {
-			return true, err
-		}
-		if view.TaskID == "" {
-			return false, nil
-		}
-	}
 	owned, e := ctx.Persist.ownsSession(session)
 	if e != nil {
 		return true, e
@@ -270,6 +264,25 @@ type planNode struct {
 	BlockedOn        []string      `json:"blocked_on"`
 	Attempts         []taskAttempt `json:"attempts"`
 }
+
+// Normalize the supervision field at the decoding boundary so every plan
+// consumer (including status/show/since) uses the same current session.
+func (n *planNode) UnmarshalJSON(data []byte) error {
+	type node planNode
+	var decoded struct {
+		node
+		CurrentSessionID string `json:"current_session_id"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*n = planNode(decoded.node)
+	if decoded.CurrentSessionID != "" {
+		n.SessionID = decoded.CurrentSessionID
+	}
+	return nil
+}
+
 type taskAttempt struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
@@ -359,7 +372,11 @@ func requireDirectForTaskLifecycle(ctx *Context, session string) error {
 	if err != nil {
 		return err
 	}
-	if view.TaskID != "" {
+	owned, err := ctx.Persist.ownsSession(session)
+	if err != nil {
+		return err
+	}
+	if view.TaskID != "" || owned {
 		return fmt.Errorf("%w: task-owned lifecycle control requires --direct", ErrUsage)
 	}
 	return nil

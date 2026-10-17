@@ -168,3 +168,20 @@ func TestReadLogRange_LegacyLogFile(t *testing.T) {
 		t.Errorf("got %q, want %q", string(data), string(content))
 	}
 }
+
+func TestReadLogRangeAcrossGenerationsInNumericOrder(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{"s.ndjson": "one", "s.g2.ndjson": "two", "s.g10.ndjson": "ten", "s.g2.jsonl": "duplicate", "s.g3.jsonl": "three"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ReadLogRange(dir, "s", 0, 100)
+	if err != nil || string(got) != "onetwothreeten" {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+	got, err = ReadLogRange(dir, "s", 2, 8)
+	if err != nil || string(got) != "etwoth" {
+		t.Fatalf("cross generation got=%q err=%v", got, err)
+	}
+}

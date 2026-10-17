@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"github.com/danieliser/agentruntime/pkg/session"
 )
@@ -522,7 +523,14 @@ func (m *Manager) spawnSession(rec *ChatRecord, message string) (string, error) 
 // ledger. Provider stdin is owned exclusively by the native transport.
 func (m *Manager) injectSessionInput(rec *ChatRecord, sess *session.Session, message string) error {
 	if sender, ok := m.spawner.(SessionInputSender); ok {
-		return sender.SendSessionInput(context.Background(), sess.ID, chatInputIdempotencyKey(rec, message), "prompt", message)
+		key := chatInputIdempotencyKey(rec, message)
+		err := sender.SendSessionInput(context.Background(), sess.ID, key, "prompt", message)
+		if durable.IsCode(err, durable.CodeInvalidState) {
+			// A running turn rejects prompt admission. Preserve named-chat
+			// injection semantics through the provider's steer control.
+			return sender.SendSessionInput(context.Background(), sess.ID, key, "steer", message)
+		}
+		return err
 	}
 	return fmt.Errorf("session spawner does not support durable native input")
 }

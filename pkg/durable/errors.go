@@ -18,6 +18,7 @@ const (
 	CodeEventGap                    ErrorCode = "event_gap"
 	CodeBackpressure                ErrorCode = "backpressure"
 	CodeIndeterminate               ErrorCode = "indeterminate"
+	CodeWakeRecoveryRequired        ErrorCode = "wake_recovery_required"
 	CodeStoreClosed                 ErrorCode = "store_closed"
 	CodeRuntimeUnavailable          ErrorCode = "runtime_unavailable"
 	CodeEgressPreflightFailed       ErrorCode = "egress_preflight_failed"

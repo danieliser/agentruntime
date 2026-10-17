@@ -182,7 +182,7 @@ func (s *Server) settleAdmittedSession(ctx context.Context, sessionID string, st
 		Receipt: durable.TerminalReceipt{
 			SessionID: stored.ID, Generation: generation.Number, State: state, Reason: reason,
 			ExitCode: &exitCode, StartedAt: generation.CreatedAt, EndedAt: timestamp,
-			OutputHash: outputHash(session.LogFilePath(s.logDir, stored.ID)), LastSequence: stored.LastSequence,
+			OutputHash: outputHash(session.LogFilePath(s.logDir, nativeGenerationLogID(stored.ID, generation.Number))), LastSequence: stored.LastSequence,
 		},
 	})
 	if err != nil {
@@ -211,9 +211,13 @@ func (s *Server) ensureAdmissionGeneration(ctx context.Context, sessionID string
 	}
 	if stored.ActiveGeneration > 0 {
 		generation, err := s.durableStore.GetGeneration(ctx, stored.ID, stored.ActiveGeneration)
-		return stored, generation, err
+		if err != nil || !generation.State.Terminal() {
+			return stored, generation, err
+		}
+		// A continuation can fail before its successor has a runtime identity.
+		// Record an explicitly unstarted successor; never overwrite prior proof.
 	}
-	if stored.State != durable.StateStarting {
+	if stored.State != durable.StateStarting && stored.State != durable.StateRunning {
 		return durable.Session{}, durable.Generation{}, durable.NewError(durable.CodeInvalidState, op, "generationless settlement requires a created or starting session", nil)
 	}
 	var request SessionRequest

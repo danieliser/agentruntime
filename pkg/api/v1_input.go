@@ -63,8 +63,8 @@ func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey
 		return false, durable.NewError(durable.CodeInvalidState, op, errAdmissionClosed.Error(), nil)
 	}
 	defer s.endAdmission()
-	s.resumeMu.Lock()
-	defer s.resumeMu.Unlock()
+	unlock := s.sessionLocks.lock(sessionID)
+	defer unlock()
 	if s.durableStore == nil || s.eventBroker == nil {
 		return false, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
 	}

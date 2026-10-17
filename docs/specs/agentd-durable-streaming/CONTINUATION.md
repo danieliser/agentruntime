@@ -32,8 +32,21 @@ events bridge the prior generation to its replacement; its receipt freezes the
 earlier output boundary. Exact control retries are read-only, including after
 completion or restart. An intent without dispatch proof stays indeterminate
 and is never automatically replayed into a paid provider. If a wake fails before
-a new runtime generation is recorded, admission stays unresolved and further
-prompts are blocked; the prior receipt remains readable by generation.
+a new runtime generation is recorded, an explicitly unstarted successor records
+the failed admission. Session failure and its receipt commit atomically; prior
+receipts remain unchanged and readable by generation. Cancel/terminate intent is
+admissible while a starting session still points at an exited predecessor.
+Startup reconciliation settles this crash window as indeterminate after confirmed
+runtime discovery. Integrity checks flag it as `wake_recovery_required` before
+reconciliation and must pass after recovery before the daemon serves traffic.
+
+Input, explicit resume, stop and finalization serialize per session; a blocked
+spawn or input send does not stall unrelated sessions. Recovered transports
+restore idle from the durable turn boundary for both maintained and ordinary
+sessions. Without a recovered transport, a durably idle lost generation uses
+the wake path. The last-turn result is cached per generation and durable sequence
+so repeated GETs do not rescan its history. Named chats steer a running turn
+when ordinary prompt admission rejects it.
 
 Input and explicit resume share admission and serialization. A prompt during
 an active turn reports `invalid_state` and points to `steer`. The maintained
@@ -43,6 +56,8 @@ latency but is not needed for follow-up continuation.
 Diagnostic generation one retains `{id}.ndjson`; subsequent generations write
 `{id}.gN.ndjson`, so a new turn cannot alter the file hashed by an earlier
 receipt. Recovered generations append only within their own diagnostic file.
+Byte-range and legacy chat readers concatenate all generations in numeric order,
+with session-wide offsets and NDJSON preferred over JSONL for each generation.
 
 Verification uses deterministic Claude/Codex protocol fixtures and a runtime
 boundary fixture for Docker, with real local subprocesses and SQLite databases.

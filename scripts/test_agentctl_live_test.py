@@ -5,6 +5,20 @@ from unittest.mock import MagicMock, Mock
 from agentctl_live_test import LiveTest
 
 
+class CleanContextTest(unittest.TestCase):
+    def test_every_direct_dispatch_explicitly_requests_clean_context(self) -> None:
+        for provider in ('claude', 'codex'):
+            for restricted in (False, True):
+                test = object.__new__(LiveTest)
+                test.provider = provider
+                test.model = 'fixture'
+                test.work = '/isolated/work'
+                test.sessions = []
+                test.value = Mock(return_value={'session_id': 'fixture'})
+                test.run('tiny prompt', restricted)
+                args = test.value.call_args.args
+                self.assertEqual(args[args.index('--context') + 1], 'clean')
+
 class ActiveSteeringEvidenceTest(unittest.TestCase):
     def test_natural_workload_completion_cannot_pass_steering(self) -> None:
         test = self.fixture(workload_finished=True)

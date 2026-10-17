@@ -26,37 +26,39 @@ import (
 
 // Server holds the HTTP server and its dependencies.
 type Server struct {
-	router        *gin.Engine
-	sessions      *session.Manager
-	runtimes      map[string]runtime.Runtime // keyed by name ("local", "docker")
-	runtime       runtime.Runtime            // default runtime (first registered or "local")
-	agents        *agent.Registry
-	version       string
-	commitHash    string
-	listenerScope string
-	authEnabled   bool
-	authTokenHash [sha256.Size]byte
-	dataDir       string
-	logDir        string // directory for persistent session NDJSON logs
-	durableStore  durable.Store
-	eventBroker   *eventstream.Broker
-	observers     ObserverService
-	srv           *http.Server
-	resumeMu      sync.Mutex
-	admissionMu   sync.RWMutex
-	draining      bool
-	nativeMu      sync.RWMutex
-	native        map[string]*activeNativeSession
-	readiness     *runtimeReadinessMonitor
-	activationCtx context.Context
-	activationEnd context.CancelFunc
-	activationMu  sync.Mutex
-	activations   int
-	progress      *activationProgressBroker
-	cleanupOnce   sync.Once
-	cleanupWG     sync.WaitGroup
-	resumeStates  *resumeStateStore
-	skillBundles  *skills.Store
+	router                 *gin.Engine
+	sessions               *session.Manager
+	runtimes               map[string]runtime.Runtime // keyed by name ("local", "docker")
+	runtime                runtime.Runtime            // default runtime (first registered or "local")
+	agents                 *agent.Registry
+	version                string
+	commitHash             string
+	listenerScope          string
+	authEnabled            bool
+	authTokenHash          [sha256.Size]byte
+	dataDir                string
+	logDir                 string // directory for persistent session NDJSON logs
+	durableStore           durable.Store
+	eventBroker            *eventstream.Broker
+	observers              ObserverService
+	srv                    *http.Server
+	sessionLocks           sessionLocks
+	continuationMu         sync.Mutex
+	continuationBoundaries map[string]continuationBoundary
+	admissionMu            sync.RWMutex
+	draining               bool
+	nativeMu               sync.RWMutex
+	native                 map[string]*activeNativeSession
+	readiness              *runtimeReadinessMonitor
+	activationCtx          context.Context
+	activationEnd          context.CancelFunc
+	activationMu           sync.Mutex
+	activations            int
+	progress               *activationProgressBroker
+	cleanupOnce            sync.Once
+	cleanupWG              sync.WaitGroup
+	resumeStates           *resumeStateStore
+	skillBundles           *skills.Store
 
 	// Chat subsystem (named persistent chats).
 	chatRegistry *chat.Registry

@@ -42,6 +42,7 @@ def isolated_env(root: Path, persist_port: int, agentd_port: int, parent: dict[s
         raise RuntimeError('Live or duplicate ports are forbidden')
     env = {k: v for k, v in parent.items() if not k.startswith(('PERSIST_', 'AGENTD_', 'AGENTRUNTIME_', 'AGENTCTL_'))}
     env.update(PERSIST_HTTP__PORT=str(persist_port), PERSIST_HTTP__HOST='127.0.0.1',
+               PERSIST_AGENTRUNTIME__CLEAN_CONTEXT='true',
                PERSIST_DATA_DIR=str(root / 'persist-data'), PERSIST_CONFIG_DIR=str(root / 'persist-config'),
                PERSIST_URL=f'http://127.0.0.1:{persist_port}',
                PERSIST_MODEL_ROUTING_MARKDOWN=str(root / 'persist-data/model-routing.md'),
@@ -103,6 +104,7 @@ http:
 agentruntime:
   url: {env['AGENTD_URL']}
   token_file: {env['AGENTD_TOKEN_FILE']}
+  clean_context: true
   resume_idempotency_placement: header
   resume_idempotency_header: idempotency-key
 model_routing:

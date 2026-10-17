@@ -347,6 +347,14 @@ func (s *Server) reconcileMissingGenerations(discovered map[string]struct{}, con
 			log.Printf("[session %s] startup reconciliation generation lookup failed: %v", stored.ID, err)
 			continue
 		}
+		if (stored.State == durable.StateStarting && generation.State == durable.GenerationExited) ||
+			strings.HasPrefix(generation.ContainerID, unstartedRuntimeIdentityPrefix) {
+			cause := durable.NewError(durable.CodeIndeterminate, "recover_wake", "wake admission ended without dispatch proof", nil)
+			if _, err := s.settleAdmittedSession(ctx, stored.ID, durable.StateIndeterminate, "indeterminate", cause); err != nil {
+				log.Printf("[session %s] settle stranded wake: %v", stored.ID, err)
+			}
+			continue
+		}
 		if generation.State.Terminal() {
 			continue
 		}
@@ -406,16 +414,7 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 	if err != nil {
 		return durable.NewError(durable.CodeIndeterminate, op, "stored container lease is no longer enforceable", err)
 	}
-	recoveredIdle := false
-	if containerLease.Maintain && stored.LastSequence > 0 {
-		page, eventErr := s.durableStore.ListEvents(ctx, durable.EventQuery{
-			SessionID: stored.ID, AfterSequence: stored.LastSequence - 1, Limit: 1,
-		})
-		if eventErr != nil {
-			return durable.NewError(durable.CodeIndeterminate, op, "inspect maintained session turn boundary", eventErr)
-		}
-		recoveredIdle = len(page.Events) == 1 && page.Events[0].Sequence == stored.LastSequence && page.Events[0].Type == "turn.completed"
-	}
+	recoveredIdle := s.generationEndedNormally(ctx, stored, generation.Number)
 	sess.AgentName = stored.Agent
 	sess.SetRunning(sess.Handle)
 	rt := s.RuntimeFor(stored.Runtime)

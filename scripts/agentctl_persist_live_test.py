@@ -89,7 +89,11 @@ class LiveTest:
         return json.loads(self.pc('task', 'get', task_id))
 
     def session(self, task_id: str) -> str:
-        return self.until(lambda: self.task(task_id).get('session_id'), label='task assigned an AgentD session')
+        return self.until(lambda: self.task_session(self.task(task_id)), label='task assigned an AgentD session')
+
+    @staticmethod
+    def task_session(task: dict[str, object]) -> str | None:
+        return task.get('current_session_id') or task.get('session_id')
 
     def dispatch(self, title: str, prompt: str, runtime: str = 'docker', restricted: bool = False) -> dict[str, object]:
         args = ['task', 'dispatch', '--title', title, '--content', prompt + OUTCOME, '--agent', self.args.provider,

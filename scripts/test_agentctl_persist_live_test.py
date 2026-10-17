@@ -6,6 +6,16 @@ import tempfile
 import unittest
 from agentctl_persist_live_test import LiveTest
 
+class SessionResolutionTest(unittest.TestCase):
+    def test_supervision_session_preferred_with_legacy_fallback(self) -> None:
+        from unittest.mock import Mock
+        test = object.__new__(LiveTest)
+        test.until = lambda check, **kwargs: check()
+        for task, want in [({'session_id': 'old', 'current_session_id': 'new'}, 'new'),
+                           ({'session_id': 'old'}, 'old')]:
+            test.task = Mock(return_value=task)
+            self.assertEqual(test.session('task'), want)
+
 class PlanStreamReadinessTest(unittest.TestCase):
     def test_slow_cli_startup_does_not_fail_durable_replay(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.agentctl-live-test') as directory:

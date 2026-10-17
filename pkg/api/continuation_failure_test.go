@@ -48,6 +48,13 @@ func TestWakeIntentWithoutDispatchNeverStartsAgain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		receipt, receiptErr := store.GetTerminalReceipt(context.Background(), "boundary")
+		if receiptErr != nil || receipt.State != durable.StateFailed || stored.State != durable.StateFailed {
+			t.Fatalf("failed wake stranded session: state=%s receipt=%+v err=%v", stored.State, receipt, receiptErr)
+		}
+		if err := store.CheckIntegrity(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 		if status := server.sessionContinuation(context.Background(), stored); status.Continuable {
 			t.Fatalf("unresolved wake became continuable: %+v", status)
 		}
@@ -72,3 +79,42 @@ func (*rejectedWakeRuntime) Recover(context.Context) ([]runtime.ProcessHandle, e
 	return nil, nil
 }
 func (*rejectedWakeRuntime) Cleanup(context.Context) error { return nil }
+
+func TestStartingExitedWakeRecoveryAndStop(t *testing.T) {
+	for _, action := range []string{"recovery", "cancel", "terminate"} {
+		t.Run(action, func(t *testing.T) {
+			store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			seedContinuation(t, store, durable.StateCompleted, "fixture-thread")
+			ctx := context.Background()
+			if _, err := store.TransitionSession(ctx, durable.TransitionSessionParams{SessionID: "boundary", From: durable.StateCompleted, To: durable.StateStarting}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CheckIntegrity(ctx); !durable.IsCode(err, durable.ErrorCode("wake_recovery_required")) {
+				t.Fatalf("integrity must identify recoverable wake admission: %v", err)
+			}
+			server := NewServer(session.NewManager(), &rejectedWakeRuntime{}, agent.DefaultRegistry(), ServerConfig{DataDir: t.TempDir(), DurableStore: store, EventBroker: eventstream.New(store)})
+			if action == "recovery" {
+				server.RestoreRecoveredSessions(nil, "local")
+			} else {
+				httpServer := httptest.NewServer(server.router)
+				defer httpServer.Close()
+				response := postV1Control(t, httpServer.URL, "boundary", action, map[string]any{"idempotency_key": "stop-wake"})
+				response.Body.Close()
+				if response.StatusCode != http.StatusAccepted {
+					t.Fatalf("stop status=%d", response.StatusCode)
+				}
+			}
+			receipt, err := store.GetTerminalReceipt(ctx, "boundary")
+			if err != nil || !receipt.State.Terminal() {
+				t.Fatalf("receipt=%+v err=%v", receipt, err)
+			}
+			if err := store.CheckIntegrity(ctx); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

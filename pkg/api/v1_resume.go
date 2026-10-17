@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -42,8 +43,8 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		return
 	}
 	defer s.endAdmission()
-	s.resumeMu.Lock()
-	defer s.resumeMu.Unlock()
+	unlock := s.sessionLocks.lock(c.Param("id"))
+	defer unlock()
 	stored, repeated, err := s.resumeSessionLocked(c.Request.Context(), c.Param("id"), key, resume, false)
 	if err != nil {
 		writeDurableError(c, err)
@@ -57,8 +58,8 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 }
 
 // resumeSessionLocked is the canonical native generation restart. Callers hold
-// resumeMu and an admission lease, including the follow-up input path.
-func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotencyKey string, resume v1ResumeRequest, wake bool) (durable.Session, bool, error) {
+// the session lock and an admission lease, including the follow-up input path.
+func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotencyKey string, resume v1ResumeRequest, wake bool) (result durable.Session, repeated bool, resultErr error) {
 	const op = "resume_v1_session"
 	if s.durableStore == nil || s.eventBroker == nil {
 		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
@@ -157,6 +158,28 @@ func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotency
 		if err != nil {
 			return durable.Session{}, false, err
 		}
+	}
+	// Once reopening is durable, every failure must acquire terminal proof.
+	// Use a fresh context: a disconnected caller must not strand admission.
+	settleWakeFailure := wake
+	if wake {
+		defer func() {
+			if resultErr == nil || !settleWakeFailure {
+				return
+			}
+			settleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			latest, lookupErr := s.durableStore.GetSession(settleCtx, stored.ID)
+			if lookupErr != nil {
+				resultErr = errors.Join(resultErr, lookupErr)
+				return
+			}
+			if latest.State.Terminal() {
+				return
+			}
+			_, settleErr := s.settleAdmittedSession(settleCtx, stored.ID, durable.StateFailed, "failed", resultErr)
+			resultErr = errors.Join(resultErr, settleErr)
+		}()
 	}
 	begin, err := s.eventBroker.BeginControl(ctx, control)
 	if err != nil {
@@ -282,6 +305,7 @@ func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotency
 		s.finalizeV1SessionClassifiedLocked(stored.ID, runtime.ExitResult{Code: -1, ErrorDetail: classified.Error(), Err: classified}, "", "", classified)
 		return durable.Session{}, false, classified
 	}
+	settleWakeFailure = false // A live transport owns finalization after attachment.
 	if dispatchErr != nil {
 		return durable.Session{}, false, dispatchErr
 	}

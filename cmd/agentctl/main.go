@@ -33,16 +33,7 @@ func skeletonHandler(ctx *Context, _ []string) error {
 }
 
 func run(args []string, out, log io.Writer, environ map[string]string) int {
-	direct := false
-	cleanArgs := make([]string, 0, len(args))
-	for _, arg := range args {
-		if arg == "--direct" {
-			direct = true
-		} else {
-			cleanArgs = append(cleanArgs, arg)
-		}
-	}
-	args = cleanArgs
+	args, direct := extractDirectFlag(args)
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
 		fmt.Fprintln(out, helpText())
 		return ExitSuccess
@@ -106,4 +97,44 @@ func main() {
 		}
 	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, env))
+}
+
+// Flags may precede the command or its first positional argument. After a
+// positional argument or --, every token belongs to the command's payload.
+func extractDirectFlag(args []string) ([]string, bool) {
+	result := make([]string, 0, len(args))
+	direct, command, literal := false, false, false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if literal {
+			result = append(result, arg)
+			continue
+		}
+		if arg == "--" {
+			literal = true
+			result = append(result, arg)
+			continue
+		}
+		if arg == "--direct" {
+			direct = true
+			continue
+		}
+		result = append(result, arg)
+		// Consume global flag values without treating them as positional text.
+		if arg == "--url" || arg == "--persist-url" || arg == "--as" {
+			if i+1 < len(args) {
+				i++
+				result = append(result, args[i])
+			}
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			if command {
+				literal = true
+			} else {
+				command = true
+			}
+		}
+	}
+	return result, direct
 }

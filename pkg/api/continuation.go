@@ -80,7 +80,19 @@ func (s *Server) probeSessionControl(ctx context.Context, params eventstream.Con
 
 // A lost transport may have been idle at daemon shutdown. Only durable turn
 // completion without a later turn/input intent proves that prompt can wake it.
+type continuationBoundary struct {
+	generation int64
+	sequence   int64
+	idle       bool
+}
+
 func (s *Server) generationEndedNormally(ctx context.Context, stored durable.Session, generation int64) bool {
+	s.continuationMu.Lock()
+	cached, found := s.continuationBoundaries[stored.ID]
+	s.continuationMu.Unlock()
+	if found && cached.generation == generation && cached.sequence == stored.LastSequence {
+		return cached.idle
+	}
 	idle := false
 	after := int64(0)
 	for {
@@ -105,6 +117,12 @@ func (s *Server) generationEndedNormally(ctx context.Context, stored durable.Ses
 			}
 		}
 		if !page.HasMore {
+			s.continuationMu.Lock()
+			if s.continuationBoundaries == nil {
+				s.continuationBoundaries = make(map[string]continuationBoundary)
+			}
+			s.continuationBoundaries[stored.ID] = continuationBoundary{generation, stored.LastSequence, idle}
+			s.continuationMu.Unlock()
 			return idle
 		}
 	}

@@ -69,6 +69,10 @@ func resumeControlForClosedGeneration(params durable.AppendEventParams, generati
 	if generation.State != durable.GenerationExited {
 		return false
 	}
+	if session.State == durable.StateStarting && session.ActiveGeneration == generation.Number &&
+		(params.Type == "control.cancel.requested" || params.Type == "control.terminate.requested") {
+		return true
+	}
 	// Continuation intent bridges the closed generation to its successor. No
 	// provider output may be appended after that generation's receipt.
 	return (params.Type == "control.prompt.requested" && session.State == durable.StateStarting && session.ActiveGeneration == generation.Number) ||

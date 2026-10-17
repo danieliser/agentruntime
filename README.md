@@ -136,7 +136,10 @@ agentctl wait plan:<plan_id> --until approval,failed,done --timeout 30m &
 Use `agentctl since plan:<plan_id>` or `agentctl grep plan:<plan_id> PATTERN` to
 read across its current node sessions, with each output tagged by node. Controls
 for PERSIST-owned sessions route through PERSIST. Pass `--direct` to explicitly
-send a control to AgentD.
+send a control to AgentD. Place it before the session ID, for example
+`agentctl --direct prompt SESSION "text"`; after a positional argument or `--`,
+`--direct` is literal input. Task and plan resolution prefer `current_session_id`
+and fall back to `session_id` for older PERSIST responses.
 
 Output is compact human text by default; `--json` selects JSON. `since ID`
 returns assistant text and tool summaries after its saved sequence, then advances
@@ -566,11 +569,15 @@ and SQLite without starting services. Evidence and cleanup receipts are under
 `.agentctl-live-test/persist-PROVIDER/run.*`.
 
 The runner honors the PERSIST checkout's `.node-version`/`.nvmrc`, fails before
-startup on a native SQLite ABI mismatch, sets `PERSIST_HTTP__PORT`, and uses
+startup on a native SQLite ABI mismatch, sets `PERSIST_HTTP__PORT`, explicitly
+enables `agentruntime.clean_context` for local and Docker requests, and uses
 `/health` for unauthenticated readiness. It binds the CLIs through isolated URLs
 and private token files. Node processes reject attempts to use ports 8803/38093
 or the prohibited production roots. No installed services are restarted.
 
 Raw task-owned session controls require PERSIST authorization; a hidden task
-cannot fall back to a direct write. Standalone sessions work without PERSIST.
-Use `--direct` only when deliberately taking over control through AgentD.
+cannot fall back to a direct write. Raw session IDs also undergo PERSIST ownership
+lookup when their AgentD manifest has no task ID. Standalone sessions use direct
+control after a negative ownership lookup; lookup/authentication failures block
+writes. Use `--direct` before the session ID to deliberately take over through
+AgentD, including when PERSIST is unavailable.

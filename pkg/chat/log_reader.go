@@ -50,79 +50,88 @@ func (r *LogReader) ReadMessages(
 	cap := limit + 1 // collect one extra to detect hasMore
 
 	for chainIndex, sessID := range chain {
-		logPath, exists, err := session.ExistingLogFilePath(r.logDir, sessID)
-		if err != nil || !exists {
-			continue
-		}
-
-		f, err := os.Open(logPath)
+		logPaths, err := session.SessionLogPaths(r.logDir, sessID)
 		if err != nil {
-			continue
+			return nil, false, err
 		}
-
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 		var lineOffset int64
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
+		for _, logPath := range logPaths {
+
+			f, err := os.Open(logPath)
+			if err != nil {
+				continue
+			}
+
+			scanner := bufio.NewScanner(f)
+			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				if len(line) == 0 {
+					lineOffset++
+					continue
+				}
+
+				globalOffset := int64(chainIndex)*1_000_000_000 + lineOffset
 				lineOffset++
-				continue
-			}
 
-			globalOffset := int64(chainIndex)*1_000_000_000 + lineOffset
-			lineOffset++
+				// Apply before cursor: skip events at or past the cursor.
+				// before=0 or before<0 means no cursor (return all messages).
+				if before > 0 && globalOffset >= before {
+					continue
+				}
 
-			// Apply before cursor: skip events at or past the cursor.
-			// before=0 or before<0 means no cursor (return all messages).
-			if before > 0 && globalOffset >= before {
-				continue
-			}
+				var evt map[string]json.RawMessage
+				if err := json.Unmarshal(line, &evt); err != nil {
+					continue
+				}
 
-			var evt map[string]json.RawMessage
-			if err := json.Unmarshal(line, &evt); err != nil {
-				continue
-			}
+				var eventType string
+				if raw, ok := evt["type"]; ok {
+					_ = json.Unmarshal(raw, &eventType)
+				}
 
-			var eventType string
-			if raw, ok := evt["type"]; ok {
-				_ = json.Unmarshal(raw, &eventType)
-			}
+				if filterByType && !typeSet[eventType] {
+					continue
+				}
 
-			if filterByType && !typeSet[eventType] {
-				continue
-			}
+				var ts time.Time
+				if raw, ok := evt["timestamp"]; ok {
+					var tsMillis float64
+					if json.Unmarshal(raw, &tsMillis) == nil {
+						ts = time.UnixMilli(int64(tsMillis))
+					}
+				}
 
-			var ts time.Time
-			if raw, ok := evt["timestamp"]; ok {
-				var tsMillis float64
-				if json.Unmarshal(raw, &tsMillis) == nil {
-					ts = time.UnixMilli(int64(tsMillis))
+				data := json.RawMessage("{}")
+				if raw, ok := evt["data"]; ok {
+					data = raw
+				}
+
+				entries = append(entries, apischema.ChatMessageEntry{
+					SessionID: sessID,
+					Type:      eventType,
+					Data:      data,
+					Offset:    globalOffset,
+					Timestamp: ts,
+					Source:    "legacy_ndjson_unverified",
+				})
+
+				// Stop early once we have limit+1: enough to detect hasMore.
+				if limit > 0 && len(entries) >= cap {
+					f.Close()
+					return entries[:limit], true, nil
 				}
 			}
-
-			data := json.RawMessage("{}")
-			if raw, ok := evt["data"]; ok {
-				data = raw
+			scanErr := scanner.Err()
+			closeErr := f.Close()
+			if scanErr != nil {
+				return nil, false, scanErr
 			}
-
-			entries = append(entries, apischema.ChatMessageEntry{
-				SessionID: sessID,
-				Type:      eventType,
-				Data:      data,
-				Offset:    globalOffset,
-				Timestamp: ts,
-				Source:    "legacy_ndjson_unverified",
-			})
-
-			// Stop early once we have limit+1: enough to detect hasMore.
-			if limit > 0 && len(entries) >= cap {
-				f.Close()
-				return entries[:limit], true, nil
+			if closeErr != nil {
+				return nil, false, closeErr
 			}
 		}
-		f.Close()
 	}
 
 	return entries, false, nil

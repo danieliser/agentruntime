@@ -148,6 +148,17 @@ LIMIT 1`).Scan(&sessionID)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return storageError(op, "validate active generations", err)
 	}
+	// This crash window is recoverable only after runtime discovery. Report
+	// it separately, after checking every corruption invariant above.
+	err = tx.QueryRowContext(ctx, `SELECT s.id FROM sessions s
+JOIN runtime_generations g ON g.session_id=s.id AND g.generation=s.active_generation
+WHERE s.state='starting' AND g.state='exited' LIMIT 1`).Scan(&sessionID)
+	if err == nil {
+		return durable.NewError(durable.CodeWakeRecoveryRequired, op, "starting session has an exited active generation", nil)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return storageError(op, "validate wake admissions", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return storageError(op, "commit integrity check", err)
 	}

@@ -155,7 +155,7 @@ func TestWaitAcceptsTaskReferences(t *testing.T) {
 	}
 }
 
-func TestStandaloneControlDoesNotRequirePersist(t *testing.T) {
+func TestStandaloneControlAfterNegativePersistLookup(t *testing.T) {
 	writes := 0
 	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -168,7 +168,9 @@ func TestStandaloneControlDoesNotRequirePersist(t *testing.T) {
 	defer agent.Close()
 	ctx, _ := commandContext(agent, true)
 	ctx.Reference = &SessionReference{Kind: "session", ID: "standalone"}
-	ctx.Persist = NewPersistClient(Config{PersistURL: "http://127.0.0.1:1"}, map[string]string{"PERSIST_TOKEN_FILE": t.TempDir() + "/missing"})
+	persist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer persist.Close()
+	ctx.Persist = NewPersistClient(Config{PersistURL: persist.URL, PersistToken: "fixture"})
 	if err := cmdInput(ctx, []string{"standalone", "steer"}, "steer"); err != nil {
 		t.Fatal(err)
 	}
@@ -208,19 +210,29 @@ func TestPersistApprovalAcceptsQuotedStringID(t *testing.T) {
 }
 
 func TestTaskOwnedLifecycleRequiresExplicitDirect(t *testing.T) {
- for _, command := range []string{"cancel","terminate","resume"} {
-  t.Run(command,func(t *testing.T){
-   writes:=0
-   srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-    if r.Method==http.MethodGet {w.Write([]byte(`{"data":{"session_id":"s","task_id":"persist-task","state":"running"}}`));return}
-    writes++;w.Write([]byte(`{"data":{"accepted":true}}`))
-   }))
-   defer srv.Close()
-   ctx,_:=commandContext(srv,true)
-   ctx.Persist=NewPersistClient(Config{PersistURL:srv.URL,PersistToken:"private"})
-   var err error
-   if command=="resume" {err=cmdResume(ctx,[]string{"s","continue"})} else {err=control(ctx,[]string{"s"},command)}
-   if err==nil || writes!=0 {t.Fatalf("unapproved direct lifecycle action: err=%v writes=%d",err,writes)}
-  })
- }
+	for _, command := range []string{"cancel", "terminate", "resume"} {
+		t.Run(command, func(t *testing.T) {
+			writes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Write([]byte(`{"data":{"session_id":"s","task_id":"persist-task","state":"running"}}`))
+					return
+				}
+				writes++
+				w.Write([]byte(`{"data":{"accepted":true}}`))
+			}))
+			defer srv.Close()
+			ctx, _ := commandContext(srv, true)
+			ctx.Persist = NewPersistClient(Config{PersistURL: srv.URL, PersistToken: "private"})
+			var err error
+			if command == "resume" {
+				err = cmdResume(ctx, []string{"s", "continue"})
+			} else {
+				err = control(ctx, []string{"s"}, command)
+			}
+			if err == nil || writes != 0 {
+				t.Fatalf("unapproved direct lifecycle action: err=%v writes=%d", err, writes)
+			}
+		})
+	}
 }
