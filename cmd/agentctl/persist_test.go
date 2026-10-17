@@ -107,3 +107,120 @@ func TestPlanNodeReferenceResolvesByTitleSlug(t *testing.T) {
 		t.Fatalf("resolve=%q err=%v", got, e)
 	}
 }
+
+func TestPersistApprovalListUsesBrokerIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/sessions/session-1/approvals" {
+			t.Errorf("unexpected %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"approvals":[{"id":"broker-id","session_id":"session-1"}]}`))
+	}))
+	defer srv.Close()
+	p := NewPersistClient(Config{PersistURL: srv.URL, PersistToken: "private"})
+	ctx := &Context{Persist: p, Reference: &SessionReference{Kind: "session", ID: "session-1"}}
+	list, err := approvals(ctx, "session-1")
+	if err != nil || len(list.Approvals) != 1 || !strings.Contains(string(list.Approvals[0]), "broker-id") {
+		t.Fatalf("list=%+v err=%v", list, err)
+	}
+}
+
+func TestHiddenPersistSessionCannotFallBackToDirect(t *testing.T) {
+	directCalls := 0
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Write([]byte(`{"data":{"session_id":"owned","task_id":"persist-task","state":"completed"}}`))
+			return
+		}
+		directCalls++
+		w.Write([]byte(`{"data":{"accepted":true}}`))
+	}))
+	defer agent.Close()
+	persist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }))
+	defer persist.Close()
+	ctx, out := commandContext(agent, true)
+	ctx.Out = out
+	ctx.Persist = NewPersistClient(Config{PersistURL: persist.URL, PersistToken: "private"})
+	ctx.Reference = &SessionReference{Kind: "session", ID: "owned"}
+	if err := cmdInput(ctx, []string{"owned", "continue"}, "prompt"); err == nil {
+		t.Error("hidden owned session accepted via direct AgentD")
+	}
+	if directCalls != 0 {
+		t.Errorf("direct calls=%d", directCalls)
+	}
+}
+
+func TestWaitAcceptsTaskReferences(t *testing.T) {
+	if _, ok := sessionArgument("wait"); !ok {
+		t.Fatal("wait does not resolve task references")
+	}
+}
+
+func TestStandaloneControlDoesNotRequirePersist(t *testing.T) {
+	writes := 0
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Write([]byte(`{"data":{"session_id":"standalone","state":"running"}}`))
+			return
+		}
+		writes++
+		w.Write([]byte(`{"data":{"accepted":true}}`))
+	}))
+	defer agent.Close()
+	ctx, _ := commandContext(agent, true)
+	ctx.Reference = &SessionReference{Kind: "session", ID: "standalone"}
+	ctx.Persist = NewPersistClient(Config{PersistURL: "http://127.0.0.1:1"}, map[string]string{"PERSIST_TOKEN_FILE": t.TempDir() + "/missing"})
+	if err := cmdInput(ctx, []string{"standalone", "steer"}, "steer"); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 1 {
+		t.Fatalf("writes=%d", writes)
+	}
+}
+
+func TestPlanShowPreservesNullUndispatchedSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"graph":{"nodes":[{"id":"b","title":"B","status":"pending","session_id":null,"blocked_on":["a"]}]}}`))
+	}))
+	defer srv.Close()
+	ctx, out := commandContext(srv, true)
+	ctx.Persist = NewPersistClient(Config{PersistURL: srv.URL, PersistToken: "private"})
+	if err := cmdPlan(ctx, []string{"show", "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"session_id":null`) {
+		t.Fatalf("lost null: %s", out)
+	}
+}
+
+func TestPersistApprovalAcceptsQuotedStringID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/sessions/s/approvals/broker-id/approve" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write([]byte(`{"accepted":true}`))
+	}))
+	defer srv.Close()
+	p := NewPersistClient(Config{PersistURL: srv.URL, PersistToken: "private"})
+	if _, err := p.controlSession("s", "approve", `s "broker-id"`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskOwnedLifecycleRequiresExplicitDirect(t *testing.T) {
+ for _, command := range []string{"cancel","terminate","resume"} {
+  t.Run(command,func(t *testing.T){
+   writes:=0
+   srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+    if r.Method==http.MethodGet {w.Write([]byte(`{"data":{"session_id":"s","task_id":"persist-task","state":"running"}}`));return}
+    writes++;w.Write([]byte(`{"data":{"accepted":true}}`))
+   }))
+   defer srv.Close()
+   ctx,_:=commandContext(srv,true)
+   ctx.Persist=NewPersistClient(Config{PersistURL:srv.URL,PersistToken:"private"})
+   var err error
+   if command=="resume" {err=cmdResume(ctx,[]string{"s","continue"})} else {err=control(ctx,[]string{"s"},command)}
+   if err==nil || writes!=0 {t.Fatalf("unapproved direct lifecycle action: err=%v writes=%d",err,writes)}
+  })
+ }
+}

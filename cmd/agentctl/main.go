@@ -69,9 +69,8 @@ func run(args []string, out, log io.Writer, environ map[string]string) int {
 			}
 			ctx.Reference = &ref
 			planSurface := ref.Kind == "plan" || ref.Kind == "plan_node"
-			controlCommand := inv.Command == "steer" || inv.Command == "prompt" || inv.Command == "interrupt" || inv.Command == "approve" || inv.Command == "deny"
 			planCommand := planSurface && (inv.Command == "status" || inv.Command == "since" || inv.Command == "grep" || inv.Command == "wait")
-			shouldResolve := ref.Kind != "session" && !planCommand && (!controlCommand || direct)
+			shouldResolve := ref.Kind != "session" && !planCommand
 			if shouldResolve {
 				resolved, resolveErr := ctx.Persist.resolve(ref)
 				if resolveErr != nil {
@@ -92,7 +91,7 @@ func run(args []string, out, log io.Writer, environ map[string]string) int {
 
 func sessionArgument(command string) (int, bool) {
 	switch command {
-	case "status", "since", "grep", "steer", "prompt", "interrupt", "cancel", "terminate", "resume", "approvals", "approve", "deny", "result":
+	case "wait", "status", "since", "grep", "steer", "prompt", "interrupt", "cancel", "terminate", "resume", "approvals", "approve", "deny", "result":
 		return 0, true
 	}
 	return 0, false

@@ -41,3 +41,6 @@ Thumbs.db
 **/logs/
 /.agentctl-live-test/
 /agentctl
+
+# Python harness bytecode
+__pycache__/

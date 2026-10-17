@@ -10,6 +10,11 @@ func control(ctx *Context, args []string, which string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("%w: %s ID", ErrUsage, which)
 	}
+	if which != "interrupt" {
+		if err := requireDirectForTaskLifecycle(ctx, args[0]); err != nil {
+			return err
+		}
+	}
 	key := uuid.NewString()
 	if which == "interrupt" {
 		if routed, err := routePersistControl(ctx, args[0], which, ""); routed {

@@ -48,7 +48,14 @@ func cmdWait(ctx *Context, args []string) error {
 		ctxWait, cancel = context.WithCancel(context.Background())
 	}
 	defer cancel()
-	return waitStream(ctxWait, ctx.Config, fs.Arg(0), store, reasons, *timeout, ctx.Out)
+	id := fs.Arg(0)
+	if ref.Kind == "plan_node" {
+		id, err = ctx.Persist.resolve(ref)
+		if err != nil {
+			return err
+		}
+	}
+	return waitStream(ctxWait, ctx.Config, id, store, reasons, *timeout, ctx.Out)
 }
 
 func waitPlan(ctx *Context, id string, reasons []string, timeout time.Duration, cursorDir string) error {

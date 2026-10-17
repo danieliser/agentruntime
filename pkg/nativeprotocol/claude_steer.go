@@ -29,9 +29,11 @@ func ClaudeSteerBoundary(raw []byte) bool {
 		return true
 	}
 	// Tool cancellation can use user-rejection wording after our interrupt.
-	// Require explicit absence of permission denials and safety stops; the
-	// transport still requires a successfully dispatched active-turn steer.
-	if result.TerminalReason != "aborted_tools" || result.SafetyStops == nil || *result.SafetyStops != 0 {
+	// Require explicit absence of permission denials. SDKResultError does not
+	// declare safety_stops; honor it when present without requiring that
+	// undocumented extension. The transport separately requires a successful
+	// active-turn interrupt+replacement write.
+	if result.TerminalReason != "aborted_tools" || (result.SafetyStops != nil && *result.SafetyStops != 0) {
 		return false
 	}
 	var denials []json.RawMessage

@@ -178,8 +178,14 @@ func (p *PersistClient) controlSession(session, command, payload string) (bool, 
 		if len(parts) != 2 {
 			return false, fmt.Errorf("%w: %s SESSION REQUEST_ID", ErrUsage, command)
 		}
+		requestID := parts[1]
+		if strings.HasPrefix(requestID, "\"") {
+			if err := json.Unmarshal([]byte(requestID), &requestID); err != nil {
+				return true, fmt.Errorf("%w: invalid approval ID", ErrUsage)
+			}
+		}
 		var out any
-		e := p.request(context.Background(), http.MethodPost, base+"/approvals/"+url.PathEscape(parts[1])+"/"+command, nil, &out)
+		e := p.request(context.Background(), http.MethodPost, base+"/approvals/"+url.PathEscape(requestID)+"/"+command, nil, &out)
 		return true, e
 	}
 	path := base + "/" + command
@@ -214,17 +220,41 @@ func routePersistControl(ctx *Context, session, command, payload string) (bool, 
 		return false, nil
 	}
 	if ctx.Reference != nil && ctx.Reference.Kind != "session" {
-		resolved, e := ctx.Persist.resolve(*ctx.Reference)
-		if e != nil {
-			return true, e
+		resolved := session
+		if ref, err := ParseSessionReference(session); err == nil && ref.Kind != "session" {
+			var resolveErr error
+			resolved, resolveErr = ctx.Persist.resolve(*ctx.Reference)
+			if resolveErr != nil {
+				return true, resolveErr
+			}
 		}
 		return ctx.Persist.controlSession(resolved, command, payload)
+	}
+	if ctx.API != nil {
+		view, err := ctx.API.GetSession(context.Background(), session)
+		if err != nil {
+			return true, err
+		}
+		if view.TaskID == "" {
+			return false, nil
+		}
 	}
 	owned, e := ctx.Persist.ownsSession(session)
 	if e != nil {
 		return true, e
 	}
 	if !owned {
+		// A hidden/unauthorized PERSIST resource must never turn into a direct
+		// AgentD write. Task ownership comes from AgentD's stored manifest.
+		if ctx.API != nil {
+			view, err := ctx.API.GetSession(context.Background(), session)
+			if err != nil {
+				return true, err
+			}
+			if view.TaskID != "" {
+				return true, fmt.Errorf("task-owned session cannot be controlled outside PERSIST; use --direct explicitly")
+			}
+		}
 		return false, nil
 	}
 	return ctx.Persist.controlSession(session, command, payload)
@@ -301,7 +331,11 @@ func cmdPlan(ctx *Context, args []string) error {
 		if batch == "" {
 			batch = "-"
 		}
-		rows = append(rows, map[string]any{"node": n.ID, "title": n.Title, "status": n.Status, "batch": batch, "session_id": n.SessionID, "pending_approvals": n.PendingApprovals, "blocked_on": n.BlockedOn})
+		var sessionID any = n.SessionID
+		if n.SessionID == "" {
+			sessionID = nil
+		}
+		rows = append(rows, map[string]any{"node": n.ID, "title": n.Title, "status": n.Status, "batch": batch, "session_id": sessionID, "pending_approvals": n.PendingApprovals, "blocked_on": n.BlockedOn})
 		lines = append(lines, fmt.Sprintf("%s status=%s batch=%s session=%s approvals=%d blocked_on=%v", n.ID, n.Status, batch, emptyDash(n.SessionID), n.PendingApprovals, n.BlockedOn))
 	}
 	return WriteOutput(ctx.Out, ctx.Config, rows, strings.Join(lines, "\n"))
@@ -311,4 +345,22 @@ func emptyDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// Controls without a PERSIST route must never silently bypass its ownership.
+func requireDirectForTaskLifecycle(ctx *Context, session string) error {
+	if ctx.Direct || ctx.Persist == nil {
+		return nil
+	}
+	if ctx.Reference != nil && ctx.Reference.Kind != "session" {
+		return fmt.Errorf("%w: task-owned lifecycle control requires --direct", ErrUsage)
+	}
+	view, err := ctx.API.GetSession(context.Background(), session)
+	if err != nil {
+		return err
+	}
+	if view.TaskID != "" {
+		return fmt.Errorf("%w: task-owned lifecycle control requires --direct", ErrUsage)
+	}
+	return nil
 }

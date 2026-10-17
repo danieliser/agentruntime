@@ -82,7 +82,7 @@ func cmdStatus(ctx *Context, args []string) error {
 		}
 	}
 	seq := s.LastSequence
-	value := map[string]any{"session_id": s.SessionID, "state": s.State, "turn": turn, "pending_approvals": len(a.Approvals), "last_event_seq": seq}
+	value := map[string]any{"session_id": s.SessionID, "state": s.State, "generation": s.Generation, "continuable": s.Continuable, "continuable_reason": s.ContinuableReason, "runtime": s.Runtime, "provider_session_id": s.ProviderSessionID, "container_lease": s.ContainerLease, "turn": turn, "pending_approvals": len(a.Approvals), "last_event_seq": seq}
 	return WriteOutput(ctx.Out, ctx.Config, value, fmt.Sprintf("%s %s turn=%s approvals=%d seq=%d", s.SessionID, s.State, turn, len(a.Approvals), seq))
 }
 

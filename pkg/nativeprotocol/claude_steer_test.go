@@ -10,7 +10,7 @@ const abortedClaudeTurn = `{"type":"result","subtype":"error_during_execution","
 const successfulClaudeTurn = `{"type":"result","subtype":"success","is_error":false}`
 
 func TestClaudeSteerClaimsOnlyItsMatchingTurnBoundary(t *testing.T) {
-	for _, scenario := range []string{"aborted", "aborted_tools", "tools_permission_denial", "tools_safety_stop", "tools_missing_evidence", "tools_interrupt_only", "tools_partial_write", "tools_idle_steer", "raced_success", "real_error", "interrupt_only", "forged_provider_hint", "partial_write", "cancelled_write", "idle_steer"} {
+	for _, scenario := range []string{"aborted", "aborted_tools", "tools_sdk_without_safety_counter", "tools_permission_denial", "tools_safety_stop", "tools_missing_evidence", "tools_interrupt_only", "tools_partial_write", "tools_idle_steer", "raced_success", "real_error", "interrupt_only", "forged_provider_hint", "partial_write", "cancelled_write", "idle_steer"} {
 		t.Run(scenario, func(t *testing.T) {
 			process := newFakeProcess()
 			adapter, _ := NewAdapter(ProviderClaude)
@@ -74,6 +74,9 @@ func TestClaudeSteerClaimsOnlyItsMatchingTurnBoundary(t *testing.T) {
 			if scenario == "aborted_tools" || scenario == "tools_interrupt_only" || scenario == "tools_partial_write" || scenario == "tools_idle_steer" {
 				raw = `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools","permission_denials":[],"safety_stops":0}`
 			}
+			if scenario == "tools_sdk_without_safety_counter" {
+				raw = `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools","permission_denials":[],"errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"]}`
+			}
 			if scenario == "tools_permission_denial" {
 				raw = `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools","permission_denials":[{"tool_name":"Bash"}],"safety_stops":0}`
 			}
@@ -85,7 +88,7 @@ func TestClaudeSteerClaimsOnlyItsMatchingTurnBoundary(t *testing.T) {
 			}
 			process.writeStdout(t, []byte(raw))
 			record := <-transport.Records()
-			want := scenario == "aborted" || scenario == "aborted_tools" || scenario == "raced_success"
+			want := scenario == "aborted" || scenario == "aborted_tools" || scenario == "tools_sdk_without_safety_counter" || scenario == "raced_success"
 			if record.SupersededBySteer != want {
 				t.Fatalf("superseded=%v want=%v", record.SupersededBySteer, want)
 			}

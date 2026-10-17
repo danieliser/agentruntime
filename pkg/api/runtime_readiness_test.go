@@ -131,7 +131,7 @@ func TestRuntimeReadinessRefreshesPassiveRuntimeTimestamp(t *testing.T) {
 	}
 }
 
-func TestSlowAdmissionProbeDoesNotStalePassiveRuntime(t *testing.T) {
+func TestSlowAdmissionProbeDoesNotBlockPassiveRuntimeRefresh(t *testing.T) {
 	probeStarted := make(chan struct{})
 	docker := &snapshotTestRuntime{name: "docker"}
 	docker.setCheck(func(ctx context.Context) error {
@@ -147,16 +147,28 @@ func TestSlowAdmissionProbeDoesNotStalePassiveRuntime(t *testing.T) {
 		"docker": docker,
 		"local":  &passiveSnapshotTestRuntime{name: "local"},
 	}, runtimeReadinessConfig{
-		interval: 5 * time.Millisecond, timeout: time.Second, staleAfter: 30 * time.Millisecond,
+		interval: 5 * time.Millisecond, timeout: 5 * time.Second, staleAfter: 30 * time.Millisecond,
 	})
+	initial := monitor.snapshot(time.Now())["local"].CheckedAt
 	monitor.start()
 	t.Cleanup(monitor.stop)
 	<-probeStarted
-	time.Sleep(50 * time.Millisecond)
-
-	local := monitor.snapshot(time.Now())["local"]
-	if local.Status != "ready" || local.Stale {
-		t.Fatalf("slow Docker probe stalled passive runtime refresh: %+v", local)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshots := monitor.snapshot(time.Now())
+		local := snapshots["local"]
+		// Prove progress beyond the stale window while Docker remains blocked.
+		// A 30ms wall-clock freshness assertion races scheduler pauses under load.
+		if local.Status == "ready" && local.CheckedAt.After(initial.Add(monitor.config.staleAfter)) {
+			if snapshots["docker"].Status != "checking" {
+				t.Fatal("Docker probe finished before passive refresh evidence")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slow Docker probe stalled passive runtime refresh: %+v", local)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

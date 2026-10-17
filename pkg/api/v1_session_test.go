@@ -1694,3 +1694,19 @@ func waitForDurableTerminal(t *testing.T, store durable.Store, sessionID string)
 	}
 	t.Fatalf("session %s did not become durably terminal", sessionID)
 }
+
+func TestV1SessionViewRetainsTaskOwnership(t *testing.T) {
+	counter := &atomic.Int32{}
+	store := durablememory.New()
+	ts := newV1SessionTestServer(t, store, counter)
+	defer ts.Close()
+	response := postV1Session(t, ts.URL, map[string]any{"idempotency_key": "task-owned", "task_id": "persist-task", "agent": "sleep-test", "runtime": "test", "prompt": "hello"})
+	defer response.Body.Close()
+	var data struct {
+		Data map[string]any `json:"data"`
+	}
+	decodeJSON(t, response.Body, &data)
+	if data.Data["task_id"] != "persist-task" {
+		t.Fatalf("missing ownership: %v", data.Data["task_id"])
+	}
+}

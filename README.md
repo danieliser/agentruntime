@@ -95,7 +95,7 @@ The default target is `http://127.0.0.1:38093`; `--url` or `AGENTD_URL` override
 `--keep-warm DUR` (positive Docker idle TTL, at most 24h), `--portable-resume`
 (snapshot provider state before Docker cleanup), and `--context clean` (omit
 ambient provider configuration). Without `--keep-warm`, a one-turn process can
-exit after its reply; `prompt` then fails because no live transport remains.
+exit after its reply; `prompt` wakes it through native provider resume.
 Maintained sessions are available for both Claude and Codex. Portable resume is
 opt-in and requires Docker; it is separate from keeping the transport warm.
 
@@ -183,6 +183,9 @@ comma-separated; a matching condition deliberately has a nonzero exit code:
 | `11` | Wait observed `approval` |
 | `12` | Wait observed `error` (including an interrupted `turn.failed`) |
 | `13` | Wait observed `done` |
+| `14` | Plan wait observed `node_started` |
+| `15` | Plan wait observed `node_done` |
+| `16` | Plan wait observed `failed` |
 
 Run `scripts/agentctl-live-test.sh claude` and `scripts/agentctl-live-test.sh codex`
 for live acceptance. Each builds the current worktree, starts a separate daemon
@@ -506,3 +509,22 @@ data. Non-loopback binding is explicit and does not weaken authentication.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+### Isolated PERSIST acceptance
+
+Run `scripts/agentctl-persist-live-test.sh claude` and then the same command
+with `codex`. Each run builds its own binaries and creates private data/config
+roots, credentials, cursors, Docker networks and proxy. `--flows a-local,a-docker,b,c,d`
+selects scenarios (all are required for qualification); `--preflight` checks Node
+and SQLite without starting services. Evidence and cleanup receipts are under
+`.agentctl-live-test/persist-PROVIDER/run.*`.
+
+The runner honors the PERSIST checkout's `.node-version`/`.nvmrc`, fails before
+startup on a native SQLite ABI mismatch, sets `PERSIST_HTTP__PORT`, and uses
+`/health` for unauthenticated readiness. It binds the CLIs through isolated URLs
+and private token files. Node processes reject attempts to use ports 8803/38093
+or the prohibited production roots. No installed services are restarted.
+
+Raw task-owned session controls require PERSIST authorization; a hidden task
+cannot fall back to a direct write. Standalone sessions work without PERSIST.
+Use `--direct` only when deliberately taking over control through AgentD.

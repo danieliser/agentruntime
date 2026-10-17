@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,30 @@ func apiRaw(ctx *Context, method, path string, body any, out any) error {
 	return nil
 }
 func approvals(ctx *Context, id string) (approvalList, error) {
+	if !ctx.Direct && ctx.Persist != nil {
+		if ctx.API != nil {
+			view, err := ctx.API.GetSession(context.Background(), id)
+			if err != nil {
+				return approvalList{}, err
+			}
+			if view.TaskID == "" {
+				return directApprovals(ctx, id)
+			}
+		}
+		owned, err := ctx.Persist.ownsSession(id)
+		if err != nil {
+			return approvalList{}, err
+		}
+		if owned {
+			var result approvalList
+			err = ctx.Persist.get(context.Background(), "/api/v1/sessions/"+url.PathEscape(id)+"/approvals", &result)
+			return result, err
+		}
+		return approvalList{}, ErrNotFound
+	}
+	return directApprovals(ctx, id)
+}
+func directApprovals(ctx *Context, id string) (approvalList, error) {
 	var v struct {
 		Data approvalList `json:"data"`
 	}

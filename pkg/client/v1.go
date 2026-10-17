@@ -19,6 +19,7 @@ import (
 
 // DurableSession is the public v1 logical-session view.
 type DurableSession struct {
+	TaskID              string                `json:"task_id,omitempty"`
 	SessionID           string                `json:"session_id"`
 	IdempotencyKey      string                `json:"idempotency_key"`
 	Agent               string                `json:"agent"`

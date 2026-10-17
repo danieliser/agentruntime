@@ -136,3 +136,25 @@ func TestStatusUsesNativeProviderTurnIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusExposesWakeState(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			w.Write([]byte(`{"data":{"events":[],"has_more":false}}`))
+			return
+		}
+		w.Write([]byte(`{"data":{"session_id":"s1","state":"completed","generation":2,"continuable":true,"continuable_reason":"native_resume_available","runtime":"docker"}}`))
+	}))
+	defer ts.Close()
+	ctx, out := commandContext(ts, true)
+	if err := cmdStatus(ctx, []string{"s1"}); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["generation"] != float64(2) || got["continuable"] != true || got["runtime"] != "docker" {
+		t.Fatalf("missing wake state %s", out)
+	}
+}

@@ -28,7 +28,7 @@ func (fixture *steeredClaudeFixtureAgent) BuildCmd(string, agent.AgentConfig) ([
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"steer-fixture"}'
 IFS= read -r interrupt
 IFS= read -r replacement
-printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"` + fixture.boundaryReason + `","permission_denials":[],"safety_stops":0}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"` + fixture.boundaryReason + `","permission_denials":[]}'
 while [ ! -f "` + fixture.finishPath + `" ]; do sleep 0.01; done
 `
 	if fixture.finalFailed {

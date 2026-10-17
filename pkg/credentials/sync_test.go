@@ -1,6 +1,7 @@
 package credentials
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -171,5 +172,17 @@ func TestCodexAPIKey_ErrorsWhenNoKeySet(t *testing.T) {
 	_, err := s.CodexAPIKey()
 	if err == nil {
 		t.Fatal("expected error when no API key set")
+	}
+}
+
+func TestWatchPrimesClaudeCredentialsBeforeReturning(t *testing.T) {
+	dataDir := t.TempDir()
+	mock := &mockExtractor{result: `{"claudeAiOauth":{"accessToken":"test-token"}}`}
+	syncer := newSyncWithExtractor(dataDir, mock)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Watch(ctx, time.Hour)
+	if _, err := os.Stat(filepath.Join(dataDir, "credentials", claudeCacheFile)); err != nil {
+		t.Fatalf("first dispatch has no credentials before first tick: %v", err)
 	}
 }

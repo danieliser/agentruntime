@@ -140,6 +140,11 @@ func (s *Sync) CodexAPIKey() (string, error) {
 // Watch starts a background goroutine that refreshes Claude credentials
 // on the given interval. Cancel the context to stop.
 func (s *Sync) Watch(ctx context.Context, interval time.Duration) {
+	// A fresh isolated daemon has no cache. Prime it before opening the API so
+	// its first Docker session cannot race the first periodic sync tick.
+	if _, err := s.ClaudeCredentialsFile(); err != nil {
+		log.Printf("Claude credential sync unavailable at startup: %v", err)
+	}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
