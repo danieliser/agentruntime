@@ -1172,3 +1172,34 @@
 - Live Docker/provider qualification flags were disabled. No installed runtime,
   launchd service, or installed daemon data was used or changed. No merge,
   push or install is part of this delivery.
+
+## 2026-10-17 — Active Docker steering after continuation
+
+- Based on committed wake change `83586d4` on `feat/agentctl`. No provider
+  runtime defect reproduced: Claude and Codex both steered an active Docker
+  foreground workload to the replacement response. The Codex `turn/interrupt`
+  `turnId` implementation from `da073a2` is unchanged.
+- Added deterministic HTTP/native-wire regressions for both providers across
+  initial, woken generation, and maintained warm turns. These use the existing
+  local subprocess Docker boundary fixture, not a real Docker daemon. They
+  validate native steering inputs, duplicate/conflicting retries, prompt
+  rejection while active, Claude superseded-boundary survival, generation
+  stability, final completion, and SQLite integrity. A separate transport test
+  verifies steering and interruption target each newly observed Codex turn ID.
+- Found and fixed a live-acceptance false positive: replacement text after a
+  naturally completed original workload previously passed steering. Red: the
+  new Python test reached the approval flow instead of rejecting that case.
+  Green: acceptance now requires output/completion after the steer cursor and
+  absence of the original workload's finish marker; Python regressions cover
+  both rejection and acceptance, plus output preceding the steer.
+- Checks passed: `go build ./... && go vet ./... && go test ./...`; the new API
+  matrix repeated five times; focused race tests for the matrix and native
+  steering/interrupt tests; all six `test_agentctl*.py` harness tests.
+- Real Docker/provider acceptance rerun with the tightened assertion: all
+  steps PASS for Claude (`.agentctl-live-test/claude/run.2fvuouxz/report.json`)
+  and Codex (`.agentctl-live-test/codex/run.0lmlng4w/report.json`). Both include
+  active steering, interrupt, approval/denial, and successful cleanup. Each
+  isolated daemon stopped and its owned containers were removed. Images are
+  the existing pinned `2.3.3-persist.10` bases; daemon/CLI are worktree builds.
+- Preserved all four pre-existing untracked briefs. No native sub-agents,
+  installed daemon or `~/.agentd` access, merge, push, or install.

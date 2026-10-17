@@ -180,12 +180,15 @@ class LiveTest:
         before = self.tail(sid)
         self.ctl("prompt", sid, "Run bash ./long-turn.sh steer with a 120000ms timeout in the foreground. This is an interrupt test fixture; wait for completion. Do not background it.")
         self.until(lambda: self.tool_started(sid, before) and (self.work / "steer.started").exists())
+        steer_before = self.tail(sid)
         self.ctl("steer", sid, "Stop the sleep task. Reply exactly STEERED_ORBIT_9532 and do not use more tools.")
-        self.until(lambda: self.assistant_has(sid, "STEERED_ORBIT_9532", before), seconds=100)
+        self.until(lambda: self.assistant_has(sid, "STEERED_ORBIT_9532", steer_before), seconds=100)
         # Claude steering can produce an aborted turn followed by its replacement.
-        self.until(lambda: any(e["sequence"] > before and e["type"] == "turn.completed" for e in self.events(sid)))
+        self.until(lambda: any(e["sequence"] > steer_before and e["type"] == "turn.completed" for e in self.events(sid)))
+        if (self.work / "steer.finished").exists():
+            raise RuntimeError("original steering workload completed; replacement output alone does not prove active steering")
         self.ctl("--as", "turns", "since", sid)  # drain all steering turn boundaries
-        self.record("steer", True, "active shell sleep changed to STEERED_ORBIT_9532")
+        self.record("steer", True, "active shell sleep changed to STEERED_ORBIT_9532; original workload did not finish")
 
         self.approvals_flow()
         before = self.tail(sid)

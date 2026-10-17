@@ -178,6 +178,14 @@ the installed launchd daemon or `~/.agentd`, and stops its daemons/containers.
 Requirements: Docker, Python 3, Go, those base images, and working provider logins.
 Optional overrides: `AGENTCTL_LIVE_TEST_PORT` and `AGENTCTL_LIVE_TEST_MODEL`.
 
+Steering acceptance requires replacement output and completion after the steer
+while the original foreground workload's finish marker remains absent.
+Run `go test ./pkg/api -run TestActiveDockerSteerAcrossContinuationModes` for
+deterministic initial, woken, and warm-turn coverage using native wire fixtures
+at the Docker runtime boundary (local subprocesses, no Docker or provider API).
+Run `python3 -m unittest discover -s scripts -p 'test_agentctl*.py'` for harness
+regressions, including rejection of naturally completed steering workloads.
+
 Install after review (this command is not run by the tests):
 
 ```sh
