@@ -19,6 +19,12 @@ func cmdInput(ctx *Context, args []string, kind string) error {
 		return fmt.Errorf("%w: missing input", ErrUsage)
 	}
 	text := strings.Join(input, " ")
+	if routed, err := routePersistControl(ctx, args[0], kind, text); routed {
+		if err != nil {
+			return err
+		}
+		return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "accepted": true}, "accepted")
+	}
 	key := uuid.NewString()
 	e := ctx.API.client.SendInput(context.Background(), args[0], key, kind, text)
 	if e != nil {

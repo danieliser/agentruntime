@@ -5,7 +5,7 @@ func init() {
 		"run": cmdRun, "status": cmdStatus, "grep": cmdGrep, "steer": cmdSteer,
 		"prompt": cmdPrompt, "interrupt": cmdInterrupt, "cancel": cmdCancel,
 		"terminate": cmdTerminate, "resume": cmdResume, "approvals": cmdApprovals,
-		"approve": cmdApprove, "deny": cmdDeny, "result": cmdResult, "ls": cmdLS,
+		"approve": cmdApprove, "deny": cmdDeny, "result": cmdResult, "ls": cmdLS, "plan": cmdPlan,
 	} {
 		commandRegistry[name] = handler
 	}

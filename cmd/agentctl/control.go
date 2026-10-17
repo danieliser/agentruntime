@@ -11,6 +11,14 @@ func control(ctx *Context, args []string, which string) error {
 		return fmt.Errorf("%w: %s ID", ErrUsage, which)
 	}
 	key := uuid.NewString()
+	if which == "interrupt" {
+		if routed, err := routePersistControl(ctx, args[0], which, ""); routed {
+			if err != nil {
+				return err
+			}
+			return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "accepted": true}, "accepted")
+		}
+	}
 	var e error
 	switch which {
 	case "interrupt":

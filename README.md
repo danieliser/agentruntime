@@ -120,6 +120,24 @@ Docker Claude/Codex sessions without `--keep-warm`. `status --json` exposes
 sessions reject new work. `resume ID PROMPT` remains explicit recovery of a lost,
 nonterminal generation.
 
+Dispatch and plan approval stay in the PERSIST CLI. Set `PERSIST_URL` (default
+`http://127.0.0.1:8803`) and optionally `PERSIST_TOKEN_FILE` (default
+`~/.local/share/persist-v3/initial_token.txt`) for PERSIST-aware lookup and
+control. IDs can be raw session IDs, `task:T`, `plan:P`, or `plan:P/node` (node
+ID or title slug). `agentctl plan show P` displays plan node state. For one
+background notification per plan, approve a plan and then arm the durable plan
+event waiter; after it reports an approval, act on the named node and re-arm:
+
+```sh
+persist plan auto "<plan prompt>" --cwd "$PWD" && persist plan approve <proposal_id>
+agentctl wait plan:<plan_id> --until approval,failed,done --timeout 30m &
+```
+
+Use `agentctl since plan:<plan_id>` or `agentctl grep plan:<plan_id> PATTERN` to
+read across its current node sessions, with each output tagged by node. Controls
+for PERSIST-owned sessions route through PERSIST. Pass `--direct` to explicitly
+send a control to AgentD.
+
 Output is compact human text by default; `--json` selects JSON. `since ID`
 returns assistant text and tool summaries after its saved sequence, then advances
 the cursor only after successful output. A second call with no new events prints

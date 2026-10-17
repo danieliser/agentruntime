@@ -11,6 +11,12 @@ func decide(ctx *Context, args []string, decision string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("%w: %s ID REQUEST_ID", ErrUsage, decision)
 	}
+	if routed, err := routePersistControl(ctx, args[0], decision, args[0]+" "+args[1]); routed {
+		if err != nil {
+			return err
+		}
+		return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "request_id": args[1], "accepted": true}, "accepted")
+	}
 	var requestID json.RawMessage
 	if json.Valid([]byte(args[1])) {
 		requestID = json.RawMessage(args[1])
