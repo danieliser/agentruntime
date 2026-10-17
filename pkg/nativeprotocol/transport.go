@@ -332,10 +332,13 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 			if err == nil {
 				superseded = transport.supersededBySteer(raw, derived.Type)
 				transport.mu.Lock()
-				if derived.ProviderID != "" {
+				// Child notifications share stdout with the primary thread. They
+				// must never redirect subsequent steer/interrupt operations.
+				primary := transport.providerID == "" || derived.ProviderID == "" || derived.ProviderID == transport.providerID
+				if derived.ProviderID != "" && primary {
 					transport.providerID = derived.ProviderID
 				}
-				if derived.TurnID != "" {
+				if derived.TurnID != "" && primary {
 					transport.turnID = derived.TurnID
 				}
 				transport.mu.Unlock()

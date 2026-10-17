@@ -137,6 +137,11 @@ func parseAndTrackEvent(sess *session.Session, line []byte) {
 
 	// Any event triggers activity.
 	sess.RecordActivity()
+	// Forwarded Claude child results are activity, but only the primary
+	// provider result may wake callers waiting for this session's turn.
+	if parent, _ := event["parent_tool_use_id"].(string); parent != "" {
+		return
+	}
 
 	// Track specific event types.
 	switch eventType {

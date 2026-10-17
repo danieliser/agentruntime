@@ -75,6 +75,16 @@ func TestClaudeBuildCmd_NativeStreamUsesBidirectionalJSON(t *testing.T) {
 	}
 }
 
+func TestClaudeNativeForwardsChildMessages(t *testing.T) {
+	cmd, err := (&ClaudeAgent{}).BuildCmd("", AgentConfig{NativeStream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cmd, "--forward-subagent-text") {
+		t.Fatalf("child text forwarding disabled: %v", cmd)
+	}
+}
+
 func TestClaudeBuildCmdEnforcesRestrictedToolAndPermissionPolicy(t *testing.T) {
 	cmd, err := (&ClaudeAgent{}).BuildCmd("", AgentConfig{
 		NativeStream: true, EnforcePolicy: true, PermissionMode: "dontAsk",

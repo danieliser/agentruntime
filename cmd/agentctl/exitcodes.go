@@ -18,6 +18,7 @@ const (
 	ExitWaitNodeStarted = 14
 	ExitWaitNodeDone    = 15
 	ExitWaitFailed      = 16
+	ExitWaitStalled     = 17
 )
 
 var (
@@ -65,6 +66,8 @@ func ExitCode(err error) int {
 			return ExitWaitNodeDone
 		case "failed":
 			return ExitWaitFailed
+		case "stalled":
+			return ExitWaitStalled
 		}
 	}
 	return ExitAPI

@@ -149,5 +149,5 @@ func (claudeAdapter) Decode(raw []byte) (DerivedEvent, error) {
 		derived.Type = "lifecycle.progress"
 	}
 	derived.Payload = mustPayload(payload)
-	return derived, nil
+	return claudeSubagent(derived, raw), nil
 }

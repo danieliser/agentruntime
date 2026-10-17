@@ -18,6 +18,14 @@ type approvalList struct {
 	Approvals []json.RawMessage `json:"approvals"`
 }
 
+type apiStatusError struct {
+	Status int
+	Err    error
+}
+
+func (err *apiStatusError) Error() string { return err.Err.Error() }
+func (err *apiStatusError) Unwrap() error { return err.Err }
+
 func apiRaw(ctx *Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -43,7 +51,7 @@ func apiRaw(ctx *Context, method, path string, body any, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return ctx.API.safeError(fmt.Errorf("request failed with status %s: %s", resp.Status, strings.TrimSpace(string(b))))
+		return &apiStatusError{Status: resp.StatusCode, Err: ctx.API.safeError(fmt.Errorf("request failed with status %s: %s", resp.Status, strings.TrimSpace(string(b))))}
 	}
 	if out != nil {
 		if e = json.NewDecoder(resp.Body).Decode(out); e != nil {

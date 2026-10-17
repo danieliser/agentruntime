@@ -1,6 +1,9 @@
 package nativeprotocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type codexAdapter struct{}
 
@@ -109,7 +112,12 @@ func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 		Usage     json.RawMessage `json:"usage"`
 		Error     json.RawMessage `json:"error"`
 		WillRetry *bool           `json:"willRetry"`
-		Turn      struct {
+		Thread    struct {
+			ID       string `json:"id"`
+			ParentID string `json:"parentThreadId"`
+			Model    string `json:"model"`
+		} `json:"thread"`
+		Turn struct {
 			ID     string          `json:"id"`
 			Status string          `json:"status"`
 			Error  json.RawMessage `json:"error"`
@@ -117,6 +125,9 @@ func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 	}
 	_ = json.Unmarshal(envelope.Params, &params)
 	derived.ProviderID, derived.TurnID = params.ThreadID, params.TurnID
+	if derived.ProviderID == "" {
+		derived.ProviderID = params.Thread.ID
+	}
 	if derived.TurnID == "" {
 		derived.TurnID = params.Turn.ID
 	}
@@ -160,8 +171,15 @@ func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 		}
 		payload["usage"] = params.Usage
 	}
+	if strings.HasSuffix(strings.ToLower(envelope.Method), "delta") && derived.Type == "provider.event" {
+		derived.Type = "provider.delta"
+		payload["text"] = params.Delta
+	}
 	derived.Payload = mustPayload(payload)
-	return derived, nil
+	if params.Thread.ParentID != "" {
+		derived = TagSubagent(derived, params.Thread.ID, "", params.Thread.Model)
+	}
+	return codexSubagent(derived, params.Item), nil
 }
 
 // Codex app-server errors carry the diagnostic under error.message; older

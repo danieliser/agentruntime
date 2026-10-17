@@ -44,12 +44,27 @@ func summarizeEvents(events []streamEvent, raw bool) string {
 			continue
 		}
 		var p struct {
-			Text string          `json:"text"`
-			Name string          `json:"name"`
-			Tool string          `json:"tool_name"`
-			Item json.RawMessage `json:"item"`
+			SubagentPath string          `json:"subagent_path"`
+			Text         string          `json:"text"`
+			Name         string          `json:"name"`
+			Tool         string          `json:"tool_name"`
+			Item         json.RawMessage `json:"item"`
 		}
 		_ = json.Unmarshal(e.Payload, &p)
+		if strings.HasPrefix(e.Type, "subagent.") {
+			if strings.HasSuffix(e.Type, ".delta") {
+				continue
+			}
+			summary := p.Text
+			if summary == "" {
+				summary = strings.TrimPrefix(e.Type, "subagent.")
+				if len(p.Item) > 0 {
+					summary += " " + string(p.Item)
+				}
+			}
+			fmt.Fprintf(&b, "[sub:%s] %s\n", p.SubagentPath, summary)
+			continue
+		}
 		switch e.Type {
 		case "content.delta", "content.completed":
 			if p.Text != "" {
@@ -70,6 +85,10 @@ func summarizeEvents(events []streamEvent, raw bool) string {
 		}
 	}
 	return b.String()
+}
+
+func hiddenSubagentDelta(kind string) bool {
+	return strings.HasPrefix(kind, "subagent.") && strings.HasSuffix(kind, ".delta")
 }
 
 // normalizeStreamArgs allows stream flags on either side of the positional ID,

@@ -13,7 +13,13 @@ import (
 	"time"
 )
 
-func waitStream(ctx context.Context, cfg Config, session string, store CursorStore, reasons []string, timeout time.Duration, out interface{ Write([]byte) (int, error) }) error {
+func waitStream(ctx context.Context, cfg Config, session string, store CursorStore, reasons []string, timeout time.Duration, out interface{ Write([]byte) (int, error) }, stallThreshold ...time.Duration) error {
+	var stall time.Duration
+	if contains(reasons, "stalled") && len(stallThreshold) > 0 {
+		stall = stallThreshold[0]
+	}
+	api := NewAPIClient(cfg)
+	nextCheck := time.Time{}
 	cursor, err := store.Load(cfg.Caller, session)
 	if err != nil {
 		return err
@@ -25,6 +31,12 @@ func waitStream(ctx context.Context, cfg Config, session string, store CursorSto
 				return ErrTimeout
 			}
 			return err
+		}
+		if stall > 0 {
+			if err := checkStalled(ctx, api, session, stall, cfg, out); err != nil {
+				return err
+			}
+			nextCheck = time.Now().Add(time.Second)
 		}
 		u, err := url.Parse(cfg.URL)
 		if err != nil {
@@ -49,6 +61,20 @@ func waitStream(ctx context.Context, cfg Config, session string, store CursorSto
 				_ = conn.SetReadDeadline(deadline)
 			}
 			for {
+				if stall > 0 {
+					if time.Now().After(nextCheck) {
+						if e := checkStalled(ctx, api, session, stall, cfg, out); e != nil {
+							_ = conn.Close()
+							return e
+						}
+						nextCheck = time.Now().Add(time.Second)
+					}
+					readDeadline := nextCheck
+					if timeout > 0 && deadline.Before(readDeadline) {
+						readDeadline = deadline
+					}
+					_ = conn.SetReadDeadline(readDeadline)
+				}
 				var frame map[string]json.RawMessage
 				if err = conn.ReadJSON(&frame); err != nil {
 					break

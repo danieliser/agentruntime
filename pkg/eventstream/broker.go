@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,6 +88,7 @@ type Broker struct {
 
 type sessionState struct {
 	mu             sync.Mutex
+	children       *subagentIndex
 	nextSubscriber uint64
 	subscribers    map[uint64]*liveSubscriber
 }
@@ -134,9 +136,44 @@ func (broker *Broker) Ingest(ctx context.Context, params IngestParams) (durable.
 	if params.SessionID == "" || params.Generation < 1 || params.Record.Ordinal < 1 || params.Record.Timestamp.IsZero() {
 		return durable.Event{}, durable.NewError(durable.CodeInvalidArgument, op, "session, generation, ordinal, and timestamp are required", nil)
 	}
+	state := broker.session(params.SessionID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	// Metadata can improve as a child runs. An exact retry must return its
+	// original immutable envelope, rather than re-derive it with newer facts.
+	previous, lookupErr := broker.store.GetEventByID(ctx, sourceEventID(params))
+	if lookupErr == nil {
+		if !bytes.Equal(previous.Raw, params.Record.Raw) {
+			return durable.Event{}, durable.NewError(durable.CodeImmutableConflict, op, "native source position changed", nil)
+		}
+		return previous, nil
+	}
+	if !durable.IsCode(lookupErr, durable.CodeNotFound) {
+		return durable.Event{}, lookupErr
+	}
+	if state.children == nil {
+		index, err := loadSubagentIndex(ctx, broker.store, params.SessionID)
+		if err != nil {
+			return durable.Event{}, err
+		}
+		state.children = index
+	}
 	eventType, payload, stream, providerID, err := derive(params.Record)
 	if err != nil {
 		return durable.Event{}, err
+	}
+	if providerID != "" {
+		generation, lookupErr := broker.store.GetGeneration(ctx, params.SessionID, params.Generation)
+		if lookupErr != nil {
+			return durable.Event{}, lookupErr
+		}
+		if params.Record.Provider == nativeprotocol.ProviderCodex && generation.ProviderID != "" && providerID != generation.ProviderID {
+			if !strings.HasPrefix(eventType, "subagent.") {
+				child := nativeprotocol.TagSubagent(nativeprotocol.DerivedEvent{Type: eventType, Payload: payload}, providerID, "", "")
+				eventType, payload = child.Type, child.Payload
+			}
+			providerID = ""
+		}
 	}
 	if providerID != "" {
 		if _, err := broker.store.BindGenerationProvider(ctx, durable.BindGenerationProviderParams{
@@ -146,9 +183,7 @@ func (broker *Broker) Ingest(ctx context.Context, params IngestParams) (durable.
 			return durable.Event{}, err
 		}
 	}
-	state := broker.session(params.SessionID)
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	eventType, payload = state.children.apply(eventType, payload)
 	result, err := broker.store.AppendEvent(ctx, durable.AppendEventParams{
 		SchemaVersion: SchemaVersion,
 		EventID:       sourceEventID(params),
@@ -429,46 +464,6 @@ func (broker *Broker) session(sessionID string) *sessionState {
 		broker.state[sessionID] = state
 	}
 	return state
-}
-
-func derive(record nativeprotocol.Record) (string, json.RawMessage, durable.Stream, string, error) {
-	switch record.Stream {
-	case nativeprotocol.StreamProviderStdout:
-		adapter, err := nativeprotocol.NewAdapter(record.Provider)
-		if err != nil {
-			return "", nil, "", "", durable.NewError(durable.CodeInvalidArgument, "derive_native_record", "unsupported provider", err)
-		}
-		derived, err := adapter.Decode(record.Raw)
-		if err != nil {
-			return "", nil, "", "", durable.NewError(durable.CodeIndeterminate, "derive_native_record", "decode provider record", err)
-		}
-		if record.SupersededBySteer && record.Provider == nativeprotocol.ProviderClaude && nativeprotocol.ClaudeSteerBoundary(record.Raw) {
-			var payload map[string]json.RawMessage
-			if err := json.Unmarshal(derived.Payload, &payload); err != nil {
-				return "", nil, "", "", err
-			}
-			payload["superseded_by_steer"] = json.RawMessage("true")
-			previous, err := json.Marshal(derived.Type)
-			if err != nil {
-				return "", nil, "", "", err
-			}
-			payload["superseded_event_type"] = previous
-			derived.Payload, err = json.Marshal(payload)
-			if err != nil {
-				return "", nil, "", "", err
-			}
-			derived.Type = "turn.superseded"
-		}
-		return derived.Type, derived.Payload, durable.StreamProviderStdout, derived.ProviderID, nil
-	case nativeprotocol.StreamRuntimeStderr:
-		payload, err := json.Marshal(map[string]string{"text": string(record.Raw)})
-		if err != nil {
-			return "", nil, "", "", durable.NewError(durable.CodeIndeterminate, "derive_native_record", "encode stderr payload", err)
-		}
-		return "runtime.stderr", payload, durable.StreamRuntimeStderr, "", nil
-	default:
-		return "", nil, "", "", durable.NewError(durable.CodeInvalidArgument, "derive_native_record", "unsupported native stream", nil)
-	}
 }
 
 // sourceEventID binds an immutable event ID to the source position, not its

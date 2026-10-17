@@ -19,6 +19,11 @@ import (
 
 // DurableSession is the public v1 logical-session view.
 type DurableSession struct {
+	LastEventAt         *time.Time            `json:"last_event_at"`
+	IdleSeconds         float64               `json:"idle_seconds"`
+	ActiveSubagents     int                   `json:"active_subagents"`
+	RunningTurn         bool                  `json:"running_turn"`
+	TurnStartedAt       *time.Time            `json:"turn_started_at"`
 	TaskID              string                `json:"task_id,omitempty"`
 	SessionID           string                `json:"session_id"`
 	IdempotencyKey      string                `json:"idempotency_key"`

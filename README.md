@@ -186,6 +186,52 @@ comma-separated; a matching condition deliberately has a nonzero exit code:
 | `14` | Plan wait observed `node_started` |
 | `15` | Plan wait observed `node_done` |
 | `16` | Plan wait observed `failed` |
+| `17` | Wait observed a `stalled` running turn |
+
+`status` and session GET expose `last_event_at` (UTC, nullable before provider
+output), `idle_seconds` (seconds since provider stdout, or creation before any
+output), `active_subagents`, `running_turn`, and `turn_started_at`. Control
+traffic and runtime stderr do not refresh the provider clock. An idle maintained
+session has `running_turn=false`. `status` reports approvals as unavailable while
+the provider transport is attaching, and keeps the durable status readable.
+
+```sh
+./agentctl wait SESSION_ID --until stalled --stall 30s --timeout 5m
+# Exit 17 observes silence; it does not stop the provider.
+./agentctl since SESSION_ID
+./agentctl grep SESSION_ID . --type subagent.tool.call --json
+```
+
+`--stall` must be positive when `stalled` is selected; it can be combined with
+`turn_end,approval,error,done`. Each new prompt starts a fresh silence window.
+Provider keep-alives and account/usage notifications count as provider events;
+this measures transport silence, not lack of meaningful progress. A sleeping
+tool may therefore remain observable without being classified as stalled.
+There is no automatic inactivity cutoff; the wall-clock timeout is unchanged.
+
+Child summaries, tools, progress and boundaries use `subagent.*` event types
+and payload tags `subagent_thread_id`, `subagent_path`, and `model`. Codex uses
+its exposed agent path; Claude uses its task ID and correlates child tool-use
+IDs to that task. Unknown models remain an empty string until exposed by the
+provider. Metadata is recovered from durable events; child records never bind
+the primary generation identity or complete a parent wait. Claude native
+streaming requires a CLI supporting `--forward-subagent-text` (qualified on
+2.1.302). Child deltas remain durable as `subagent.content.delta` or
+`subagent.provider.delta`, available
+through `grep --type` or `since --raw`, and are hidden from default `since`
+output, including JSON. Human child summaries are labeled `[sub:<path>]`.
+
+For isolated observability acceptance, run
+`python3 scripts/agentctl_persist_bootstrap.py claude --observability` and repeat
+with `codex`. This mode starts only AgentD, reusing the Node/SQLite ABI preflight,
+private data/config homes, forbidden-root/port guards, connection monitoring,
+Docker scoping and teardown. It uses the installed local provider CLIs with
+private configuration and no host MCP catalog. Each provider spawns one child;
+the harness verifies durable labels/type filtering and a count of `0 → 1 → 0`.
+For the 30-second silence proof it starts a 90-second tool, pauses only that
+test-owned provider PID (to suppress provider heartbeats), observes exit 17,
+then resumes and terminates it. Evidence and cleanup receipts stay under the
+ignored `.agentctl-live-test/` directory.
 
 Run `scripts/agentctl-live-test.sh claude` and `scripts/agentctl-live-test.sh codex`
 for live acceptance. Each builds the current worktree, starts a separate daemon

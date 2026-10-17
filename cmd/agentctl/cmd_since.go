@@ -48,7 +48,18 @@ func cmdSince(ctx *Context, args []string) error {
 		return nil
 	}
 	if ctx.Config.JSON {
-		err = WriteOutput(ctx.Out, ctx.Config, events, "")
+		visible := events
+		if !ctx.Config.Raw {
+			visible = nil
+			for _, event := range events {
+				if !hiddenSubagentDelta(event.Type) {
+					visible = append(visible, event)
+				}
+			}
+		}
+		if len(visible) > 0 {
+			err = WriteOutput(ctx.Out, ctx.Config, visible, "")
+		}
 	} else {
 		output := summarizeEvents(events, ctx.Config.Raw)
 		if output != "" {
@@ -93,7 +104,9 @@ func sincePlan(ctx *Context, ref SessionReference, store CursorStore) error {
 				}
 				if len(out) > 0 {
 					for _, event := range out {
-						taggedEvents = append(taggedEvents, tagged{Node: n.ID, Event: event})
+						if ctx.Config.Raw || !hiddenSubagentDelta(event.Type) {
+							taggedEvents = append(taggedEvents, tagged{Node: n.ID, Event: event})
+						}
 					}
 					fmt.Fprintf(&b, "[%s] %s", n.ID, summarizeEvents(out, ctx.Config.Raw))
 					cursor = out[len(out)-1].Sequence

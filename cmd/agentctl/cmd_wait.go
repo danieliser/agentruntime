@@ -14,12 +14,13 @@ func cmdWait(ctx *Context, args []string) error {
 	fs.SetOutput(ctx.Log)
 	dir := fs.String("cursor-dir", "", "cursor directory")
 	fs.BoolVar(&ctx.Config.Raw, "raw", ctx.Config.Raw, "raw events")
-	until := fs.String("until", "turn_end", "reasons: turn_end,approval,error,done")
+	until := fs.String("until", "turn_end", "reasons: turn_end,approval,error,done,stalled")
+	stall := fs.Duration("stall", 0, "provider silence threshold (required for stalled)")
 	timeout := fs.Duration("timeout", 0, "maximum wait duration")
-	if err := fs.Parse(normalizeStreamArgs(args, map[string]bool{"cursor-dir": true, "until": true, "timeout": true})); err != nil {
+	if err := fs.Parse(normalizeStreamArgs(args, map[string]bool{"cursor-dir": true, "until": true, "timeout": true, "stall": true})); err != nil {
 		return fmt.Errorf("%w: %v", ErrUsage, err)
 	}
-	if fs.NArg() != 1 || *timeout < 0 {
+	if fs.NArg() != 1 || *timeout < 0 || *stall < 0 || contains(strings.Split(*until, ","), "stalled") && *stall <= 0 {
 		return fmt.Errorf("%w: wait ID --until reason[,reason] --timeout DUR", ErrUsage)
 	}
 	ref, refErr := ParseSessionReference(fs.Arg(0))
@@ -30,7 +31,7 @@ func cmdWait(ctx *Context, args []string) error {
 		return waitPlan(ctx, ref.ID, strings.Split(*until, ","), *timeout, *dir)
 	}
 	reasons := strings.Split(*until, ",")
-	valid := map[string]bool{"turn_end": true, "approval": true, "error": true, "done": true}
+	valid := map[string]bool{"turn_end": true, "approval": true, "error": true, "done": true, "stalled": true}
 	for _, r := range reasons {
 		if !valid[r] {
 			return fmt.Errorf("%w: unknown wait reason %q", ErrUsage, r)
@@ -55,7 +56,7 @@ func cmdWait(ctx *Context, args []string) error {
 			return err
 		}
 	}
-	return waitStream(ctxWait, ctx.Config, id, store, reasons, *timeout, ctx.Out)
+	return waitStream(ctxWait, ctx.Config, id, store, reasons, *timeout, ctx.Out, *stall)
 }
 
 func waitPlan(ctx *Context, id string, reasons []string, timeout time.Duration, cursorDir string) error {

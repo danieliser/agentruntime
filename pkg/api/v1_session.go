@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
 	"github.com/danieliser/agentruntime/pkg/observer"
 	"github.com/danieliser/agentruntime/pkg/runtime"
@@ -27,6 +28,7 @@ import (
 )
 
 type v1SessionData struct {
+	*eventstream.Activity
 	TaskID              string                  `json:"task_id,omitempty"`
 	SessionID           string                  `json:"session_id"`
 	IdempotencyKey      string                  `json:"idempotency_key"`
@@ -389,9 +391,16 @@ func scrubManifestSecrets(value any, path string, grants *[]string) {
 }
 
 func (s *Server) writeV1Session(c *gin.Context, status int, stored durable.Session) {
+	view := s.v1SessionView(c, stored)
+	activity, err := eventstream.SessionActivity(c.Request.Context(), s.durableStore, stored, time.Now().UTC())
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	view.Activity = &activity
 	c.JSON(status, gin.H{
 		"api_version": "v1",
-		"data":        s.v1SessionView(c, stored),
+		"data":        view,
 	})
 }
 

@@ -63,6 +63,7 @@ def main() -> int:
     parser.add_argument('provider', choices=('claude', 'codex'))
     parser.add_argument('--preflight', action='store_true')
     parser.add_argument('--flows', default='a-local,a-docker,b,c,d')
+    parser.add_argument('--observability', action='store_true', help='AgentD-only observability proof; never starts PERSIST')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     persist = Path(os.environ.get('PERSIST_ROOT', str(repo.parent / 'persistence--agentctl'))).resolve()
@@ -112,6 +113,25 @@ model_routing:
     guard = repo / 'scripts/agentctl_persist_guard.cjs'
     forbidden = [str(Path.home() / '.local/share/persist-v3'), str(Path.home() / '.config/persist-v3'), str(Path.home() / '.agentd'), str(repo.parent / 'persistence'), str(repo.parent / 'agentruntime')]
     env.update(NODE_OPTIONS=f'--require={guard}', AGENTCTL_NETWORK_VIOLATIONS=str(root / 'network-violations.log'), AGENTCTL_FORBIDDEN_ROOTS=json.dumps(forbidden))
+    if args.observability:
+        # Local providers use only private configuration. In particular, do
+        # not load the host MCP catalog (which can connect to live PERSIST).
+        codex_home = root / 'provider-home/codex'
+        claude_home = root / 'provider-home/claude'
+        codex_home.mkdir(parents=True, mode=0o700)
+        claude_home.mkdir(parents=True, mode=0o700)
+        private_tmp = root / 'tmp'
+        private_tmp.mkdir(mode=0o700)
+        shutil.copyfile(Path.home() / '.codex/auth.json', codex_home / 'auth.json')
+        (codex_home / 'auth.json').chmod(0o600)
+        (codex_home / 'config.toml').write_text('project_doc_max_bytes = 0\n[features]\nmulti_agent = true\n')
+        claude_binary = shutil.which('claude', path=env['PATH'])
+        if not claude_binary:
+            raise RuntimeError('Claude CLI is required for provider acceptance')
+        wrapper = root / 'bin/claude'
+        wrapper.write_text('#!/usr/bin/env python3\nimport os, sys\nos.execv(' + repr(claude_binary) + ', [' + repr(claude_binary) + ', "--safe-mode", *sys.argv[1:]])\n')
+        wrapper.chmod(0o700)
+        env.update(CODEX_HOME=str(codex_home), CLAUDE_CONFIG_DIR=str(claude_home), TMPDIR=str(private_tmp))
     for name in ('agentd', 'agentctl'):
         subprocess.run(['go', 'build', '-buildvcs=false', '-ldflags=-X github.com/danieliser/agentruntime/pkg/buildinfo.Version=2.3.3', '-o', str(root / 'bin' / name), './cmd/' + name], cwd=repo, check=True)
     realdocker = shutil.which('docker', path=env['PATH'])
@@ -158,13 +178,19 @@ model_routing:
     monitor = threading.Thread(target=monitor_connections, daemon=True)
     monitor.start()
     try:
-        for name, command, cwd in (
+        services = [
             ('agentd', [str(root / 'bin/agentd'), '--host', '127.0.0.1', '--port', str(agentport), '--runtime', 'docker', '--credential-sync', '--data-dir', str(root / 'agentd-data')], root / 'work'),
-            ('persist', [node, '--import', 'tsx', str(persist / 'src/main-daemon.ts')], persist)):
+        ]
+        if not args.observability:
+            services.append(('persist', [node, '--import', 'tsx', str(persist / 'src/main-daemon.ts')], persist))
+        for name, command, cwd in services:
             log = (root / f'{name}.log').open('w')
             logs.append(log)
             processes.append(subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
-        for url, proc in [(env['AGENTD_URL'], processes[0]), (env['PERSIST_URL'], processes[1])]:
+        endpoints = [(env['AGENTD_URL'], processes[0])]
+        if not args.observability:
+            endpoints.append((env['PERSIST_URL'], processes[1]))
+        for url, proc in endpoints:
             deadline = time.monotonic() + 120
             while True:
                 if proc.poll() is not None:
@@ -183,7 +209,8 @@ model_routing:
             if f'p{proc.pid}\n' not in listeners:
                 raise RuntimeError(f'Unexpected listener owner for {url}')
         env['AGENTCTL_LIVE_PROVIDER'] = args.provider
-        driver = subprocess.Popen([sys.executable, str(repo / 'scripts/agentctl_persist_live_test.py'),
+        driver_name = 'agentctl_observability_live_test.py' if args.observability else 'agentctl_persist_live_test.py'
+        driver = subprocess.Popen([sys.executable, str(repo / 'scripts' / driver_name),
             '--provider', args.provider, '--root', str(root), '--agentd-port', str(agentport), '--persist-port', str(port),
             '--persist-root', str(persist), '--persist-cli', shutil.which('pnpm', path=env['PATH']),
             '--agentctl', str(root / 'bin/agentctl'), '--flows', args.flows], env=env, cwd=root / 'work', start_new_session=True)

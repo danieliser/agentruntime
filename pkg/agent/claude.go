@@ -42,7 +42,7 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 			// Ask rules still require consent in bypassPermissions mode. Route
 			// them to the existing native control_request approval transport.
 			"--permission-prompt-tool", "stdio",
-			"--verbose", "--include-partial-messages", "--ide",
+			"--verbose", "--include-partial-messages", "--forward-subagent-text", "--ide",
 		)
 	} else if !cfg.Interactive {
 		cmd = append(cmd, "-p", prompt)
