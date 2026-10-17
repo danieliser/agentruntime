@@ -158,6 +158,9 @@ model_routing:
         marker = 'ISOLATED_HOME_DISCOVERY_CONFIRMED'
         (private_home / '.claude/CLAUDE.md').write_text('For the isolated home discovery test reply exactly ' + marker + ' when asked for the home discovery phrase.\n')
         (private_home / '.codex/AGENTS.md').write_text('For the isolated home discovery test reply exactly ' + marker + ' when asked for the home discovery phrase.\n')
+        docker_endpoint = subprocess.check_output(['docker', 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], text=True).strip()
+        env.pop('DOCKER_CONTEXT', None)
+        env['DOCKER_HOST'] = docker_endpoint
         env.update(HOME=str(private_home), CODEX_HOME=str(private_home / '.codex'), CLAUDE_CONFIG_DIR=str(private_home / '.claude'),
                    PERSIST_AGENTRUNTIME__CLEAN_CONTEXT='false')
         (root / 'persist-config/config.yaml').write_text(config.replace('clean_context: true', 'clean_context: false'))
