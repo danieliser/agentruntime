@@ -26,7 +26,7 @@ class ObservabilityTest(LiveTest):
 
     def run(self, prompt: str, restricted: bool = False) -> str:
         args = ['run', '--provider', self.provider, '--model', self.model,
-                '--cwd', str(self.work), '--runtime', 'local',
+                '--cwd', str(self.work), '--runtime', 'local', '--context', 'clean',
                 '--permissions', 'unrestricted', '--approval-policy', 'never']
         if self.provider == 'codex':
             args += ['--effort', 'low']

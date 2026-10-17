@@ -59,13 +59,24 @@ def forbidden_connections(output: str) -> list[str]:
     return [line for line in output.splitlines() if re.search(r'->[^ ]+:(?:8803|38093)(?:$|\s)', line)]
 
 
+def restart_owned_agentd(proc, command, cwd, env, log):
+    """Restart only the process handle created by this bootstrap."""
+    os.killpg(proc.pid, signal.SIGTERM)
+    proc.wait(timeout=30)
+    return subprocess.Popen(command, cwd=cwd, env=env, stdout=log,
+                            stderr=subprocess.STDOUT, start_new_session=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('provider', choices=('claude', 'codex'))
     parser.add_argument('--preflight', action='store_true')
     parser.add_argument('--flows', default='a-local,a-docker,b,c,d')
+    parser.add_argument('--final-proof', action='store_true')
     parser.add_argument('--observability', action='store_true', help='AgentD-only observability proof; never starts PERSIST')
     args = parser.parse_args()
+    if 'g' in args.flows.split(',') and (args.flows != 'g' or not args.final_proof):
+        parser.error('Flow g requires --final-proof --flows g alone for private HOME isolation')
     repo = Path(__file__).resolve().parents[1]
     persist = Path(os.environ.get('PERSIST_ROOT', str(repo.parent / 'persistence--agentctl'))).resolve()
     if persist == repo.parent / 'persistence':
@@ -134,6 +145,23 @@ model_routing:
         wrapper.write_text('#!/usr/bin/env python3\nimport os, sys\nos.execv(' + repr(claude_binary) + ', [' + repr(claude_binary) + ', "--safe-mode", *sys.argv[1:]])\n')
         wrapper.chmod(0o700)
         env.update(CODEX_HOME=str(codex_home), CLAUDE_CONFIG_DIR=str(claude_home), TMPDIR=str(private_tmp))
+    if args.flows == 'g':
+        # Discovery uses a disposable HOME. Copy authentication alone, never host config.
+        private_home = root / 'discovery-home'
+        for name in ('.claude', '.codex'):
+            (private_home / name).mkdir(parents=True, mode=0o700)
+        shutil.copyfile(Path.home() / '.codex/auth.json', private_home / '.codex/auth.json')
+        (private_home / '.codex/auth.json').chmod(0o600)
+        credential = subprocess.run(['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'], capture_output=True, text=True, check=True)
+        (private_home / '.claude/.credentials.json').write_text(credential.stdout.strip())
+        (private_home / '.claude/.credentials.json').chmod(0o600)
+        marker = 'ISOLATED_HOME_DISCOVERY_CONFIRMED'
+        (private_home / '.claude/CLAUDE.md').write_text('For the isolated home discovery test reply exactly ' + marker + ' when asked for the home discovery phrase.\n')
+        (private_home / '.codex/AGENTS.md').write_text('For the isolated home discovery test reply exactly ' + marker + ' when asked for the home discovery phrase.\n')
+        env.update(HOME=str(private_home), CODEX_HOME=str(private_home / '.codex'), CLAUDE_CONFIG_DIR=str(private_home / '.claude'),
+                   PERSIST_AGENTRUNTIME__CLEAN_CONTEXT='false')
+        (root / 'persist-config/config.yaml').write_text(config.replace('clean_context: true', 'clean_context: false'))
+        (root / 'discovery-environment.json').write_text(json.dumps({k: env[k] for k in ('HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'PERSIST_AGENTRUNTIME__CLEAN_CONTEXT')}))
     for name in ('agentd', 'agentctl'):
         subprocess.run(['go', 'build', '-buildvcs=false', '-ldflags=-X github.com/danieliser/agentruntime/pkg/buildinfo.Version=2.3.3', '-o', str(root / 'bin' / name), './cmd/' + name], cwd=repo, check=True)
     realdocker = shutil.which('docker', path=env['PATH'])
@@ -181,7 +209,7 @@ model_routing:
     monitor.start()
     try:
         services = [
-            ('agentd', [str(root / 'bin/agentd'), '--host', '127.0.0.1', '--port', str(agentport), '--runtime', 'docker', '--credential-sync', '--data-dir', str(root / 'agentd-data')], root / 'work'),
+            ('agentd', [str(root / 'bin/agentd'), '--host', '127.0.0.1', '--port', str(agentport), '--runtime', 'local' if args.flows == 'g' else 'docker', '--credential-sync', '--data-dir', str(root / 'agentd-data')], root / 'work'),
         ]
         if not args.observability:
             services.append(('persist', [node, '--import', 'tsx', str(persist / 'src/main-daemon.ts')], persist))
@@ -211,13 +239,20 @@ model_routing:
             if f'p{proc.pid}\n' not in listeners:
                 raise RuntimeError(f'Unexpected listener owner for {url}')
         env['AGENTCTL_LIVE_PROVIDER'] = args.provider
-        driver_name = 'agentctl_observability_live_test.py' if args.observability else 'agentctl_persist_live_test.py'
+        driver_name = 'agentctl_observability_live_test.py' if args.observability else ('agentctl_final_live_test.py' if args.final_proof else 'agentctl_persist_live_test.py')
         driver = subprocess.Popen([sys.executable, str(repo / 'scripts' / driver_name),
             '--provider', args.provider, '--root', str(root), '--agentd-port', str(agentport), '--persist-port', str(port),
             '--persist-root', str(persist), '--persist-cli', shutil.which('pnpm', path=env['PATH']),
             '--agentctl', str(root / 'bin/agentctl'), '--flows', args.flows], env=env, cwd=root / 'work', start_new_session=True)
         processes.append(driver)
         while driver.poll() is None:
+            request = root / 'restart-agentd.request'
+            if request.exists():
+                request.unlink()
+                old = processes[0]
+                new = restart_owned_agentd(old, services[0][1], services[0][2], env, logs[0])
+                processes[0] = new
+                (root / 'restart-agentd.json').write_text(json.dumps({'old_pid': old.pid, 'new_pid': new.pid, 'isolated_data': str(root / 'agentd-data')}))
             if (root / 'network-violations.log').exists() or monitor_errors:
                 raise RuntimeError('Isolation monitor detected a forbidden access or could not verify connections')
             time.sleep(0.2)
@@ -251,9 +286,16 @@ model_routing:
         networks = subprocess.run([realdocker, 'network', 'ls', '-q', '--filter', 'label=agentctl.live_test=' + root.name], capture_output=True, text=True, timeout=20, check=True).stdout.split()
         if networks:
             subprocess.run([realdocker, 'network', 'rm', *networks], capture_output=True, timeout=30, check=True)
+        volumes = subprocess.run([realdocker, 'volume', 'ls', '-q', '--filter', 'label=agentctl.live_test=' + root.name], capture_output=True, text=True, timeout=20, check=True).stdout.split()
+        if volumes:
+            subprocess.run([realdocker, 'volume', 'rm', *volumes], capture_output=True, timeout=30, check=True)
+        remaining = {}
+        for kind, listing in [('containers', ['ps', '-aq']), ('networks', ['network', 'ls', '-q']), ('volumes', ['volume', 'ls', '-q'])]:
+            remaining[kind] = subprocess.run([realdocker, *listing, '--filter', 'label=agentctl.live_test=' + root.name], capture_output=True, text=True, timeout=20, check=True).stdout.split()
         for log in logs:
             log.close()
-        (root / 'cleanup.json').write_text(json.dumps({'processes_stopped': all(p.poll() is not None for p in processes), 'containers_removed': containers, 'networks_removed': networks, 'forbidden_connection_attempts': (root / 'network-violations.log').exists(), 'connection_monitor_errors': monitor_errors, 'local_child_groups_stopped': [p for p, _ in child_groups]}))
+        (root / 'cleanup.json').write_text(json.dumps({'processes_stopped': all(p.poll() is not None for p in processes), 'containers_removed': containers, 'networks_removed': networks, 'volumes_removed': volumes, 'remaining_resources': remaining, 'forbidden_connection_attempts': (root / 'network-violations.log').exists(), 'connection_monitor_errors': monitor_errors, 'local_child_groups_stopped': [p for p, _ in child_groups]}))
+        if any(remaining.values()): raise RuntimeError('Test-owned Docker resources remain after cleanup')
         print(f'Isolated cleanup complete: {root}', flush=True)
 
 

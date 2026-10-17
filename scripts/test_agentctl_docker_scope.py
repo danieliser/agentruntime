@@ -26,3 +26,8 @@ class DockerScopeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class VolumeScopeTest(unittest.TestCase):
+    def test_created_volume_has_test_ownership_label(self) -> None:
+        self.assertEqual(scoped_args(['volume', 'create', 'test-volume'], 'scope-1'),
+                         ['volume', 'create', '--label', 'agentctl.live_test=scope-1', 'test-volume'])

@@ -566,7 +566,13 @@ MIT. See [LICENSE](LICENSE).
 Run `scripts/agentctl-persist-live-test.sh claude` and then the same command
 with `codex`. Each run builds its own binaries and creates private data/config
 roots, credentials, cursors, Docker networks and proxy. `--flows a-local,a-docker,b,c,d`
-selects scenarios (all are required for qualification); `--preflight` checks Node
+selects the original scenarios. Final pre-install coverage adds
+`--final-proof --flows a-restart,a-failed-wake,e` (owned daemon restart, Docker
+spawn failure/cancel, and caller-key prompt/steer retries). Run
+`--final-proof --flows g` separately to exercise default local discovery in a
+private HOME with clean context disabled. All other acceptance tasks explicitly
+request clean context. Run providers sequentially because free Docker subnet
+selection occurs before network creation. `--preflight` checks Node
 and SQLite without starting services. Evidence and cleanup receipts are under
 `.agentctl-live-test/persist-PROVIDER/run.*`.
 

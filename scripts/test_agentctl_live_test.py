@@ -71,3 +71,15 @@ class ActiveSteeringEvidenceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ObservabilityCleanContextTest(unittest.TestCase):
+    def test_observability_dispatch_explicitly_requests_clean_context(self) -> None:
+        from agentctl_observability_live_test import ObservabilityTest
+        for provider in ('claude', 'codex'):
+            test = object.__new__(ObservabilityTest)
+            test.provider, test.model, test.work, test.sessions = provider, 'fixture', '/isolated', []
+            test.value = Mock(return_value={'session_id': 'fixture'})
+            test.run('tiny prompt')
+            args = test.value.call_args.args
+            self.assertIn('--context', args)
+            self.assertEqual(args[args.index('--context') + 1], 'clean')

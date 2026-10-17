@@ -44,3 +44,15 @@ class ConnectionEvidenceTest(unittest.TestCase):
         self.assertFalse(forbidden_connections('p12\nn127.0.0.1:59112->127.0.0.1:18803\n'))
 
 if __name__ == '__main__': unittest.main()
+
+class RestartTest(unittest.TestCase):
+    def test_restart_only_replaces_the_supplied_owned_process(self) -> None:
+        from unittest.mock import Mock, patch
+        from agentctl_persist_bootstrap import restart_owned_agentd
+        old = Mock()
+        with patch('agentctl_persist_bootstrap.os.killpg') as kill, patch('agentctl_persist_bootstrap.subprocess.Popen') as launch:
+            result = restart_owned_agentd(old, ['isolated-agentd'], Path('/private/work'), {}, 'log')
+            kill.assert_called_once_with(old.pid, __import__('signal').SIGTERM)
+            old.wait.assert_called_once_with(timeout=30)
+            launch.assert_called_once_with(['isolated-agentd'], cwd=Path('/private/work'), env={}, stdout='log', stderr=-2, start_new_session=True)
+            self.assertIs(result, launch.return_value)

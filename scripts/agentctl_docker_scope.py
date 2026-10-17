@@ -17,6 +17,8 @@ def scoped_args(args: list[str], scope: str) -> list[str]:
     args = [arg.replace('com.docker.network.bridge.name=br-agentruntime', 'com.docker.network.bridge.name=br-' + scope[-10:]) for arg in args]
     if proxy_run:
         args[1:1] = ['--network-alias', 'agentruntime-proxy']
+    if args[:2] == ['volume', 'create']:
+        return ['volume', 'create', '--label', 'agentctl.live_test=' + scope, *args[2:]]
     if args[:2] == ["network", "create"]:
         subnets = json.loads(os.environ.get('AGENTCTL_DOCKER_SUBNETS', '{}'))
         for name, subnet in subnets.items():
@@ -32,6 +34,9 @@ def scoped_args(args: list[str], scope: str) -> list[str]:
 
 
 if __name__ == "__main__":
+    if (Path(__file__).parent.parent / 'docker-unavailable').exists():
+        os.write(2, b'isolated fault injection: docker executable unavailable\n')
+        sys.exit(127)
     diagnostic = os.environ.get("AGENTCTL_DOCKER_DIAGNOSTICS")
     if diagnostic and sys.argv[1:2] == ["run"]:
         mounts = []
