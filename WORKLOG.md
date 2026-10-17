@@ -1141,3 +1141,34 @@
 - Owner review is explicitly required before implementation. Open decisions
   are caller OS identity, encrypted-versus-unpersisted private bodies, and
   first-version key rotation/multi-caller scope.
+
+
+## 2026-10-17 — A1–A5 follow-up continuation
+
+- `POST /api/v1/sessions/:id/input` now shares the native generation-resume
+  implementation with `/resume`. Completed sessions reopen through starting;
+  lost idle generations require durable normal-turn completion proof.
+- Session GET and the Go client expose `continuable` and `continuable_reason`.
+  Active-turn prompts point to steer; cancelled, terminated and unrecoverable
+  sessions reject new work. Stored settings and Docker volume lineage survive.
+- Schema v4 retains the old receipt table, copies immutable receipts into a
+  table keyed by session/generation, and permits only completed-to-starting
+  reopening. Current and historical receipt/result reads remain distinct.
+  New generations use separate diagnostic files covered by their receipts.
+- Red evidence: store reopening failed with invalid_state; HTTP follow-up
+  failed with 409 across the four provider/runtime fixtures. Further failing
+  tests reproduced stale artifact reads, mutation of generation one's output
+  file, active-turn prompt admission, idle-loss rejection, and idle expiry's
+  indeterminate event disagreeing with its completed receipt.
+- Green evidence: deterministic Claude/Codex native wire fixtures use real local
+  subprocesses, SQLite, and a Docker runtime boundary fixture. Tests cover
+  generations 2 and 3, concurrent duplicate keys, same-key payload conflicts,
+  retry after fresh server construction, failed wake without redispatch,
+  maintained lease expiration and old warm-prompt retries, historical proof,
+  v3-to-v4 migration, restart integrity and immutable receipts.
+- Checks: `go build ./... && go vet ./... && go test ./...`; also
+  `go test -race ./pkg/api ./pkg/durable/... ./pkg/client` passed. Evidence logs
+  are under ignored `.agentctl-live-test/continuation-*.log`.
+- Live Docker/provider qualification flags were disabled. No installed runtime,
+  launchd service, or installed daemon data was used or changed. No merge,
+  push or install is part of this delivery.

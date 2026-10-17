@@ -46,9 +46,9 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 	if err != nil {
 		return durable.FinalizeSessionResult{}, err
 	}
-	existing, err := scanReceipt(tx.QueryRowContext(ctx, "SELECT "+receiptColumns+" FROM terminal_receipts WHERE session_id = ?", receipt.SessionID))
+	existing, err := scanReceipt(tx.QueryRowContext(ctx, "SELECT "+receiptColumns+" FROM terminal_receipts WHERE session_id = ? AND generation = ?", receipt.SessionID, receipt.Generation))
 	if err == nil {
-		if session.State != receipt.State || generation.State != params.GenerationTo || !receiptsEqual(existing, receipt) {
+		if generation.State != params.GenerationTo || !receiptsEqual(existing, receipt) {
 			return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeImmutableConflict, op, "terminal receipt is immutable", nil)
 		}
 		return durable.FinalizeSessionResult{Session: session, Receipt: existing, Created: false}, nil
@@ -56,7 +56,7 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 	if !durable.IsCode(err, durable.CodeNotFound) {
 		return durable.FinalizeSessionResult{}, err
 	}
-	if session.State != params.From || generation.State != params.GenerationFrom {
+	if session.ActiveGeneration != receipt.Generation || session.State != params.From || generation.State != params.GenerationFrom {
 		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidState, op, "session or generation is not in the expected state", nil)
 	}
 	if session.LastSequence != receipt.LastSequence {
@@ -98,7 +98,7 @@ func (store *Store) GetTerminalReceipt(ctx context.Context, sessionID string) (d
 		return durable.TerminalReceipt{}, err
 	}
 	defer rollback(tx)
-	receipt, err := scanReceipt(tx.QueryRowContext(ctx, "SELECT "+receiptColumns+" FROM terminal_receipts WHERE session_id = ?", sessionID))
+	receipt, err := scanReceipt(tx.QueryRowContext(ctx, "SELECT "+receiptColumns+" FROM terminal_receipts WHERE session_id = ? AND generation = (SELECT active_generation FROM sessions WHERE id = ? AND state IN ('completed', 'failed', 'cancelled', 'timed_out', 'crashed', 'indeterminate'))", sessionID, sessionID))
 	if err != nil {
 		return durable.TerminalReceipt{}, err
 	}
@@ -163,4 +163,21 @@ func cloneReceipt(receipt durable.TerminalReceipt) durable.TerminalReceipt {
 		receipt.ExitCode = &value
 	}
 	return receipt
+}
+
+// GetGenerationReceipt reads immutable proof even after the session continues.
+func (store *Store) GetGenerationReceipt(ctx context.Context, sessionID string, generation int64) (durable.TerminalReceipt, error) {
+	tx, err := store.begin(ctx, "get_generation_receipt")
+	if err != nil {
+		return durable.TerminalReceipt{}, err
+	}
+	defer rollback(tx)
+	receipt, err := scanReceipt(tx.QueryRowContext(ctx, "SELECT "+receiptColumns+" FROM terminal_receipts WHERE session_id = ? AND generation = ?", sessionID, generation))
+	if err != nil {
+		return durable.TerminalReceipt{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return durable.TerminalReceipt{}, storageError("get_generation_receipt", "commit receipt read", err)
+	}
+	return receipt, nil
 }

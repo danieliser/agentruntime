@@ -976,6 +976,10 @@ func TestV1MaintainedDockerSessionAcceptsWarmPromptAndExpiresIdle(t *testing.T) 
 	if err != nil || receipt.State != durable.StateCompleted || receipt.Reason != "completed" {
 		t.Fatalf("idle-expiry receipt=%+v err=%v", receipt, err)
 	}
+	page, err := store.ListEvents(context.Background(), durable.EventQuery{SessionID: created.Data.SessionID, Limit: 100})
+	if err != nil || len(page.Events) == 0 || page.Events[len(page.Events)-1].Type != "session.completed" {
+		t.Fatalf("idle-expiry event disagrees with receipt: %+v err=%v", page.Events, err)
+	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		_, manifest, latestErr := server.resumeStates.Latest(created.Data.SessionID)
@@ -989,6 +993,23 @@ func TestV1MaintainedDockerSessionAcceptsWarmPromptAndExpiresIdle(t *testing.T) 
 			t.Fatalf("automatic portable state was not created: %v", latestErr)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	// Expiration is a latency boundary, not the end of the logical session.
+	wake := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", map[string]any{"idempotency_key": "after-idle-expiry", "kind": "prompt", "text": "third"})
+	wake.Body.Close()
+	if wake.StatusCode != http.StatusAccepted {
+		t.Fatalf("expired lease wake status=%d", wake.StatusCode)
+	}
+	waitForDurableTerminal(t, store, created.Data.SessionID)
+	continued, err := store.GetTerminalReceipt(context.Background(), created.Data.SessionID)
+	if err != nil || continued.Generation != 2 || continued.State != durable.StateCompleted {
+		t.Fatalf("expired lease receipt=%+v err=%v", continued, err)
+	}
+	// A retry of an earlier warm prompt must not start a third generation.
+	warmRetry := postV1Control(t, httpServer.URL, created.Data.SessionID, "input", body)
+	warmRetry.Body.Close()
+	if warmRetry.StatusCode != http.StatusOK {
+		t.Fatalf("old warm prompt retry status=%d", warmRetry.StatusCode)
 	}
 }
 

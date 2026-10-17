@@ -113,8 +113,12 @@ and `result`. Use `approve ID REQUEST_ID` or `deny ID REQUEST_ID` with an ID fro
 follow-up turn; `steer` changes an active turn. Lifecycle/approval commands return
 when accepted; use `wait` and output to confirm the effect. Each prompt and
 lifecycle invocation is a new operation, including identical text on later turns.
-`resume ID PROMPT` is recovery of a lost, nonterminal generation; it does not
-reopen a terminal session.
+`prompt` also wakes a normally completed session after its provider process
+exits, using native provider resume as generation N+1. This works for local and
+Docker Claude/Codex sessions without `--keep-warm`. `status --json` exposes
+`continuable` and `continuable_reason`. Cancelled, terminated and unrecoverable
+sessions reject new work. `resume ID PROMPT` remains explicit recovery of a lost,
+nonterminal generation.
 
 Output is compact human text by default; `--json` selects JSON. `since ID`
 returns assistant text and tool summaries after its saved sequence, then advances
@@ -218,8 +222,10 @@ The first request returns `201`. Repeating the exact request/key returns the sam
 
 ### Millisecond warm prompts and portable resume
 
-An unrestricted native Docker session can keep its provider process warm
-between turns:
+Follow-up prompts resume completed native Claude/Codex sessions on local and
+Docker runtimes using the stored model, permissions, runtime and provider
+context. Keeping a Docker process warm is an optional latency optimization:
+
 
 ```json
 {
@@ -239,8 +245,13 @@ After the durable `turn.completed` event, send the next turn to
 `POST /api/v1/sessions/{session_id}/input` with `kind: "prompt"`. During an
 active turn use `kind: "steer"`. Docker and provider bootstrap are absent from
 the warm-prompt path; the independent per-turn timeout is reset for each new
-prompt. Idle expiry or explicit termination closes the transport and creates
-the one terminal receipt for the logical conversation.
+prompt. Idle expiry closes the transport and seals that generation's receipt;
+a later prompt wakes the next generation. Explicit termination prevents further
+continuation. Receipts and diagnostic output remain immutable per generation.
+Use `GET /api/v1/sessions/{id}/receipt?generation=N` or `/result?generation=N`
+for historical proof; the default selects the active generation. See the
+[continuation contract](docs/specs/agentd-durable-streaming/CONTINUATION.md) for
+state transitions, schema v4 migration and unavailable-state reasons.
 
 `POST /api/v1/sessions/{session_id}/resume-state` creates a content-addressed
 portable snapshot while a maintained session is idle or after it is terminal.

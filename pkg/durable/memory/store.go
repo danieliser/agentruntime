@@ -22,7 +22,7 @@ type Store struct {
 	containerIDs map[string]generationKey
 	events       map[string][]durable.Event
 	eventByID    map[string]durable.Event
-	receipts     map[string]durable.TerminalReceipt
+	receipts     map[generationKey]durable.TerminalReceipt
 }
 
 type generationKey struct {
@@ -39,7 +39,7 @@ func New() *Store {
 		containerIDs: make(map[string]generationKey),
 		events:       make(map[string][]durable.Event),
 		eventByID:    make(map[string]durable.Event),
-		receipts:     make(map[string]durable.TerminalReceipt),
+		receipts:     make(map[generationKey]durable.TerminalReceipt),
 	}
 }
 

@@ -1,0 +1,130 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/danieliser/agentruntime/pkg/durable"
+	"github.com/danieliser/agentruntime/pkg/nativeprotocol"
+)
+
+func (s *Server) handleV1NativeInput(c *gin.Context) {
+	const op = "send_v1_native_input"
+	var request v1NativeInputRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode native input", err))
+		return
+	}
+	if request.Kind != nativeprotocol.InputPrompt && request.Kind != nativeprotocol.InputSteer {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "kind must be prompt or steer", nil))
+		return
+	}
+	if strings.TrimSpace(request.Text) == "" {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "input text is required", nil))
+		return
+	}
+	if request.IdempotencyKey == "" {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
+		return
+	}
+	alreadyDispatched, err := s.sendSessionInput(c.Request.Context(), c.Param("id"), request.IdempotencyKey, request.Kind, request.Text)
+	if err != nil {
+		writeDurableError(c, err)
+		return
+	}
+	if alreadyDispatched {
+		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true}})
+}
+
+// SendSessionInput lets the named-chat layer use the same durable control path
+// as the public v1 endpoint without writing raw provider stdin.
+func (s *Server) SendSessionInput(ctx context.Context, sessionID, idempotencyKey, kind, text string) error {
+	inputKind := nativeprotocol.InputKind(kind)
+	if inputKind != nativeprotocol.InputPrompt && inputKind != nativeprotocol.InputSteer {
+		return durable.NewError(durable.CodeInvalidArgument, "send_session_input", "kind must be prompt or steer", nil)
+	}
+	if idempotencyKey == "" || strings.TrimSpace(text) == "" {
+		return durable.NewError(durable.CodeInvalidArgument, "send_session_input", "idempotency key and input text are required", nil)
+	}
+	_, err := s.sendSessionInput(ctx, sessionID, idempotencyKey, inputKind, text)
+	return err
+}
+
+func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey string, kind nativeprotocol.InputKind, text string) (bool, error) {
+	const op = "send_v1_native_input"
+	if !s.beginAdmission() {
+		return false, durable.NewError(durable.CodeInvalidState, op, errAdmissionClosed.Error(), nil)
+	}
+	defer s.endAdmission()
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	if s.durableStore == nil || s.eventBroker == nil {
+		return false, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
+	}
+	// Retry lookup precedes lifecycle checks, so retries remain read-only after exit.
+	controlProbe, err := s.nativeControlParamsContext(ctx, sessionID, idempotencyKey, string(kind), map[string]any{"text": text})
+	if err != nil {
+		return false, err
+	}
+	repeated, err := s.probeSessionControl(ctx, controlProbe)
+	if err != nil || repeated {
+		return repeated, err
+	}
+	active := s.nativeSession(sessionID)
+	if active == nil {
+		if kind == nativeprotocol.InputPrompt {
+			_, repeated, err := s.resumeSessionLocked(ctx, sessionID, idempotencyKey, v1ResumeRequest{Prompt: text}, true)
+			return repeated, err
+		}
+		return false, durable.NewError(durable.CodeInvalidState, op, "native transport is unavailable", nil)
+	}
+	active.controlMu.Lock()
+	defer active.controlMu.Unlock()
+	control := controlProbe
+	if kind == nativeprotocol.InputPrompt {
+		active.mu.Lock()
+		idle := active.idle && !active.terminalClaimed
+		active.mu.Unlock()
+		if !idle {
+			return false, durable.NewError(durable.CodeInvalidState, op, "provider turn is still active; use steer instead of prompt", nil)
+		}
+	}
+	leaseClaimed := false
+	if active.lease != nil {
+		if err := active.lease.BeginInput(string(kind)); err != nil {
+			return false, durable.NewError(durable.CodeInvalidState, op, err.Error(), nil)
+		}
+		leaseClaimed = kind == nativeprotocol.InputPrompt
+	}
+	begin, err := s.eventBroker.BeginControl(ctx, control)
+	if err != nil || begin.AlreadyDispatched {
+		if leaseClaimed {
+			active.lease.AbortPrompt()
+		}
+		return begin.AlreadyDispatched, err
+	}
+	if kind == nativeprotocol.InputPrompt {
+		active.mu.Lock()
+		active.idle = false
+		active.mu.Unlock()
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := active.transport.Send(sendCtx, nativeprotocol.Input{Kind: kind, Text: text}); err != nil {
+		if leaseClaimed {
+			active.lease.AbortPrompt()
+		}
+		return false, durable.NewError(durable.CodeIndeterminate, op, "send provider input", err)
+	}
+	if _, err := s.eventBroker.CompleteControl(sendCtx, control); err != nil {
+		return false, durable.NewError(durable.CodeIndeterminate, op, "provider input may have been sent without durable dispatch proof", err)
+	}
+	return false, nil
+}

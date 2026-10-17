@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +33,7 @@ type activeNativeSession struct {
 	controlMu sync.Mutex
 
 	mu                    sync.Mutex
+	idle                  bool
 	terminalRequested     durable.SessionState
 	terminalRequestReason string
 	terminalOutcome       durable.SessionState
@@ -127,7 +127,7 @@ func (active *activeNativeSession) terminalReason() string {
 	<-active.terminalSettled
 	outcome := active.terminalState()
 	active.markFinished()
-	if outcome == durable.StateCancelled || outcome == durable.StateTimedOut {
+	if outcome == requested {
 		return requestedReason
 	}
 	return string(durable.StateIndeterminate)
@@ -205,7 +205,13 @@ func (s *Server) expireMaintainedNativeSession(sessionID string, generation int6
 }
 
 func (active *activeNativeSession) turnCompleted() {
-	if active != nil && active.lease != nil {
+	if active == nil {
+		return
+	}
+	active.mu.Lock()
+	active.idle = true
+	active.mu.Unlock()
+	if active.lease != nil {
 		active.lease.TurnCompleted()
 	}
 }
@@ -271,98 +277,6 @@ func (s *Server) expireNativeSession(sessionID string, generation int64, active 
 		}
 	}
 	active.settleTimeout(durable.StateTimedOut)
-}
-
-func (s *Server) handleV1NativeInput(c *gin.Context) {
-	const op = "send_v1_native_input"
-	var request v1NativeInputRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode native input", err))
-		return
-	}
-	if request.Kind != nativeprotocol.InputPrompt && request.Kind != nativeprotocol.InputSteer {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "kind must be prompt or steer", nil))
-		return
-	}
-	if strings.TrimSpace(request.Text) == "" {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "input text is required", nil))
-		return
-	}
-	if request.IdempotencyKey == "" {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
-		return
-	}
-	alreadyDispatched, err := s.sendSessionInput(c.Request.Context(), c.Param("id"), request.IdempotencyKey, request.Kind, request.Text)
-	if err != nil {
-		writeDurableError(c, err)
-		return
-	}
-	if alreadyDispatched {
-		c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
-		return
-	}
-	c.JSON(http.StatusAccepted, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true}})
-}
-
-// SendSessionInput lets the named-chat layer use the same durable control path
-// as the public v1 endpoint without writing raw provider stdin.
-func (s *Server) SendSessionInput(ctx context.Context, sessionID, idempotencyKey, kind, text string) error {
-	inputKind := nativeprotocol.InputKind(kind)
-	if inputKind != nativeprotocol.InputPrompt && inputKind != nativeprotocol.InputSteer {
-		return durable.NewError(durable.CodeInvalidArgument, "send_session_input", "kind must be prompt or steer", nil)
-	}
-	if idempotencyKey == "" || strings.TrimSpace(text) == "" {
-		return durable.NewError(durable.CodeInvalidArgument, "send_session_input", "idempotency key and input text are required", nil)
-	}
-	_, err := s.sendSessionInput(ctx, sessionID, idempotencyKey, inputKind, text)
-	return err
-}
-
-func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey string, kind nativeprotocol.InputKind, text string) (bool, error) {
-	const op = "send_v1_native_input"
-	active := s.nativeSession(sessionID)
-	if active == nil {
-		return false, durable.NewError(durable.CodeInvalidState, op, "native transport is unavailable", nil)
-	}
-	active.controlMu.Lock()
-	defer active.controlMu.Unlock()
-	control, err := s.nativeControlParamsContext(ctx, sessionID, idempotencyKey, string(kind), map[string]any{"text": text})
-	if err != nil {
-		return false, err
-	}
-	probe, err := s.eventBroker.ProbeControl(ctx, control)
-	if err != nil {
-		return false, err
-	}
-	if probe.AlreadyDispatched {
-		return true, nil
-	}
-	leaseClaimed := false
-	if active.lease != nil {
-		if err := active.lease.BeginInput(string(kind)); err != nil {
-			return false, durable.NewError(durable.CodeInvalidState, op, err.Error(), nil)
-		}
-		leaseClaimed = kind == nativeprotocol.InputPrompt
-	}
-	begin, err := s.eventBroker.BeginControl(ctx, control)
-	if err != nil || begin.AlreadyDispatched {
-		if leaseClaimed {
-			active.lease.AbortPrompt()
-		}
-		return begin.AlreadyDispatched, err
-	}
-	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := active.transport.Send(sendCtx, nativeprotocol.Input{Kind: kind, Text: text}); err != nil {
-		if leaseClaimed {
-			active.lease.AbortPrompt()
-		}
-		return false, durable.NewError(durable.CodeIndeterminate, op, "send provider input", err)
-	}
-	if _, err := s.eventBroker.CompleteControl(sendCtx, control); err != nil {
-		return false, durable.NewError(durable.CodeIndeterminate, op, "provider input may have been sent without durable dispatch proof", err)
-	}
-	return false, nil
 }
 
 func (s *Server) handleV1NativeInterrupt(c *gin.Context) {

@@ -103,7 +103,7 @@ func AttachNativeSessionIO(
 		onAttach(transport)
 	}
 
-	logWriter, err := session.NewLogWriter(logDir, sess.ID, session.WithDiagnosticRedactions(diagnosticValues...))
+	logWriter, err := session.NewLogWriter(logDir, nativeGenerationLogID(sess.ID, generation), session.WithDiagnosticRedactions(diagnosticValues...))
 	if err != nil {
 		log.Printf("[session %s] warning: native log file creation failed: %v", sess.ID, err)
 	}
@@ -274,4 +274,11 @@ func structuredOutputErrorMessage(err error) string {
 		return "final structured output exceeded max_bytes"
 	}
 	return "final structured output did not satisfy the admitted JSON Schema"
+}
+
+func nativeGenerationLogID(sessionID string, generation int64) string {
+	if generation <= 1 {
+		return sessionID
+	}
+	return fmt.Sprintf("%s.g%d", sessionID, generation)
 }

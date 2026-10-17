@@ -1,3 +1,8 @@
+> Schema v4 adds completed-session continuation and receipts keyed by
+> `(session_id, generation)`. The SQL below records the original v1 schema;
+> [CONTINUATION.md](CONTINUATION.md) documents the reviewed v4 migration and
+> compatibility behavior. Existing receipts are copied and retained unchanged.
+
 # AgentD durable store v1 — Gate G1 review sheet
 
 Status: **APPROVED AND IMPLEMENTED**

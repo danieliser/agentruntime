@@ -105,8 +105,14 @@ POST /api/v1/sessions/{session_id}/resume
 ```
 
 Resume creates generation N+1 exactly once and supplies the prior Claude
-session ID or Codex thread ID. A running or terminal session is returned as a
-`200` lookup/no-op. Environment secret values are never reconstructed from
+session ID or Codex thread ID. Exact retries return `200` without another
+spawn; a new resume request requires a durably lost, nonterminal generation.
+A `prompt` through `/input` also resumes a normally completed session as N+1,
+without a maintained lease. Session GET exposes `continuable` and
+`continuable_reason`. Active-turn prompts return `invalid_state` pointing to
+`steer`; cancelled and unrecoverable sessions cannot continue. See
+[continuation](CONTINUATION.md) for the generation receipt and migration contract.
+Environment secret values are never reconstructed from
 disk; approved environment grants must be supplied again in the resume body.
 Nested request-secret paths currently require a new create request.
 

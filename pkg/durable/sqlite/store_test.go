@@ -275,7 +275,7 @@ func TestBackupRestoresConsistentHistory(t *testing.T) {
 		t.Fatalf("read backup for hash: %v", err)
 	}
 	digest := sha256.Sum256(backupBytes)
-	if metadata.SchemaVersion != 3 || metadata.DatabaseSHA256 != fmt.Sprintf("sha256:%x", digest) {
+	if metadata.SchemaVersion != schemaVersion || metadata.DatabaseSHA256 != fmt.Sprintf("sha256:%x", digest) {
 		t.Fatalf("backup metadata = %+v", metadata)
 	}
 	if len(metadata.SessionTails) != 1 || metadata.SessionTails[0].SessionID != "backup-session" || metadata.SessionTails[0].LastSequence != 3 {

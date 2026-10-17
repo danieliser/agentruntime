@@ -35,6 +35,8 @@ type DurableSession struct {
 	StructuredOutput    *api.StructuredOutput `json:"structured_output,omitempty"`
 	OutputSchemaHash    string                `json:"output_schema_hash,omitempty"`
 	ProviderSessionID   string                `json:"provider_session_id,omitempty"`
+	Continuable         bool                  `json:"continuable"`
+	ContinuableReason   string                `json:"continuable_reason"`
 	Resumable           bool                  `json:"resumable"`
 	ResumeSourceSession string                `json:"resume_source_session_id,omitempty"`
 	ResumeStateID       string                `json:"resume_state_id,omitempty"`

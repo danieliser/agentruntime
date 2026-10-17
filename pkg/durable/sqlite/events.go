@@ -50,7 +50,7 @@ func (store *Store) AppendEvent(ctx context.Context, params durable.AppendEventP
 	if err != nil {
 		return durable.AppendEventResult{}, err
 	}
-	if generation.State.Terminal() && !resumeControlForLostGeneration(params, generation) {
+	if generation.State.Terminal() && !resumeControlForClosedGeneration(params, generation, session) {
 		return durable.AppendEventResult{}, durable.NewError(durable.CodeInvalidState, op, "terminal generation cannot accept events", nil)
 	}
 
@@ -83,10 +83,21 @@ type, stream, payload_json, raw, raw_sha256
 	return durable.AppendEventResult{Event: candidate, Created: true}, nil
 }
 
-func resumeControlForLostGeneration(params durable.AppendEventParams, generation durable.Generation) bool {
-	return generation.State == durable.GenerationLost &&
-		params.Stream == durable.StreamControl &&
-		(params.Type == "control.resume.requested" || params.Type == "control.resume.dispatched")
+func resumeControlForClosedGeneration(params durable.AppendEventParams, generation durable.Generation, session durable.Session) bool {
+	if params.Stream != durable.StreamControl {
+		return false
+	}
+	if generation.State == durable.GenerationLost {
+		return params.Type == "control.resume.requested" || params.Type == "control.resume.dispatched" ||
+			params.Type == "control.prompt.requested" || params.Type == "control.prompt.dispatched"
+	}
+	if generation.State != durable.GenerationExited {
+		return false
+	}
+	// Continuation intent bridges the closed generation to its successor. No
+	// provider output may be appended after that generation's receipt.
+	return (params.Type == "control.prompt.requested" && session.State == durable.StateStarting && session.ActiveGeneration == generation.Number) ||
+		(params.Type == "control.prompt.dispatched" && session.State == durable.StateRunning && session.ActiveGeneration == generation.Number+1)
 }
 
 func (store *Store) GetEventByID(ctx context.Context, eventID string) (durable.Event, error) {

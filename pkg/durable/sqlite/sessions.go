@@ -204,6 +204,9 @@ func validateCreateSession(params durable.CreateSessionParams) error {
 }
 
 func validSessionTransition(from, to durable.SessionState) bool {
+	if from == durable.StateCompleted && to == durable.StateStarting {
+		return true
+	}
 	if from.Terminal() {
 		return false
 	}

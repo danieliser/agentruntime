@@ -44,6 +44,8 @@ type v1SessionData struct {
 	StructuredOutput    *StructuredOutput       `json:"structured_output,omitempty"`
 	OutputSchemaHash    string                  `json:"output_schema_hash,omitempty"`
 	ProviderSessionID   string                  `json:"provider_session_id,omitempty"`
+	Continuable         bool                    `json:"continuable"`
+	ContinuableReason   string                  `json:"continuable_reason"`
 	Resumable           bool                    `json:"resumable"`
 	ResumeSourceSession string                  `json:"resume_source_session_id,omitempty"`
 	ResumeStateID       string                  `json:"resume_state_id,omitempty"`
@@ -109,7 +111,7 @@ func (s *Server) handleV1GetTerminalReceipt(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, "get_v1_receipt", "durable session store unavailable", nil))
 		return
 	}
-	receipt, err := s.durableStore.GetTerminalReceipt(c.Request.Context(), c.Param("id"))
+	receipt, err := s.requestedGenerationReceipt(c)
 	if err != nil {
 		writeDurableError(c, err)
 		return
@@ -414,8 +416,12 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 	if stored.Runtime == "docker" {
 		resumable = resumable && continuation.PersistSession
 	}
+	continuable := s.sessionContinuation(c.Request.Context(), stored)
 	nextInputKind := ""
-	if !stored.State.Terminal() && continuation.ContainerLease != nil && continuation.ContainerLease.Mode == "maintain" {
+	if continuable.Continuable {
+		nextInputKind = string(nativeprotocol.InputPrompt)
+	}
+	if !continuable.Continuable && !stored.State.Terminal() && continuation.ContainerLease != nil && continuation.ContainerLease.Mode == "maintain" {
 		nextInputKind = string(nativeprotocol.InputSteer)
 		if active := s.nativeSession(stored.ID); active != nil && active.lease != nil && active.lease.IsIdle() {
 			nextInputKind = string(nativeprotocol.InputPrompt)
@@ -429,6 +435,7 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 		EventsURL: sessionEventsURL(c, stored.ID), EventStreamURL: sessionEventStreamURL(c, stored.ID),
 		ExecutionPolicy: policy, ExecutionPolicyHash: policyHash,
 		StructuredOutput: structuredOutput, OutputSchemaHash: outputSchemaHash,
+		Continuable: continuable.Continuable, ContinuableReason: continuable.Reason,
 		ProviderSessionID: providerID, Resumable: resumable, ResumeSourceSession: continuation.ResumeSession,
 		ResumeStateID: continuation.ResumeStateID, ContainerLease: continuation.ContainerLease,
 		NextInputKind: nextInputKind,
@@ -531,6 +538,12 @@ func (s *Server) finalizeV1SessionAs(sessionID string, result runtime.ExitResult
 }
 
 func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.ExitResult, override durable.SessionState, reason string, streamErrors ...error) {
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	s.finalizeV1SessionClassifiedLocked(sessionID, result, override, reason, streamErrors...)
+}
+
+func (s *Server) finalizeV1SessionClassifiedLocked(sessionID string, result runtime.ExitResult, override durable.SessionState, reason string, streamErrors ...error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stored, err := s.durableStore.GetSession(ctx, sessionID)
@@ -587,7 +600,7 @@ func (s *Server) finalizeV1SessionClassified(sessionID string, result runtime.Ex
 			SessionID: sessionID, Generation: generation.Number, State: state,
 			Reason:   reason,
 			ExitCode: &exitCode, Signal: result.Signal, StartedAt: startedAt, EndedAt: endedAt,
-			OutputHash: outputHash(session.LogFilePath(s.logDir, sessionID)), ArtifactHash: result.ArtifactHash,
+			OutputHash: outputHash(session.LogFilePath(s.logDir, nativeGenerationLogID(sessionID, generation.Number))), ArtifactHash: result.ArtifactHash,
 			LastSequence: stored.LastSequence,
 		},
 	})

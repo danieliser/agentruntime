@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 type steeredClaudeFixtureAgent struct {
 	boundaryReason string
 	finalFailed    bool
+	finishPath     string
 }
 
 func (*steeredClaudeFixtureAgent) Name() string { return "claude" }
@@ -27,7 +29,7 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"steer-fixture"}'
 IFS= read -r interrupt
 IFS= read -r replacement
 printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"` + fixture.boundaryReason + `","permission_denials":[],"safety_stops":0}'
-IFS= read -r finish
+while [ ! -f "` + fixture.finishPath + `" ]; do sleep 0.01; done
 `
 	if fixture.finalFailed {
 		script += `printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"api_error"}'`
@@ -44,7 +46,7 @@ func TestV1ClaudeSteerDoesNotTerminateItsReplacement(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			store := durablememory.New()
 			registry := agent.NewRegistry()
-			fixture := &steeredClaudeFixtureAgent{boundaryReason: "aborted_streaming", finalFailed: scenario == "replacement_failure"}
+			fixture := &steeredClaudeFixtureAgent{finishPath: filepath.Join(t.TempDir(), "finish"), boundaryReason: "aborted_streaming", finalFailed: scenario == "replacement_failure"}
 			if scenario == "tools_abort" {
 				fixture.boundaryReason = "aborted_tools"
 			}
@@ -97,7 +99,9 @@ func TestV1ClaudeSteerDoesNotTerminateItsReplacement(t *testing.T) {
 						t.Fatalf("cancel status=%d", cancel.StatusCode)
 					}
 				} else if scenario != "deadline" {
-					if err := server.SendSessionInput(context.Background(), id, "finish", "prompt", "finish"); err != nil {
+					// The replacement is still active: let the fixture finish its turn
+					// without queueing a new prompt into that active turn.
+					if err := os.WriteFile(fixture.finishPath, nil, 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}

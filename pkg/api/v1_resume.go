@@ -25,22 +25,6 @@ type v1ResumeRequest struct {
 
 func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	const op = "resume_v1_session"
-	if !s.beginAdmission() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidState, Message: errAdmissionClosed.Error()}})
-		return
-	}
-	defer s.endAdmission()
-	s.resumeMu.Lock()
-	defer s.resumeMu.Unlock()
-	if s.durableStore == nil || s.eventBroker == nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil))
-		return
-	}
-	stored, err := s.durableStore.GetSession(c.Request.Context(), c.Param("id"))
-	if err != nil {
-		writeDurableError(c, err)
-		return
-	}
 	var resume v1ResumeRequest
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -48,131 +32,151 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "decode resume request", err))
 		return
 	}
-	if strings.TrimSpace(resume.Prompt) == "" {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "resume prompt is required", nil))
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if strings.TrimSpace(resume.Prompt) == "" || key == "" {
+		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "resume prompt and Idempotency-Key header are required", nil))
 		return
 	}
-	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	if idempotencyKey == "" {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "Idempotency-Key header is required", nil))
+	if !s.beginAdmission() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": apiErrorEnvelope{Code: durable.CodeInvalidState, Message: errAdmissionClosed.Error()}})
 		return
 	}
-	activeGeneration, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, stored.ActiveGeneration)
+	defer s.endAdmission()
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	stored, repeated, err := s.resumeSessionLocked(c.Request.Context(), c.Param("id"), key, resume, false)
 	if err != nil {
 		writeDurableError(c, err)
 		return
 	}
-	controlGeneration := activeGeneration.Number
-	if activeGeneration.State != durable.GenerationLost && controlGeneration > 1 {
-		controlGeneration--
+	status := http.StatusAccepted
+	if repeated {
+		status = http.StatusOK
 	}
-	control, err := resumeControlParams(stored, controlGeneration, idempotencyKey, resume)
+	s.writeV1Session(c, status, stored)
+}
+
+// resumeSessionLocked is the canonical native generation restart. Callers hold
+// resumeMu and an admission lease, including the follow-up input path.
+func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotencyKey string, resume v1ResumeRequest, wake bool) (durable.Session, bool, error) {
+	const op = "resume_v1_session"
+	if s.durableStore == nil || s.eventBroker == nil {
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "durable session services unavailable", nil)
+	}
+	stored, err := s.durableStore.GetSession(ctx, sessionID)
 	if err != nil {
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
-	previous, err := s.durableStore.GetGeneration(c.Request.Context(), stored.ID, control.Generation)
+	activeGeneration, err := s.durableStore.GetGeneration(ctx, stored.ID, stored.ActiveGeneration)
 	if err != nil {
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
-	probe, err := s.eventBroker.ProbeControl(c.Request.Context(), control)
+	control, err := resumeControlParams(stored, activeGeneration.Number, idempotencyKey, resume)
 	if err != nil {
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
-	if probe.AlreadyDispatched {
-		s.writeV1Session(c, http.StatusOK, stored)
-		return
+	if wake {
+		control, err = s.nativeControlParamsContext(ctx, stored.ID, idempotencyKey, "prompt", map[string]any{"text": resume.Prompt})
+		if err != nil {
+			return durable.Session{}, false, err
+		}
 	}
-	if previous.State != durable.GenerationLost {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "active generation is not durably lost", nil))
-		return
+	probe, err := s.probeSessionControl(ctx, control)
+	if err != nil {
+		return durable.Session{}, false, err
 	}
-	if stored.State.Terminal() {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "terminal session cannot be resumed", nil))
-		return
+	if probe {
+		return stored, true, nil
+	}
+	reopeningCompleted := wake && stored.State == durable.StateCompleted
+	previous := activeGeneration
+	if wake {
+		status := s.sessionContinuation(ctx, stored)
+		if !status.Continuable {
+			return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, status.Reason, nil)
+		}
+	} else if previous.State != durable.GenerationLost || stored.State.Terminal() {
+		return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, "active generation is not durably lost or session is terminal", nil)
 	}
 	if previous.ProviderID == "" {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "lost generation has no recoverable provider session identity", nil))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "lost generation has no recoverable provider session identity", nil)
 	}
 	var request SessionRequest
 	if err := json.Unmarshal(stored.RequestManifest, &request); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "decode stored request manifest", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "decode stored request manifest", err)
 	}
 	if err := applyResumeSecrets(&request, stored.SecretGrants, resume.Env); err != nil {
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
 	request.SessionID, request.Agent, request.Runtime, request.Prompt = stored.ID, stored.Agent, stored.Runtime, resume.Prompt
 	rt := s.RuntimeFor(stored.Runtime)
 	if rt == nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "stored runtime is unavailable", nil))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, "stored runtime is unavailable", nil)
 	}
 	if _, err := resolveExecutionPolicy(&request, rt.Name()); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored execution policy is no longer enforceable", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "stored execution policy is no longer enforceable", err)
+	}
+	if err := validateProviderPermissions(&request, rt.Name()); err != nil {
+		return durable.Session{}, false, err
 	}
 	if _, err := resolveStructuredOutput(&request); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored structured-output contract is no longer enforceable", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "stored structured-output contract is no longer enforceable", err)
 	}
 	containerLease, err := resolveContainerLease(request, rt.Name(), true)
 	if err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "stored container lease is no longer enforceable", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "stored container lease is no longer enforceable", err)
 	}
 	ag := s.agents.Get(stored.Agent)
 	if ag == nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "stored agent is unavailable", nil))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, "stored agent is unavailable", nil)
 	}
 	if err := validateContextMode(&request, rt.Name()); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "validate stored context", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeInvalidArgument, op, "validate stored context", err)
 	}
 	mounts := request.EffectiveMounts()
 	workDir := effectiveWorkDir(request.WorkDir, mounts)
 	request.SessionID = stored.ID
 	resolved, err := resolveNativeExecution(request, ag, workDir, previous.ProviderID)
 	if err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider resume command", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeInvalidArgument, op, "resolve provider resume command", err)
 	}
 	command := resolved.Command
 	command = runtimeSpawnCommand(command, rt.Name(), stored.Agent)
 	if existing := s.sessions.Get(stored.ID); existing != nil {
 		if existing.Snapshot().State == session.StateRunning {
-			s.writeV1Session(c, http.StatusOK, stored)
-			return
+			return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, "provider turn is still active; use steer instead of prompt", nil)
 		}
 		s.sessions.Remove(stored.ID)
 	}
-	begin, err := s.eventBroker.BeginControl(c.Request.Context(), control)
-	if err != nil {
-		writeDurableError(c, err)
-		return
-	}
-	if begin.AlreadyDispatched {
-		s.writeV1Session(c, http.StatusOK, stored)
-		return
-	}
 	sess := session.NewSessionWithID(stored.ID, request.TaskID, stored.Agent, stored.Runtime, request.Tags)
 	if err := s.prepareSessionDir(sess, &request, workDir); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "prepare resumed session files", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "prepare resumed session files", err)
+	}
+	if reopeningCompleted {
+		stored, err = s.durableStore.TransitionSession(ctx, durable.TransitionSessionParams{SessionID: stored.ID, From: durable.StateCompleted, To: durable.StateStarting, At: time.Now().UTC()})
+		if err != nil {
+			return durable.Session{}, false, err
+		}
+	}
+	begin, err := s.eventBroker.BeginControl(ctx, control)
+	if err != nil {
+		return durable.Session{}, false, err
+	}
+	if begin.AlreadyDispatched {
+		return stored, true, nil
 	}
 	if err := s.sessions.Add(sess); err != nil {
-		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "register resumed session", err))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, "register resumed session", err)
 	}
 	nextGeneration := stored.ActiveGeneration + 1
 	volumeName := ""
 	if request.PersistSession {
-		volumeName = "agentruntime-vol-" + stored.ID
+		rootID, persistent, rootErr := s.durableProviderStateRoot(ctx, stored)
+		if rootErr != nil || !persistent {
+			s.sessions.Remove(stored.ID)
+			return durable.Session{}, false, durable.NewError(durable.CodeInvalidState, op, "persistent provider state is unavailable", rootErr)
+		}
+		volumeName = "agentruntime-vol-" + rootID
 		sess.VolumeName = volumeName
 	}
 	spawnConfig := runtime.SpawnConfig{
@@ -185,16 +189,14 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	handle, err := rt.Spawn(context.Background(), spawnConfig)
 	if err != nil {
 		s.sessions.Remove(stored.ID)
-		writeDurableError(c, classifyRuntimeFailure(err))
-		return
+		return durable.Session{}, false, classifyRuntimeFailure(err)
 	}
 	sess.SetRunning(handle)
 	runtimeID := runtimeGenerationIdentity(handle, rt.Name(), stored.ID, nextGeneration)
 	if runtimeID == "" {
 		_ = handle.Kill()
 		s.sessions.Remove(stored.ID)
-		writeDurableError(c, durable.NewError(durable.CodeIndeterminate, op, "resumed runtime did not expose a reconstructable identity", nil))
-		return
+		return durable.Session{}, false, durable.NewError(durable.CodeIndeterminate, op, "resumed runtime did not expose a reconstructable identity", nil)
 	}
 	generation, err := s.durableStore.CreateGeneration(context.Background(), durable.CreateGenerationParams{
 		SessionID: stored.ID, Runtime: rt.Name(), ContainerID: runtimeID,
@@ -205,8 +207,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	if err != nil {
 		_ = handle.Kill()
 		s.sessions.Remove(stored.ID)
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
 	if _, err := s.durableStore.TransitionGeneration(context.Background(), durable.TransitionGenerationParams{
 		SessionID: stored.ID, Generation: generation.Number, From: durable.GenerationStarting,
@@ -214,9 +215,16 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 	}); err != nil {
 		_ = handle.Kill()
 		s.sessions.Remove(stored.ID)
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
+	if reopeningCompleted {
+		if _, err := s.durableStore.TransitionSession(context.Background(), durable.TransitionSessionParams{SessionID: stored.ID, From: durable.StateStarting, To: durable.StateRunning, At: time.Now().UTC()}); err != nil {
+			_ = handle.Kill()
+			s.sessions.Remove(stored.ID)
+			return durable.Session{}, false, err
+		}
+	}
+	var dispatchErr error
 	provider := nativeprotocol.Provider(stored.Agent)
 	var active activeNativeSessionRef
 	if err := AttachNativeSessionIO(
@@ -230,6 +238,7 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 			return current.terminalReason()
 		},
 		func(transport nativeprotocol.Transport) {
+			_, dispatchErr = s.eventBroker.CompleteControl(context.Background(), control)
 			var current *activeNativeSession
 			if containerLease.Maintain {
 				current = s.setMaintainedNativeTransport(
@@ -270,20 +279,17 @@ func (s *Server) handleV1ResumeSession(c *gin.Context) {
 		_ = handle.Kill()
 		s.sessions.Remove(stored.ID)
 		classified := classifyNativeBootstrapFailure(rt, spawnConfig, err)
-		s.finalizeV1Session(stored.ID, runtime.ExitResult{Code: -1, ErrorDetail: classified.Error(), Err: classified}, classified)
-		writeDurableError(c, classified)
-		return
+		s.finalizeV1SessionClassifiedLocked(stored.ID, runtime.ExitResult{Code: -1, ErrorDetail: classified.Error(), Err: classified}, "", "", classified)
+		return durable.Session{}, false, classified
 	}
-	if _, err := s.eventBroker.CompleteControl(context.Background(), control); err != nil {
-		writeDurableError(c, err)
-		return
+	if dispatchErr != nil {
+		return durable.Session{}, false, dispatchErr
 	}
-	resumed, err := s.durableStore.GetSession(c.Request.Context(), stored.ID)
+	resumed, err := s.durableStore.GetSession(ctx, stored.ID)
 	if err != nil {
-		writeDurableError(c, err)
-		return
+		return durable.Session{}, false, err
 	}
-	s.writeV1Session(c, http.StatusAccepted, resumed)
+	return resumed, false, nil
 }
 
 func resumeControlParams(stored durable.Session, generation int64, idempotencyKey string, resume v1ResumeRequest) (eventstream.ControlParams, error) {

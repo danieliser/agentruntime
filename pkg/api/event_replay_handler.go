@@ -56,7 +56,16 @@ func (s *Server) handleV1GetStructuredResult(c *gin.Context) {
 		writeDurableError(c, err)
 		return
 	}
-	after := stored.LastSequence - 3
+	generation, lastSequence := stored.ActiveGeneration, stored.LastSequence
+	if _, historical := c.GetQuery("generation"); historical {
+		receipt, err := s.requestedGenerationReceipt(c)
+		if err != nil {
+			writeDurableError(c, err)
+			return
+		}
+		generation, lastSequence = receipt.Generation, receipt.LastSequence
+	}
+	after := lastSequence - 3
 	if after < 0 {
 		after = 0
 	}
@@ -69,7 +78,7 @@ func (s *Server) handleV1GetStructuredResult(c *gin.Context) {
 	}
 	for index := len(page.Events) - 1; index >= 0; index-- {
 		event := page.Events[index]
-		if event.Type != "output.final" || event.Stream != durable.StreamTerminal {
+		if event.Generation != generation || event.Sequence > lastSequence || event.Type != "output.final" || event.Stream != durable.StreamTerminal {
 			continue
 		}
 		c.Header("X-Content-SHA256", event.RawSHA256)
@@ -92,4 +101,17 @@ func parseNonnegativeQuery(c *gin.Context, name string, fallback int64) (int64, 
 		return 0, false
 	}
 	return value, true
+}
+
+// requestedGenerationReceipt preserves the default active-generation contract
+// while allowing callers to read immutable historical receipt/result proof.
+func (s *Server) requestedGenerationReceipt(c *gin.Context) (durable.TerminalReceipt, error) {
+	if raw, present := c.GetQuery("generation"); present {
+		generation, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || generation < 1 {
+			return durable.TerminalReceipt{}, durable.NewError(durable.CodeInvalidArgument, "get_generation_receipt", "generation must be a positive integer", err)
+		}
+		return s.durableStore.GetGenerationReceipt(c.Request.Context(), c.Param("id"), generation)
+	}
+	return s.durableStore.GetTerminalReceipt(c.Request.Context(), c.Param("id"))
 }

@@ -22,7 +22,8 @@ const (
 	StateIndeterminate SessionState = "indeterminate"
 )
 
-// Terminal reports whether no further work may run under this logical session.
+// Terminal reports whether the current execution is finished. Completed
+// sessions may explicitly continue through starting; other terminal states cannot.
 func (state SessionState) Terminal() bool {
 	switch state {
 	case StateCompleted, StateFailed, StateCancelled, StateTimedOut, StateCrashed, StateIndeterminate:
@@ -205,7 +206,7 @@ type EventPage struct {
 	HasMore          bool
 }
 
-// TerminalReceipt is the immutable final proof for a logical session.
+// TerminalReceipt is the immutable final proof for one session generation.
 type TerminalReceipt struct {
 	SessionID    string
 	Generation   int64

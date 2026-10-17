@@ -117,13 +117,14 @@ LIMIT 1`).Scan(&sessionID)
 
 	err = tx.QueryRowContext(ctx, `SELECT s.id
 FROM sessions s
-LEFT JOIN terminal_receipts r ON r.session_id = s.id
+LEFT JOIN terminal_receipts r ON r.session_id = s.id AND r.generation = s.active_generation
 WHERE (
     s.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'crashed', 'indeterminate')
     AND (r.session_id IS NULL OR r.state <> s.state OR r.generation <> s.active_generation OR r.last_sequence <> s.last_sequence)
 ) OR (
     s.state NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'crashed', 'indeterminate')
     AND r.session_id IS NOT NULL
+    AND NOT (s.state = 'starting' AND r.state = 'completed')
 )
 LIMIT 1`).Scan(&sessionID)
 	if err == nil {

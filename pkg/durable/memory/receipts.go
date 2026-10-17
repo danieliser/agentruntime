@@ -47,13 +47,13 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 	if receipt.EndedAt.Before(receipt.StartedAt) {
 		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidArgument, op, "receipt end time precedes start time", nil)
 	}
-	if existing, exists := store.receipts[receipt.SessionID]; exists {
-		if session.State != receipt.State || generation.State != params.GenerationTo || !receiptsEqual(existing, receipt) {
+	if existing, exists := store.receipts[generationKey{receipt.SessionID, receipt.Generation}]; exists {
+		if generation.State != params.GenerationTo || !receiptsEqual(existing, receipt) {
 			return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeImmutableConflict, op, "terminal receipt is immutable", nil)
 		}
 		return durable.FinalizeSessionResult{Session: cloneSession(session), Receipt: cloneReceipt(existing), Created: false}, nil
 	}
-	if session.State != params.From || generation.State != params.GenerationFrom {
+	if session.ActiveGeneration != receipt.Generation || session.State != params.From || generation.State != params.GenerationFrom {
 		return durable.FinalizeSessionResult{}, durable.NewError(durable.CodeInvalidState, op, "session or generation is not in the expected state", nil)
 	}
 	if session.LastSequence != receipt.LastSequence {
@@ -66,7 +66,7 @@ func (store *Store) FinalizeSession(ctx context.Context, params durable.Finalize
 	session.State = receipt.State
 	session.UpdatedAt = receipt.EndedAt
 	store.sessions[receipt.SessionID] = session
-	store.receipts[receipt.SessionID] = cloneReceipt(receipt)
+	store.receipts[generationKey{receipt.SessionID, receipt.Generation}] = cloneReceipt(receipt)
 	return durable.FinalizeSessionResult{Session: cloneSession(session), Receipt: cloneReceipt(receipt), Created: true}, nil
 }
 
@@ -94,7 +94,14 @@ func (store *Store) GetTerminalReceipt(ctx context.Context, sessionID string) (d
 	if err := store.checkOpen(op); err != nil {
 		return durable.TerminalReceipt{}, err
 	}
-	receipt, exists := store.receipts[sessionID]
+	session, exists := store.sessions[sessionID]
+	if !exists {
+		return durable.TerminalReceipt{}, notFound(op, "session")
+	}
+	if !session.State.Terminal() {
+		return durable.TerminalReceipt{}, notFound(op, "terminal receipt")
+	}
+	receipt, exists := store.receipts[generationKey{sessionID, session.ActiveGeneration}]
 	if !exists {
 		return durable.TerminalReceipt{}, notFound(op, "terminal receipt")
 	}
@@ -121,4 +128,21 @@ func cloneReceipt(receipt durable.TerminalReceipt) durable.TerminalReceipt {
 		receipt.ExitCode = &exitCode
 	}
 	return receipt
+}
+
+// GetGenerationReceipt reads immutable proof even after the session continues.
+func (store *Store) GetGenerationReceipt(ctx context.Context, sessionID string, generation int64) (durable.TerminalReceipt, error) {
+	if err := checkContext(ctx); err != nil {
+		return durable.TerminalReceipt{}, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if err := store.checkOpen("get_generation_receipt"); err != nil {
+		return durable.TerminalReceipt{}, err
+	}
+	receipt, exists := store.receipts[generationKey{sessionID, generation}]
+	if !exists {
+		return durable.TerminalReceipt{}, notFound("get_generation_receipt", "terminal receipt")
+	}
+	return cloneReceipt(receipt), nil
 }

@@ -32,6 +32,7 @@ type EventRepository interface {
 // only through SessionRepository.FinalizeSession so state and proof are atomic.
 type ReceiptRepository interface {
 	GetTerminalReceipt(context.Context, string) (TerminalReceipt, error)
+	GetGenerationReceipt(context.Context, string, int64) (TerminalReceipt, error)
 }
 
 // Store is the single canonical DUR-101 persistence entry point.
