@@ -34,7 +34,6 @@ class BootstrapTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'forbidden'):
                 isolated_env(Path('/isolated'), p, a, {})
 
-if __name__ == '__main__': unittest.main()
 
 class ConnectionEvidenceTest(unittest.TestCase):
     def test_forbidden_destination_detection(self):
@@ -42,3 +41,5 @@ class ConnectionEvidenceTest(unittest.TestCase):
         self.assertTrue(forbidden_connections('p12\nn127.0.0.1:59112->127.0.0.1:8803\n'))
         self.assertTrue(forbidden_connections('p12\nn127.0.0.1:59112->127.0.0.1:38093\n'))
         self.assertFalse(forbidden_connections('p12\nn127.0.0.1:59112->127.0.0.1:18803\n'))
+
+if __name__ == '__main__': unittest.main()

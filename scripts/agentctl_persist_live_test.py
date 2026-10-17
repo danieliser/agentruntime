@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import secrets
+import select
+import signal
 import subprocess
 import sys
 import time
@@ -129,6 +131,41 @@ class LiveTest:
         self.pc('task', 'wait', task_id, '--timeout', '30s', '--json')
         self.record(f'a({runtime})', f'task:{task_id} session={sid} generation 1→2; no lease; same provider session; recalled {marker}')
 
+    def watch_plan(self, plan):
+        command = self.persist + ['plan', 'watch', plan]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        required = {'node_started', 'node_completed', 'plan_status_changed'}
+        observed = set()
+        data = b''
+        pending = b''
+        deadline = time.monotonic() + 45
+        try:
+            while not required.issubset(observed):
+                if time.monotonic() >= deadline or process.poll() is not None:
+                    raise RuntimeError('Plan watch did not replay durable lifecycle events after CLI startup')
+                if not select.select([process.stdout], [], [], 0.5)[0]: continue
+                chunk = os.read(process.stdout.fileno(), 65536)
+                data += chunk
+                pending += chunk
+                lines = pending.split(b'\n')
+                pending = lines.pop()
+                for line in lines:
+                    try: observed.add(json.loads(line).get('type'))
+                    except (ValueError, AttributeError): pass
+            if any(secret.encode() in data for secret in self.secrets): raise RuntimeError('Bearer token in plan output')
+            (self.args.root / 'plan-watch.jsonl').write_bytes(data)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+            _, errors = process.communicate(timeout=5)
+            if any(secret.encode() in errors for secret in self.secrets): raise RuntimeError('Bearer token in plan watch error')
+            with self.log.open('a') as stream:
+                stream.write(json.dumps({'argv': command, 'code': process.returncode, 'out': data.decode(), 'err': errors.decode()}) + '\n')
+
     def dag(self):
         prompt = ('Create exactly two tasks with titles A and B. B depends on A. A must use the shell tool to run `sleep 15` in the foreground, then reply A_DONE_TOKEN. B replies B_DONE_TOKEN with no tools. '
                   'Both tasks must end with PERSIST_TASK_OUTCOME: {"version":1,"status":"completed","reason":"fixture done"}. No other work or tasks.')
@@ -161,14 +198,7 @@ class LiveTest:
         if {e['node'] for e in found} != {a['node'], b['node']}:
             raise RuntimeError('Plan grep did not tag both nodes')
         self.ac('since', ref + '/' + b['node'])
-        # Exercise SSE replay with the CLI; watch is intentionally a long-lived process.
-        try:
-            self.pc('plan', 'watch', plan, timeout=4)
-        except subprocess.TimeoutExpired as error:
-            data = error.stdout.decode() if isinstance(error.stdout, bytes) else error.stdout or ''
-            if not all(event in data for event in ('node_started', 'node_completed', 'plan_status_changed')):
-                raise RuntimeError('Plan watch did not replay durable lifecycle events')
-            (self.args.root / 'plan-watch.jsonl').write_text(data)
+        self.watch_plan(plan)
         self.record('b', f'{ref}; A session={a["session_id"]}; B initially blocked_on={b["blocked_on"]}, null session; wait: {starts[-1].strip()}; both output tokens; done; SSE replay')
 
     def approval(self, decision):
