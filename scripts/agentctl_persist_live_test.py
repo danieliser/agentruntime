@@ -215,7 +215,7 @@ class LiveTest:
         command = f'printf {marker} > /var/tmp/{marker} && printf {marker} > /workspace/{marker}'
         prompt = (f'This is an operator-authorized integration test in a disposable Docker container. Please run `{command}` using the shell tool to create two test marker files. '
                   'The /var/tmp write intentionally requires human approval. Use the provider tool approval mechanism and wait for the operator decision before running it. '
-                  'The operator will decide in the approval dialog. If denied, stop without retrying or choosing another command and report the denial.')
+                  'The operator will decide in the approval dialog. Execute only that exact command once. After it returns, report the outcome without verifying files or invoking any further tools. If denied, stop without retrying or choosing another command and report the denial.')
         task = self.dispatch(f'Approval {decision}', prompt, restricted=True)
         ref = 'task:' + task['id']
         self.ac('--as', 'approvals', 'wait', ref, '--until', 'approval,error,turn_end', '--timeout', '180s', codes=(11,))
