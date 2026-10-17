@@ -348,6 +348,16 @@ func (s *Server) handleV1NativeStop(c *gin.Context, kind string, outcome durable
 		return
 	}
 	if stored.State.Terminal() {
+		// A failed wake has already stopped and committed its failure receipt.
+		// Acknowledge cancellation without rewriting that immutable outcome.
+		if kind == "cancel" && stored.State == durable.StateFailed {
+			if _, err := s.durableStore.GetTerminalReceipt(c.Request.Context(), stored.ID); err != nil {
+				writeDurableError(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": stored.ID, "accepted": true, "already_terminal": true}})
+			return
+		}
 		if stored.State != outcome {
 			writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "session is already terminal", nil))
 			return

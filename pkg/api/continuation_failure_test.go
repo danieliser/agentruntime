@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -58,6 +59,36 @@ func TestWakeIntentWithoutDispatchNeverStartsAgain(t *testing.T) {
 		if status := server.sessionContinuation(context.Background(), stored); status.Continuable {
 			t.Fatalf("unresolved wake became continuable: %+v", status)
 		}
+	}
+	// Cancelling a failed wake is a successful no-op, preserving terminal proof.
+	server := NewServer(session.NewManager(), rt, registry, ServerConfig{DataDir: dataDir, LogDir: logDir, DurableStore: store, EventBroker: eventstream.New(store)})
+	httpServer := httptest.NewServer(server.router)
+	defer httpServer.Close()
+	before, err := store.GetTerminalReceipt(context.Background(), "boundary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"cancel-failed-wake", "cancel-failed-wake"} {
+		response := postV1Control(t, httpServer.URL, "boundary", "cancel", map[string]any{"idempotency_key": key})
+		var reply struct {
+			Data struct {
+				Accepted        bool `json:"accepted"`
+				AlreadyTerminal bool `json:"already_terminal"`
+			} `json:"data"`
+		}
+		decodeJSON(t, response.Body, &reply)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK || !reply.Data.Accepted || !reply.Data.AlreadyTerminal {
+			t.Fatalf("cancel failed wake status=%d reply=%+v", response.StatusCode, reply)
+		}
+	}
+	after, err := store.GetTerminalReceipt(context.Background(), "boundary")
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("cancel rewrote failed wake receipt: before=%+v after=%+v err=%v", before, after, err)
+	}
+	stored, err := store.GetSession(context.Background(), "boundary")
+	if err != nil || stored.State != durable.StateFailed {
+		t.Fatalf("cancel changed failed terminal state: %+v err=%v", stored, err)
 	}
 	if rt.spawns.Load() != 1 {
 		t.Fatalf("unproven wake repeated a spawn: %d", rt.spawns.Load())

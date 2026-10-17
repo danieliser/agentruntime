@@ -399,6 +399,8 @@ agentd_curl -sS http://127.0.0.1:8090/api/v1/sessions/SESSION_ID/cancel \
   -d '{"idempotency_key":"cancel-001"}'
 ```
 
+Cancelling an already-failed session succeeds as a no-op with `already_terminal: true`. Its failed state and immutable receipt remain unchanged.
+
 Administrative forced termination is separate from caller cancellation:
 
 ```bash
