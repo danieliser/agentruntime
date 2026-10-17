@@ -34,6 +34,9 @@ class ObservabilityTest(LiveTest):
         self.sessions.append(sid)
         return sid
 
+    def terminate(self, sid: str, codes: tuple[int, ...] | None = (0,)):
+        return self.ctl('--direct', 'terminate', sid, codes=codes)
+
     def proof(self) -> None:
         version = execute([self.provider, '--version'], env=self.env)
         if version.returncode:
@@ -126,7 +129,7 @@ class ObservabilityTest(LiveTest):
                     status['idle_seconds'] >= 30 and not (self.work / 'stall.finished').exists(),
                     f'exit={wait.returncode}; elapsed={elapsed:.1f}s; idle={status["idle_seconds"]:.1f}s; state={status["state"]}; test provider paused after sleep started')
         # The waiter observes; it does not fail or kill the turn.
-        self.ctl('terminate', silent)
+        self.terminate(silent)
 
 
 def main() -> int:
@@ -142,7 +145,7 @@ def main() -> int:
         test.record('flow', False, str(error))
     finally:
         for sid in test.sessions:
-            test.ctl('terminate', sid, codes=None)
+            test.terminate(sid, codes=None)
     return int(any(row['status'] == 'FAIL' for row in test.records))
 
 
