@@ -30,6 +30,7 @@ import (
 type v1SessionData struct {
 	*eventstream.Activity
 	TaskID              string                  `json:"task_id,omitempty"`
+	Tags                map[string]string       `json:"tags,omitempty"`
 	SessionID           string                  `json:"session_id"`
 	IdempotencyKey      string                  `json:"idempotency_key"`
 	Agent               string                  `json:"agent"`
@@ -408,11 +409,12 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 	policy, policyHash := manifestExecutionPolicy(stored.RequestManifest)
 	structuredOutput, outputSchemaHash := structuredOutputFromManifest(stored.RequestManifest)
 	var continuation struct {
-		TaskID         string          `json:"task_id"`
-		ResumeSession  string          `json:"resume_session"`
-		ResumeStateID  string          `json:"resume_state_id"`
-		PersistSession bool            `json:"persist_session"`
-		ContainerLease *ContainerLease `json:"container_lease"`
+		TaskID         string            `json:"task_id"`
+		Tags           map[string]string `json:"tags"`
+		ResumeSession  string            `json:"resume_session"`
+		ResumeStateID  string            `json:"resume_state_id"`
+		PersistSession bool              `json:"persist_session"`
+		ContainerLease *ContainerLease   `json:"container_lease"`
 	}
 	_ = json.Unmarshal(stored.RequestManifest, &continuation)
 	providerID := ""
@@ -439,7 +441,7 @@ func (s *Server) v1SessionView(c *gin.Context, stored durable.Session) v1Session
 		}
 	}
 	return v1SessionData{
-		TaskID: continuation.TaskID, SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
+		TaskID: continuation.TaskID, Tags: continuation.Tags, SessionID: stored.ID, IdempotencyKey: stored.IdempotencyKey,
 		Agent: stored.Agent, Runtime: stored.Runtime, State: stored.State,
 		Generation: stored.ActiveGeneration, GenerationState: generationState, LastSequence: stored.LastSequence,
 		CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt,

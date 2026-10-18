@@ -1710,3 +1710,33 @@ func TestV1SessionViewRetainsTaskOwnership(t *testing.T) {
 		t.Fatalf("missing ownership: %v", data.Data["task_id"])
 	}
 }
+
+func TestV1SessionViewReturnsTags(t *testing.T) {
+	counter := &atomic.Int32{}
+	store := durablememory.New()
+	ts := newV1SessionTestServer(t, store, counter)
+	defer ts.Close()
+	response := postV1Session(t, ts.URL, map[string]any{"idempotency_key": "tagged", "agent": "sleep-test", "runtime": "test", "prompt": "hello", "tags": map[string]string{"managed_by": "persist"}})
+	defer response.Body.Close()
+	var created struct {
+		Data map[string]any `json:"data"`
+	}
+	decodeJSON(t, response.Body, &created)
+	tags, _ := created.Data["tags"].(map[string]any)
+	if tags["managed_by"] != "persist" {
+		t.Fatalf("create view tags = %v", created.Data["tags"])
+	}
+	get, err := http.Get(ts.URL + "/api/v1/sessions/" + created.Data["session_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get.Body.Close()
+	var fetched struct {
+		Data map[string]any `json:"data"`
+	}
+	decodeJSON(t, get.Body, &fetched)
+	tags, _ = fetched.Data["tags"].(map[string]any)
+	if tags["managed_by"] != "persist" {
+		t.Fatalf("get view tags = %v", fetched.Data["tags"])
+	}
+}

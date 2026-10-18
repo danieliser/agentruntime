@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -56,6 +58,9 @@ func (p *PersistClient) token() (string, error) {
 		return p.cfg.PersistToken, nil
 	}
 	v, e := LoadPersistToken(p.environ)
+	if errors.Is(e, os.ErrNotExist) {
+		return "", errors.Join(ErrAuth, errPersistNoToken, e)
+	}
 	if e != nil {
 		return "", errors.Join(ErrAuth, e)
 	}
@@ -218,6 +223,64 @@ func (p *PersistClient) ownsSession(session string) (bool, error) {
 	return true, nil
 }
 
+// PERSIST stamps every AgentD session it dispatches with this tag.
+const persistManagedTag = "managed_by"
+
+var errPersistNoToken = errors.New("PERSIST token not configured")
+
+// persistUnavailable reports whether PERSIST is absent rather than refusing:
+// no token file, or nothing listening at its URL. Timeouts, TLS failures,
+// unreadable tokens and HTTP errors from a running PERSIST are not absence and
+// must fail closed.
+func persistUnavailable(err error) bool {
+	if errors.Is(err, errPersistNoToken) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial" && !opErr.Timeout()
+}
+
+func persistDownError(err error) error {
+	return fmt.Errorf("PERSIST-managed session but PERSIST is unavailable (%w); use --direct to bypass PERSIST", err)
+}
+
+// persistOwnsSession decides from AgentD's own manifest first and consults
+// PERSIST only when the manifest cannot answer, so AgentD works standalone.
+func persistOwnsSession(ctx *Context, session string) (bool, error) {
+	var taskID string
+	var tags map[string]string
+	if ctx.API != nil {
+		view, err := ctx.API.GetSession(context.Background(), session)
+		if err != nil {
+			return false, err
+		}
+		taskID, tags = view.TaskID, view.Tags
+	}
+	if manager := tags[persistManagedTag]; manager != "" {
+		return manager == "persist", nil
+	}
+	// Unstamped sessions predate the PERSIST tag (or came from another app).
+	// PERSIST is asked whenever it is there; another app's owner tag only lifts
+	// the task_id refusal once PERSIST disowns the session or is absent.
+	foreign := tags["owner"] != "" && tags["owner"] != "persist"
+	owned, err := ctx.Persist.ownsSession(session)
+	if err != nil {
+		if !persistUnavailable(err) {
+			return false, err
+		}
+		if taskID != "" && !foreign {
+			return false, fmt.Errorf("%w: task-owned session and PERSIST is unavailable (%v); use --direct explicitly", ErrUsage, err)
+		}
+		return false, nil
+	}
+	if !owned && taskID != "" && !foreign {
+		// A hidden/unauthorized PERSIST resource must never turn into a direct
+		// AgentD write.
+		return false, fmt.Errorf("task-owned session cannot be controlled outside PERSIST; use --direct explicitly")
+	}
+	return owned, nil
+}
+
 func routePersistControl(ctx *Context, session, command, payload string) (bool, error) {
 	if ctx.Direct || ctx.Persist == nil {
 		return false, nil
@@ -233,25 +296,18 @@ func routePersistControl(ctx *Context, session, command, payload string) (bool, 
 		}
 		return ctx.Persist.controlSession(resolved, command, payload)
 	}
-	owned, e := ctx.Persist.ownsSession(session)
-	if e != nil {
-		return true, e
+	owned, err := persistOwnsSession(ctx, session)
+	if err != nil {
+		return true, err
 	}
 	if !owned {
-		// A hidden/unauthorized PERSIST resource must never turn into a direct
-		// AgentD write. Task ownership comes from AgentD's stored manifest.
-		if ctx.API != nil {
-			view, err := ctx.API.GetSession(context.Background(), session)
-			if err != nil {
-				return true, err
-			}
-			if view.TaskID != "" {
-				return true, fmt.Errorf("task-owned session cannot be controlled outside PERSIST; use --direct explicitly")
-			}
-		}
 		return false, nil
 	}
-	return ctx.Persist.controlSession(session, command, payload)
+	routed, err := ctx.Persist.controlSession(session, command, payload)
+	if err != nil && persistUnavailable(err) {
+		err = persistDownError(err)
+	}
+	return routed, err
 }
 
 type planNode struct {
@@ -368,15 +424,11 @@ func requireDirectForTaskLifecycle(ctx *Context, session string) error {
 	if ctx.Reference != nil && ctx.Reference.Kind != "session" {
 		return fmt.Errorf("%w: task-owned lifecycle control requires --direct", ErrUsage)
 	}
-	view, err := ctx.API.GetSession(context.Background(), session)
+	owned, err := persistOwnsSession(ctx, session)
 	if err != nil {
 		return err
 	}
-	owned, err := ctx.Persist.ownsSession(session)
-	if err != nil {
-		return err
-	}
-	if view.TaskID != "" || owned {
+	if owned {
 		return fmt.Errorf("%w: task-owned lifecycle control requires --direct", ErrUsage)
 	}
 	return nil

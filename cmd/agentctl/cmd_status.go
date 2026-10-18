@@ -33,7 +33,8 @@ func cmdStatus(ctx *Context, args []string) error {
 		a, e = approvals(ctx, args[0])
 		if e != nil {
 			var statusErr *apiStatusError
-			if !errors.As(e, &statusErr) || statusErr.Status != http.StatusConflict {
+			conflict := errors.As(e, &statusErr) && statusErr.Status == http.StatusConflict
+			if !conflict && !persistUnavailable(e) {
 				return e
 			}
 			approvalsAvailable = false

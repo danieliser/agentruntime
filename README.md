@@ -141,6 +141,16 @@ send a control to AgentD. Place it before the session ID, for example
 `--direct` is literal input. Task and plan resolution prefer `current_session_id`
 and fall back to `session_id` for older PERSIST responses.
 
+agentctl works without PERSIST. It decides ownership from AgentD's session
+record first: PERSIST tags its sessions `managed_by: persist`, and those always
+route through PERSIST; if PERSIST is down the command fails and suggests
+`--direct`. For untagged sessions agentctl asks PERSIST when it is running.
+When PERSIST is stopped (connection refused) or has no token file, untagged
+sessions are controlled directly, except older ones with a `task_id`, which are
+refused unless another app's `owner` tag (such as `trading-floor`) marks them.
+A PERSIST that answers with an error, times out or fails TLS fails closed.
+Only `task:` and `plan:` references and `plan show` need PERSIST running.
+
 Output is compact human text by default; `--json` selects JSON. `since ID`
 returns assistant text and tool summaries after its saved sequence, then advances
 the cursor only after successful output. A second call with no new events prints

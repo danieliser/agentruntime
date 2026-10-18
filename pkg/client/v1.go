@@ -25,6 +25,7 @@ type DurableSession struct {
 	RunningTurn         bool                  `json:"running_turn"`
 	TurnStartedAt       *time.Time            `json:"turn_started_at"`
 	TaskID              string                `json:"task_id,omitempty"`
+	Tags                map[string]string     `json:"tags,omitempty"`
 	SessionID           string                `json:"session_id"`
 	IdempotencyKey      string                `json:"idempotency_key"`
 	Agent               string                `json:"agent"`
