@@ -275,6 +275,7 @@ func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotency
 				)
 			} else {
 				current = s.setNativeTransport(stored.ID, transport)
+				current.setClosesAfterTurn(!request.Interactive)
 			}
 			active.Store(current)
 			if !containerLease.Maintain {

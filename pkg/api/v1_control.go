@@ -34,6 +34,8 @@ type activeNativeSession struct {
 
 	mu                    sync.Mutex
 	idle                  bool
+	closesAfterTurn       bool // non-interactive, unleased: the provider exits after each turn
+	closing               bool // the turn ended and the provider is exiting
 	terminalRequested     durable.SessionState
 	terminalRequestReason string
 	terminalOutcome       durable.SessionState
@@ -204,12 +206,25 @@ func (s *Server) expireMaintainedNativeSession(sessionID string, generation int6
 	active.settleTerminal(durable.StateCompleted)
 }
 
+func (active *activeNativeSession) setClosesAfterTurn(value bool) {
+	active.mu.Lock()
+	active.closesAfterTurn = value
+	active.mu.Unlock()
+}
+
+func (active *activeNativeSession) isClosing() bool {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	return active.closing
+}
+
 func (active *activeNativeSession) turnCompleted() {
 	if active == nil {
 		return
 	}
 	active.mu.Lock()
 	active.idle = true
+	active.closing = active.closesAfterTurn
 	active.mu.Unlock()
 	if active.lease != nil {
 		active.lease.TurnCompleted()
@@ -288,6 +303,24 @@ func (s *Server) handleV1NativeInterrupt(c *gin.Context) {
 	}
 	if request.IdempotencyKey == "" {
 		writeDurableError(c, durable.NewError(durable.CodeInvalidArgument, op, "idempotency_key is required", nil))
+		return
+	}
+	// A turn that already ended has nothing to interrupt; its provider is exiting.
+	if active := s.nativeSession(c.Param("id")); active != nil && active.isClosing() {
+		params, err := s.nativeControlParamsContext(c.Request.Context(), c.Param("id"), request.IdempotencyKey, "interrupt", map[string]any{})
+		if err != nil {
+			writeDurableError(c, err)
+			return
+		}
+		if repeated, err := s.probeSessionControl(c.Request.Context(), params); err != nil || repeated {
+			if err != nil {
+				writeDurableError(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": gin.H{"session_id": c.Param("id"), "accepted": true, "idempotent": true}})
+			return
+		}
+		writeDurableError(c, durable.NewError(durable.CodeInvalidState, op, "provider turn has already ended; nothing to interrupt", nil))
 		return
 	}
 	control, alreadyDispatched, err := s.beginNativeControl(c, request.IdempotencyKey, "interrupt", map[string]any{})

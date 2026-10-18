@@ -453,6 +453,11 @@ func (s *Server) restoreDurableNativeSession(sess *session.Session, info runtime
 			if recoveredIdle {
 				current.turnCompleted()
 			}
+			// A turn that ended before restart left its provider alive and idle;
+			// only turns ending from now on close the provider.
+			if !containerLease.Maintain {
+				current.setClosesAfterTurn(!manifest.Interactive)
+			}
 			if !containerLease.Maintain {
 				s.armNativeTimeout(sess.ID, generation.Number, current, manifest.EffectiveTimeout(), generation.CreatedAt)
 			}

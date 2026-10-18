@@ -43,6 +43,7 @@ type Server struct {
 	observers              ObserverService
 	srv                    *http.Server
 	sessionLocks           sessionLocks
+	turnCloseWait          time.Duration // bound for a prompt waiting on an exiting turn (default 15s)
 	continuationMu         sync.Mutex
 	continuationBoundaries map[string]continuationBoundary
 	admissionMu            sync.RWMutex

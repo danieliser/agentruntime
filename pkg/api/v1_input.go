@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -57,7 +58,60 @@ func (s *Server) SendSessionInput(ctx context.Context, sessionID, idempotencyKey
 	return err
 }
 
+// turnClosingError marks a prompt that arrived after a turn ended but before
+// its provider exited; the caller waits for that exit and wakes a new generation.
+type turnClosingError struct{ active *activeNativeSession }
+
+func (turnClosingError) Error() string { return "provider turn ended and the provider is exiting" }
+
 func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey string, kind nativeprotocol.InputKind, text string) (bool, error) {
+	repeated, err := s.sendSessionInputLocked(ctx, sessionID, idempotencyKey, kind, text)
+	var closing turnClosingError
+	if !errors.As(err, &closing) {
+		return repeated, err
+	}
+	if err := s.waitForTurnClose(ctx, sessionID, closing.active); err != nil {
+		return false, err
+	}
+	repeated, err = s.sendSessionInputLocked(ctx, sessionID, idempotencyKey, kind, text)
+	if errors.As(err, &closing) {
+		return false, errTurnStillClosing()
+	}
+	return repeated, err
+}
+
+func errTurnStillClosing() error {
+	return durable.NewError(durable.CodeInvalidState, "send_v1_native_input", "previous provider turn is still closing; retry", nil)
+}
+
+// waitForTurnClose waits, without holding the session lock, until the exiting
+// generation is detached and durably finalized.
+func (s *Server) waitForTurnClose(ctx context.Context, sessionID string, closing *activeNativeSession) error {
+	wait := s.turnCloseWait
+	if wait <= 0 {
+		wait = 15 * time.Second
+	}
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if current := s.nativeSession(sessionID); current == nil || current != closing {
+			if stored, err := s.durableStore.GetSession(ctx, sessionID); err == nil && stored.State.Terminal() {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errTurnStillClosing()
+		case <-tick.C:
+		}
+	}
+}
+
+func (s *Server) sendSessionInputLocked(ctx context.Context, sessionID, idempotencyKey string, kind nativeprotocol.InputKind, text string) (bool, error) {
 	const op = "send_v1_native_input"
 	if !s.beginAdmission() {
 		return false, durable.NewError(durable.CodeInvalidState, op, errAdmissionClosed.Error(), nil)
@@ -88,6 +142,12 @@ func (s *Server) sendSessionInput(ctx context.Context, sessionID, idempotencyKey
 	active.controlMu.Lock()
 	defer active.controlMu.Unlock()
 	control := controlProbe
+	if active.isClosing() {
+		if kind == nativeprotocol.InputPrompt {
+			return false, turnClosingError{active: active}
+		}
+		return false, durable.NewError(durable.CodeInvalidState, op, "provider turn has ended; use prompt to continue", nil)
+	}
 	if kind == nativeprotocol.InputPrompt {
 		active.mu.Lock()
 		idle := active.idle && !active.terminalClaimed

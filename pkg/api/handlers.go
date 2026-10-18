@@ -407,6 +407,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 					)
 				} else {
 					current = s.setNativeTransport(sess.ID, transport)
+					current.setClosesAfterTurn(!req.Interactive)
 				}
 				active.Store(current)
 				if !containerLease.Maintain {
