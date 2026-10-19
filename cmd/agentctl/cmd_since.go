@@ -39,10 +39,10 @@ func cmdSince(ctx *Context, args []string) error {
 		for _, e := range page.Events {
 			events = append(events, streamEvent{e.Sequence, e.Type, e.Stream, e.Payload, base64.StdEncoding.EncodeToString(e.Raw)})
 		}
-		if !page.HasMore {
+		if !page.HasMore || len(page.Events) == 0 {
 			break
 		}
-		cursor = page.LastSequence
+		cursor = page.Events[len(page.Events)-1].Sequence
 	}
 	if len(events) == 0 {
 		return nil
@@ -108,7 +108,11 @@ func sincePlan(ctx *Context, ref SessionReference, store CursorStore) error {
 							taggedEvents = append(taggedEvents, tagged{Node: n.ID, Event: event})
 						}
 					}
-					fmt.Fprintf(&b, "[%s] %s", n.ID, summarizeEvents(out, ctx.Config.Raw))
+					for _, line := range strings.Split(strings.TrimRight(summarizeEvents(out, ctx.Config.Raw), "\n"), "\n") {
+						if line != "" {
+							fmt.Fprintf(&b, "[%s] %s\n", n.ID, line)
+						}
+					}
 					cursor = out[len(out)-1].Sequence
 				}
 				if !page.HasMore || len(page.Events) == 0 {

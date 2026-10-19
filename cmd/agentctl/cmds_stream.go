@@ -30,8 +30,47 @@ func streamFlags(ctx *Context, name string, args []string) (*flag.FlagSet, *stri
 	return fs, dir, nil
 }
 
+// summarizeEvents renders events for people. Streamed text fragments join
+// into running text, and a completed message is skipped when its fragments
+// were already shown.
 func summarizeEvents(events []streamEvent, raw bool) string {
 	var b strings.Builder
+	var streamed strings.Builder // fragments of the message in progress
+	midLine := false
+	endLine := func() {
+		if midLine {
+			b.WriteByte('\n')
+			midLine = false
+		}
+	}
+	writeText := func(text string) {
+		if text == "" {
+			return
+		}
+		endLine()
+		b.WriteString(text)
+		if !strings.HasSuffix(text, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	finishMessage := func(text string) {
+		shown := streamed.String()
+		streamed.Reset()
+		switch {
+		case shown == "":
+			writeText(text)
+		case text == shown || text == "":
+			endLine()
+		case strings.HasPrefix(text, shown):
+			// The stream stopped early; finish the line with the rest.
+			rest := text[len(shown):]
+			b.WriteString(rest)
+			midLine = !strings.HasSuffix(rest, "\n")
+			endLine()
+		default:
+			writeText(text)
+		}
+	}
 	for _, e := range events {
 		if raw {
 			if e.RawBase64 != "" {
@@ -49,6 +88,9 @@ func summarizeEvents(events []streamEvent, raw bool) string {
 			Name         string          `json:"name"`
 			Tool         string          `json:"tool_name"`
 			Item         json.RawMessage `json:"item"`
+			Calls        []struct {
+				Name string `json:"name"`
+			} `json:"calls"`
 		}
 		_ = json.Unmarshal(e.Payload, &p)
 		if strings.HasPrefix(e.Type, "subagent.") {
@@ -62,29 +104,94 @@ func summarizeEvents(events []streamEvent, raw bool) string {
 					summary += " " + string(p.Item)
 				}
 			}
+			endLine()
 			fmt.Fprintf(&b, "[sub:%s] %s\n", p.SubagentPath, summary)
 			continue
 		}
 		switch e.Type {
-		case "content.delta", "content.completed":
+		case "content.delta":
 			if p.Text != "" {
 				b.WriteString(p.Text)
-				if !strings.HasSuffix(p.Text, "\n") {
-					b.WriteByte('\n')
-				}
+				streamed.WriteString(p.Text)
+				midLine = !strings.HasSuffix(p.Text, "\n")
 			}
+		case "content.completed":
+			finishMessage(p.Text)
+		case "turn.completed", "turn.failed":
+			streamed.Reset()
+			endLine()
 		case "tool.call", "tool.result":
+			if e.Type == "tool.call" && p.Text != "" {
+				// Claude sends text and tool use as one message.
+				finishMessage(p.Text)
+			}
+			item := itemSummary(p.Item)
+			if item.kind == "agentMessage" {
+				if e.Type == "tool.result" {
+					finishMessage(item.text)
+				}
+				continue
+			}
+			if item.kind == "userMessage" || item.kind == "reasoning" {
+				continue
+			}
+			streamed.Reset()
 			name := p.Name
 			if name == "" {
 				name = p.Tool
 			}
-			if name == "" && len(p.Item) > 0 {
-				name = string(p.Item)
+			if name == "" && len(p.Calls) > 0 {
+				names := make([]string, 0, len(p.Calls))
+				for _, call := range p.Calls {
+					names = append(names, call.Name)
+				}
+				name = strings.Join(names, ", ")
 			}
+			if name == "" {
+				name = item.label
+			}
+			if name == "" {
+				continue // e.g. Claude tool output carried in a user message
+			}
+			endLine()
 			fmt.Fprintf(&b, "[%s %s]\n", e.Type, name)
 		}
 	}
+	endLine()
 	return b.String()
+}
+
+type itemDetails struct{ kind, text, label string }
+
+// itemSummary reads a Codex item: its type, its text, and a short label.
+func itemSummary(raw json.RawMessage) itemDetails {
+	if len(raw) == 0 {
+		return itemDetails{}
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return itemDetails{label: string(raw)}
+	}
+	str := func(key string) string {
+		var v string
+		_ = json.Unmarshal(fields[key], &v)
+		return v
+	}
+	d := itemDetails{kind: str("type"), text: str("text")}
+	d.label = d.kind
+	for _, key := range []string{"command", "tool", "name", "path"} {
+		if v := str(key); v != "" {
+			if r := []rune(v); len(r) > 120 {
+				v = string(r[:117]) + "..."
+			}
+			d.label = strings.TrimSpace(d.label + " " + v)
+			break
+		}
+	}
+	if d.label == "" {
+		d.label = string(raw)
+	}
+	return d
 }
 
 func hiddenSubagentDelta(kind string) bool {
