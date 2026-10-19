@@ -44,7 +44,7 @@ func AttachNativeSessionIO(
 	if sess == nil || sess.Handle == nil || generation < 1 || broker == nil {
 		return fmt.Errorf("%s: session handle, generation, and event broker are required", op)
 	}
-	adapter, err := nativeprotocol.NewAdapter(provider)
+	adapter, err := nativeprotocol.NewAdapter(provider, sess.RuntimeName)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func AttachNativeSessionIO(
 		Stdin: handle.Stdin(), Stdout: handle.Stdout(), Stderr: handle.Stderr(),
 		Wait: nativeWait, Kill: handle.Kill,
 	}, nativeprotocol.RecoveryMetadata{
-		SessionID: sess.ID, Generation: generation, RuntimeID: runtimeGenerationIdentity(handle, sess.RuntimeName, sess.ID, generation),
+		RuntimeName: sess.RuntimeName, SessionID: sess.ID, Generation: generation, RuntimeID: runtimeGenerationIdentity(handle, sess.RuntimeName, sess.ID, generation),
 	})
 	if err := transport.Start(context.Background()); err != nil {
 		return err

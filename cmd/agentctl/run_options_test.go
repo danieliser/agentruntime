@@ -40,7 +40,7 @@ func TestRunRejectsUnsupportedOptionsBeforeDispatch(t *testing.T) {
 	defer ts.Close()
 	cases := [][]string{
 		{"--keep-warm", "10m"}, {"--keep-warm", "-1s", "--runtime", "docker"}, {"--keep-warm", "25h", "--runtime", "docker"},
-		{"--portable-resume"}, {"--permissions", "restricted"}, {"--permissions", "anything"},
+		{"--portable-resume"}, {"--permissions", "anything"},
 		{"--runtime", "docker", "--permissions", "restricted", "--approval-policy", "untrusted"},
 		{"--permissions", "unrestricted", "--approval-policy", "on-request"}, {"--approval-policy", "never"},
 	}
@@ -55,3 +55,34 @@ func TestRunRejectsUnsupportedOptionsBeforeDispatch(t *testing.T) {
 	}
 }
 func stringsJoin(v []string) string { b, _ := json.Marshal(v); return string(b) }
+
+func TestRunRestrictedLocal(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, approval := range []string{"on-request", "never"} {
+			t.Run(provider+"/"+approval, func(t *testing.T) {
+				called := make(chan struct{}, 1)
+				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					called <- struct{}{}
+					var req api.SessionRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Error(err)
+					}
+					if req.Runtime != "local" || req.Agent != provider || req.ProviderPermissions == nil || req.ProviderPermissions.Mode != "restricted" || req.ProviderPermissions.ApprovalPolicy != approval {
+						t.Errorf("incorrect restricted local dispatch: %+v", req)
+					}
+					_, _ = w.Write([]byte(`{"data":{"session_id":"restricted-local"}}`))
+				}))
+				defer ts.Close()
+				ctx, _ := commandContext(ts, true)
+				if err := cmdRun(ctx, []string{"--provider", provider, "--model", "M", "--cwd", "/repo", "--runtime", "local", "--permissions", "restricted", "--approval-policy", approval, "fixture"}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-called:
+				default:
+					t.Fatal("restricted local request was not dispatched")
+				}
+			})
+		}
+	}
+}

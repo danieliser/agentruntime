@@ -52,6 +52,12 @@ type Input struct {
 // InputPolicy carries the already-admitted provider enforcement settings.
 // It contains no product authority and cannot be widened by provider output.
 type InputPolicy struct {
+	// PermissionProfile selects a named, read-confined provider profile.
+	PermissionProfile string
+
+	// WorkDir is provider-visible: the host project locally, /workspace in Docker.
+	WorkDir string
+
 	// AllowLocalEnvironment is derived by the host only for coding workers.
 	// Web-only enforcement retains an empty environment selection.
 	AllowLocalEnvironment bool
@@ -71,11 +77,13 @@ type DerivedEvent struct {
 
 // Record is one exact line read from a native transport.
 type Record struct {
-	Provider  Provider
-	Stream    Stream
-	Ordinal   int64
-	Timestamp time.Time
-	Raw       []byte
+	// RuntimeName is supplied by AgentD, never decoded from provider JSON.
+	RuntimeName string
+	Provider    Provider
+	Stream      Stream
+	Ordinal     int64
+	Timestamp   time.Time
+	Raw         []byte
 	// Set only by transport after a complete local steer write; never from provider JSON.
 	SupersededBySteer bool
 }
@@ -93,9 +101,10 @@ type Exit struct {
 
 // RecoveryMetadata identifies the runtime incarnation behind a transport.
 type RecoveryMetadata struct {
-	SessionID  string
-	Generation int64
-	RuntimeID  string
+	RuntimeName string
+	SessionID   string
+	Generation  int64
+	RuntimeID   string
 }
 
 // BootstrapRequest initializes a provider-native connection and optionally
@@ -176,4 +185,11 @@ func (err *Error) Unwrap() error { return err.Err }
 
 func newError(code ErrorCode, op, message string, cause error) error {
 	return &Error{Code: code, Op: op, Message: message, Err: cause}
+}
+
+func policyWorkDir(policy InputPolicy) string {
+	if policy.WorkDir != "" {
+		return policy.WorkDir
+	}
+	return "/workspace"
 }

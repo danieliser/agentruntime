@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -27,23 +28,32 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 		return nil, &SpawnError{Reason: "cmd is empty"}
 	}
 
-	command, err := prepareLocalCommand(cfg)
+	var command, env []string
+	var err error
+	cleanup := func() error { return nil }
+	if restrictedLocalRequest(cfg) {
+		command, env, cleanup, err = prepareRestrictedLocal(cfg)
+		if cleanup == nil {
+			cleanup = func() error { return nil }
+		}
+	} else {
+		command, err = prepareLocalCommand(cfg)
+		if err == nil {
+			env, err = buildSpawnEnv(requestEnv(cfg))
+		}
+	}
 	if err != nil {
-		return nil, &SpawnError{Reason: "mcp config", Err: err}
+		return nil, &SpawnError{Reason: "provider configuration", Err: errors.Join(err, cleanup())}
 	}
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cfg.WorkDir
 	configureLocalProcessGroup(cmd)
 
-	env, err := buildSpawnEnv(requestEnv(cfg))
-	if err != nil {
-		return nil, &SpawnError{Reason: "env", Err: err}
-	}
 	cmd.Env = env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, &SpawnError{Reason: "stdin pipe", Err: err}
+		return nil, &SpawnError{Reason: "stdin pipe", Err: errors.Join(err, cleanup())}
 	}
 	stdout, stdoutWriter := io.Pipe()
 	stderr, stderrWriter := io.Pipe()
@@ -56,7 +66,7 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 		_ = stdoutWriter.Close()
 		_ = stderr.Close()
 		_ = stderrWriter.Close()
-		return nil, &SpawnError{Reason: "start", Err: err}
+		return nil, &SpawnError{Reason: "start", Err: errors.Join(err, cleanup())}
 	}
 
 	raw := make(chan ExitResult, 1)
@@ -79,7 +89,7 @@ func (r *LocalRuntime) Spawn(ctx context.Context, cfg SpawnConfig) (ProcessHandl
 				waitErr = nil // non-zero exit is not an error
 			}
 		}
-		raw <- ExitResult{Code: code, Err: waitErr}
+		raw <- ExitResult{Code: code, Err: errors.Join(waitErr, cleanup())}
 	}()
 	go h.fanoutLoop()
 

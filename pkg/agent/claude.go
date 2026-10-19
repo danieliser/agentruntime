@@ -35,6 +35,10 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	} else {
 		cmd = append(cmd, "--dangerously-skip-permissions")
 	}
+
+	if cfg.IsolateConfig {
+		cmd = append(cmd, "--setting-sources", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--safe-mode", "--disable-slash-commands")
+	}
 	if cfg.NativeStream {
 		cmd = append(cmd,
 			"--output-format", "stream-json",
@@ -77,7 +81,17 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	if cfg.Effort != "" {
 		cmd = append(cmd, "--effort", cfg.Effort)
 	}
-	if cfg.Fast {
+	if cfg.IsolateConfig {
+		settings := map[string]any{"disableAllHooks": true}
+		if cfg.Fast {
+			settings["fastMode"] = true
+		}
+		encoded, err := json.Marshal(settings)
+		if err != nil {
+			return nil, fmt.Errorf("encode isolated settings: %w", err)
+		}
+		cmd = append(cmd, "--settings", string(encoded))
+	} else if cfg.Fast {
 		// Fast mode has no CLI flag — it's a settings key (Opus 5 / 4.8 only).
 		cmd = append(cmd, "--settings", `{"fastMode":true}`)
 	}

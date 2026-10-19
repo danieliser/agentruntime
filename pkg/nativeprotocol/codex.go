@@ -5,7 +5,23 @@ import (
 	"strings"
 )
 
-type codexAdapter struct{}
+type codexAdapter struct{ runtimeName string }
+
+// Runtime comes from AgentD, never provider-supplied JSON. Unknown runtimes get
+// a generic warning without claiming that execution occurs on the host.
+func (adapter codexAdapter) approvalWarning(method string) string {
+	if method != "item/commandExecution/requestApproval" && method != "item/fileChange/requestApproval" {
+		return ""
+	}
+	switch adapter.runtimeName {
+	case "local":
+		return "Approved escalation runs outside the sandbox on the host."
+	case "docker":
+		return "Approved escalation runs outside the sandbox in the container."
+	default:
+		return "Approved escalation runs outside the sandbox."
+	}
+}
 
 func (codexAdapter) Provider() Provider { return ProviderCodex }
 
@@ -39,13 +55,18 @@ func (codexAdapter) Encode(input Input) ([][]byte, error) {
 			}
 			sandboxPolicy = map[string]any{"type": sandboxType, "networkAccess": input.Policy.NetworkAccess}
 			if sandboxType == "workspaceWrite" {
-				sandboxPolicy["writableRoots"] = []string{"/workspace"}
+				sandboxPolicy["writableRoots"] = []string{policyWorkDir(input.Policy)}
 			}
 		}
 		params := map[string]any{
 			"threadId":       input.ProviderID,
 			"input":          []map[string]any{{"type": "text", "text": input.Text}},
 			"approvalPolicy": approvalPolicy, "sandboxPolicy": sandboxPolicy,
+		}
+		if input.Policy.PermissionProfile != "" {
+			delete(params, "sandboxPolicy")
+			params["permissions"] = input.Policy.PermissionProfile
+			params["approvalsReviewer"] = "user"
 		}
 		if len(input.OutputSchema) > 0 {
 			params["outputSchema"] = json.RawMessage(input.OutputSchema)
@@ -77,7 +98,7 @@ func codexRequest(id int64, method string, params any) map[string]any {
 	return map[string]any{"id": id, "method": method, "params": params}
 }
 
-func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
+func (adapter codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 	var envelope struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -145,9 +166,12 @@ func (codexAdapter) Decode(raw []byte) (DerivedEvent, error) {
 	case "item/completed":
 		derived.Type = "tool.result"
 		payload["item"] = params.Item
-	case "item/commandExecution/requestApproval":
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "mcpServer/elicitation/request":
 		derived.Type = "control.approval.request"
 		payload["request_id"] = envelope.ID
+		if warning := adapter.approvalWarning(envelope.Method); warning != "" {
+			payload["warning"] = warning
+		}
 	case "error":
 		derived.Type = "error.provider"
 		payload["message"] = codexErrorMessage(params.Error, params.Message)

@@ -45,6 +45,9 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	if containerLease.Maintain || containerLease.PortableResume {
 		req.PersistSession = true
 	}
+	if err := validateProviderPermissions(&req, rt.Name()); err != nil {
+		return nil, durable.Session{}, err
+	}
 	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
 	if err != nil {
 		return nil, durable.Session{}, err
@@ -193,6 +196,7 @@ func (s *Server) spawnDurableSession(ctx context.Context, req SessionRequest) (*
 	}
 	generationNumber := stored.ActiveGeneration + 1
 	spawnConfig := runtime.SpawnConfig{
+		DataDir:   s.dataDir,
 		SessionID: sess.ID, Generation: generationNumber, IdempotencyKey: stored.IdempotencyKey,
 		RequestHash: stored.RequestHash, AgentName: req.Agent,
 		ExecutionPolicyHash: resolvedPolicy.Hash,

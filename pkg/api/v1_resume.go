@@ -203,6 +203,7 @@ func (s *Server) resumeSessionLocked(ctx context.Context, sessionID, idempotency
 		sess.VolumeName = volumeName
 	}
 	spawnConfig := runtime.SpawnConfig{
+		DataDir:   s.dataDir,
 		SessionID: stored.ID, Generation: nextGeneration, IdempotencyKey: stored.IdempotencyKey,
 		RequestHash: stored.RequestHash, ExecutionPolicyHash: manifestPolicyHash(stored.RequestManifest), AgentName: stored.Agent, Cmd: command, Prompt: request.Prompt,
 		Model: request.Model, Env: request.Env, WorkDir: workDir, TaskID: request.TaskID,

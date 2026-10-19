@@ -3,6 +3,7 @@ package nativeprotocol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strconv"
 	"time"
@@ -15,6 +16,7 @@ type PendingApproval struct {
 	Params    json.RawMessage `json:"params"`
 	ExpiresAt time.Time       `json:"expires_at"`
 	CanAccept bool            `json:"can_accept"`
+	Warning   string          `json:"warning,omitempty"`
 }
 type ApprovalTransport interface {
 	PendingApprovals() []PendingApproval
@@ -67,6 +69,9 @@ func (tr *StreamTransport) observeApproval(raw []byte) {
 		p.CanAccept = env.Method == "item/commandExecution/requestApproval" || env.Method == "item/fileChange/requestApproval" ||
 			(env.Method == "mcpServer/elicitation/request" && isEmptyCodexToolConsent(env.Params))
 	}
+	if adapter, ok := tr.adapter.(interface{ approvalWarning(string) string }); ok {
+		p.Warning = adapter.approvalWarning(env.Method)
+	}
 	key := approvalKey(p.RequestID)
 	if key == "" {
 		return
@@ -81,17 +86,16 @@ func (tr *StreamTransport) observeApproval(raw []byte) {
 	}
 }
 func (tr *StreamTransport) PendingApprovals() []PendingApproval {
+	tr.expireApprovals(time.Now())
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	out := make([]PendingApproval, 0, len(tr.approvals))
 	if tr.closed {
 		return out
 	}
-	for key, p := range tr.approvals {
+	for _, p := range tr.approvals {
 		if time.Now().Before(p.ExpiresAt) {
 			out = append(out, p)
-		} else {
-			delete(tr.approvals, key)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return string(out[i].RequestID) < string(out[j].RequestID) })
@@ -116,38 +120,15 @@ func (tr *StreamTransport) DecideApproval(ctx context.Context, id json.RawMessag
 		tr.mu.Unlock()
 		return newError(CodeInvalidArgument, op, "approval input is unsupported", nil)
 	}
-	var message any
-	if tr.adapter.Provider() == ProviderClaude {
-		var req struct {
-			Input json.RawMessage `json:"input"`
-		}
-		if json.Unmarshal(p.Params, &req) != nil {
-			tr.mu.Unlock()
-			return newError(CodeInvalidState, op, "invalid tool request", nil)
-		}
-		body := map[string]any{"behavior": "deny", "message": "Human declined the tool request"}
-		if decision == "accept" {
-			body = map[string]any{"behavior": "allow", "updatedInput": req.Input}
-		}
-		message = map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": p.RequestID, "response": body}}
-	} else if p.Method == "mcpServer/elicitation/request" {
-		result := map[string]any{"action": decision}
-		if decision == "accept" {
-			result["content"] = map[string]any{}
-		}
-		message = map[string]any{"id": p.RequestID, "result": result}
-	} else if p.Method == "item/permissions/requestApproval" {
-		message = map[string]any{"id": p.RequestID, "result": map[string]any{"permissions": map[string]any{}, "scope": "turn"}}
-	} else {
-		message = map[string]any{"id": p.RequestID, "result": map[string]any{"decision": decision}}
+	raw, err := tr.approvalResponse(p, decision)
+	if err != nil {
+		tr.mu.Unlock()
+		return err
 	}
+
 	// Claim before writing. Unknown delivery is not replayed as fresh consent.
 	delete(tr.approvals, key)
 	tr.mu.Unlock()
-	raw, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
 	return tr.writeMessages(ctx, op, [][]byte{raw})
 }
 
@@ -179,4 +160,98 @@ func isEmptyCodexToolConsent(raw json.RawMessage) bool {
 		}
 	}
 	return true
+}
+
+func (tr *StreamTransport) approvalResponse(p PendingApproval, decision string) ([]byte, error) {
+	const op = "encode_approval_response"
+	var message any
+	if tr.adapter.Provider() == ProviderClaude {
+		var req struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(p.Params, &req) != nil {
+			return nil, newError(CodeInvalidState, op, "invalid tool request", nil)
+		}
+		body := map[string]any{"behavior": "deny", "message": "Human declined the tool request"}
+		if decision == "accept" {
+			body = map[string]any{"behavior": "allow", "updatedInput": req.Input}
+		}
+		message = map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": p.RequestID, "response": body}}
+	} else if p.Method == "mcpServer/elicitation/request" {
+		result := map[string]any{"action": decision}
+		if decision == "accept" {
+			result["content"] = map[string]any{}
+		}
+		message = map[string]any{"id": p.RequestID, "result": result}
+	} else if p.Method == "item/permissions/requestApproval" {
+		message = map[string]any{"id": p.RequestID, "error": map[string]any{"code": -32000, "message": "Permission request declined"}}
+	} else {
+		message = map[string]any{"id": p.RequestID, "result": map[string]any{"decision": decision}}
+	}
+	return json.Marshal(message)
+}
+
+// Claim expired requests before I/O, exactly as for human decisions. A failed
+// decline terminates the transport instead of restoring consent or hanging.
+func (tr *StreamTransport) expireApprovals(now time.Time) {
+	tr.mu.Lock()
+	if tr.closed {
+		tr.mu.Unlock()
+		return
+	}
+	expired := []PendingApproval{}
+	for key, p := range tr.approvals {
+		if !now.Before(p.ExpiresAt) {
+			expired = append(expired, p)
+			delete(tr.approvals, key)
+		}
+	}
+	tr.mu.Unlock()
+	for _, p := range expired {
+		raw, err := tr.approvalResponse(p, "decline")
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Closing stdin/process on the deadline unblocks a pipe write even
+			// when the provider has stopped reading. Wait for that callback if it ran.
+			stopped := make(chan struct{})
+			stop := context.AfterFunc(ctx, func() {
+				defer close(stopped)
+				if closeErr := tr.Close(); closeErr != nil {
+					tr.mu.Lock()
+					tr.readErr = errors.Join(tr.readErr, closeErr)
+					tr.mu.Unlock()
+				}
+			})
+			err = tr.writeMessages(ctx, "expire_approval", [][]byte{raw})
+			if !stop() {
+				<-stopped
+			}
+			cancel()
+		}
+		if err != nil {
+			tr.mu.Lock()
+			tr.readErr = errors.Join(tr.readErr, err)
+			tr.mu.Unlock()
+			if closeErr := tr.Close(); closeErr != nil {
+				tr.mu.Lock()
+				tr.readErr = errors.Join(tr.readErr, closeErr)
+				tr.mu.Unlock()
+			}
+			return
+		}
+	}
+}
+
+func (tr *StreamTransport) approvalExpirationLoop() {
+	defer tr.approvalWorkers.Done()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			tr.expireApprovals(now)
+		case <-tr.approvalStop:
+			return
+		}
+	}
 }

@@ -38,13 +38,15 @@ type StreamTransport struct {
 	pending                map[string]chan codexRPCResponse
 	approvals              map[string]PendingApproval
 
-	writeMu   sync.Mutex
-	closeOnce sync.Once
-	readers   sync.WaitGroup
-	records   chan Record
-	stderr    chan Record
-	wait      chan Exit
-	done      chan struct{}
+	approvalStop    chan struct{}
+	approvalWorkers sync.WaitGroup
+	writeMu         sync.Mutex
+	closeOnce       sync.Once
+	readers         sync.WaitGroup
+	records         chan Record
+	stderr          chan Record
+	wait            chan Exit
+	done            chan struct{}
 }
 
 type codexRPCResponse struct {
@@ -57,11 +59,12 @@ type codexRPCResponse struct {
 func NewStreamTransport(adapter Adapter, process ProcessIO, recovery RecoveryMetadata) *StreamTransport {
 	return &StreamTransport{
 		adapter: adapter, process: process, recovery: recovery, nextRPCID: 1,
-		pending: make(map[string]chan codexRPCResponse),
-		records: make(chan Record, transportBufferSize),
-		stderr:  make(chan Record, transportBufferSize),
-		wait:    make(chan Exit, 1),
-		done:    make(chan struct{}),
+		pending:      make(map[string]chan codexRPCResponse),
+		records:      make(chan Record, transportBufferSize),
+		stderr:       make(chan Record, transportBufferSize),
+		wait:         make(chan Exit, 1),
+		done:         make(chan struct{}),
+		approvalStop: make(chan struct{}),
 	}
 }
 
@@ -85,6 +88,8 @@ func (transport *StreamTransport) Start(_ context.Context) error {
 		transport.readers.Add(1)
 		go transport.readStream(transport.process.Stderr, StreamRuntimeStderr, transport.stderr)
 	}
+	transport.approvalWorkers.Add(1)
+	go transport.approvalExpirationLoop()
 	go transport.waitForExit()
 	return nil
 }
@@ -187,7 +192,12 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 		}
 		params["approvalPolicy"] = request.Policy.ApprovalPolicy
 		params["sandbox"] = sandbox
-		params["cwd"] = "/workspace"
+		params["cwd"] = policyWorkDir(request.Policy)
+		if request.Policy.PermissionProfile != "" {
+			delete(params, "sandbox")
+			params["permissions"] = request.Policy.PermissionProfile
+			params["approvalsReviewer"] = "user"
+		}
 		params["dynamicTools"] = []any{}
 		if !request.Policy.AllowLocalEnvironment {
 			params["environments"] = []any{}
@@ -200,6 +210,16 @@ func (transport *StreamTransport) Bootstrap(ctx context.Context, request Bootstr
 	threadResult, err := transport.callCodex(ctx, json.RawMessage(strconv.FormatInt(id, 10)), method, params)
 	if err != nil {
 		return err
+	}
+	if request.Policy.PermissionProfile != "" {
+		var verified struct {
+			Active struct {
+				ID string `json:"id"`
+			} `json:"activePermissionProfile"`
+		}
+		if json.Unmarshal(threadResult, &verified) != nil || verified.Active.ID != request.Policy.PermissionProfile {
+			return newError(CodeInvalidState, op, "provider did not confirm the required permission profile", nil)
+		}
 	}
 	threadID := request.ProviderID
 	if threadID == "" {
@@ -345,7 +365,7 @@ func (transport *StreamTransport) readStream(reader io.ReadCloser, stream Stream
 			}
 		}
 		target <- Record{
-			Provider: transport.adapter.Provider(), Stream: stream, Ordinal: ordinal,
+			RuntimeName: transport.recovery.RuntimeName, Provider: transport.adapter.Provider(), Stream: stream, Ordinal: ordinal,
 			Timestamp: time.Now().UTC().Round(0), Raw: raw, SupersededBySteer: superseded,
 		}
 	}
@@ -361,6 +381,8 @@ func (transport *StreamTransport) waitForExit() {
 	if !ok {
 		exit = Exit{Err: io.EOF}
 	}
+	close(transport.approvalStop)
+	transport.approvalWorkers.Wait()
 	transport.readers.Wait()
 	transport.mu.Lock()
 	if transport.readErr != nil {

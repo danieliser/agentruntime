@@ -49,6 +49,8 @@ type AgentConfig struct {
 	// AllowedTools restricts which tools the agent can use (agent-specific).
 	AllowedTools []string
 
+	// IsolateConfig disables ambient Claude settings and customizations.
+	IsolateConfig bool
 	// EnforcePolicy selects provider flags that implement an explicit AgentD
 	// execution policy instead of the legacy unrestricted automation profile.
 	EnforcePolicy  bool

@@ -2,10 +2,12 @@ package api
 
 import (
 	"net/http"
+
 	"sort"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/danieliser/agentruntime/pkg/agent"
 	"github.com/danieliser/agentruntime/pkg/durable"
 	"github.com/danieliser/agentruntime/pkg/eventstream"
 	"github.com/danieliser/agentruntime/pkg/observer"
@@ -108,12 +110,19 @@ type skillCapabilities struct {
 	MaxEntries         int               `json:"max_entries"`
 }
 
+type providerPermissionCapabilities struct {
+	RestrictedLocalQualification runtime.RestrictedLocalQualification `json:"restricted_local_qualification"`
+	Modes                        []string                             `json:"modes"`
+	RestrictedRuntimes           []string                             `json:"restricted_runtimes"`
+	RestrictedLocalAgents        []string                             `json:"restricted_local_agents"`
+}
+
 type v1Capabilities struct {
 	AgentDVersion           string                         `json:"agentd_version"`
 	CommitHash              string                         `json:"commit_hash"`
 	APIVersions             []string                       `json:"api_versions"`
 	EventSchemaVersions     []string                       `json:"event_schema_versions"`
-	ProviderPermissions     []string                       `json:"provider_permissions"`
+	ProviderPermissions     providerPermissionCapabilities `json:"provider_permissions"`
 	ExecutionPolicyVersions []string                       `json:"execution_policy_versions"`
 	NativeProviders         []string                       `json:"native_providers"`
 	Runtimes                []string                       `json:"runtimes"`
@@ -145,6 +154,20 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 			dockerReconstruction = true
 			_, portableResume = s.runtimes[name].(runtime.PortableProviderState)
 			_, stoppedCleanup = s.runtimes[name].(runtime.StoppedContainerPruner)
+		}
+	}
+	restrictedRuntimes := []string{"docker"}
+	restrictedLocalAgents := []string{}
+	qualification := runtime.RestrictedLocalQualification{Agent: "codex", State: "unqualified"}
+	if _, available := s.runtimes["local"]; available {
+		qualification = runtime.RestrictedLocalQualificationStatus()
+		if qualification.Qualified {
+			if _, supported := s.agents.Get("codex").(*agent.CodexAgent); supported {
+				restrictedLocalAgents = append(restrictedLocalAgents, "codex")
+			}
+		}
+		if len(restrictedLocalAgents) > 0 {
+			restrictedRuntimes = append(restrictedRuntimes, "local")
 		}
 	}
 	sort.Strings(runtimes)
@@ -182,7 +205,10 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"api_version": "v1", "data": v1Capabilities{
 		AgentDVersion: s.version, CommitHash: s.commitHash, APIVersions: []string{"v1"},
-		ProviderPermissions: []string{"restricted_docker", "unrestricted"},
+		ProviderPermissions: providerPermissionCapabilities{
+			RestrictedLocalQualification: qualification,
+			Modes:                        []string{"restricted_docker", "unrestricted"}, RestrictedRuntimes: restrictedRuntimes, RestrictedLocalAgents: restrictedLocalAgents,
+		},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{LegacyExecutionPolicyVersion, ExecutionPolicyVersion}, NativeProviders: providers,
 		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "approval", "interrupt", "cancel", "terminate", "resume", "receipt", "maintain", "resume_state_export", "resume_state_import"},
 		Runtimes:          runtimes, Replay: replayCapabilities{

@@ -148,6 +148,15 @@ func runtimeSandboxProfile(runtimeName string, native bool) string {
 }
 
 func requestSandboxProfile(runtimeName string, native bool, request SessionRequest) string {
+	if runtimeName == "local" && request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
+		if request.Agent == "codex" {
+			return "codex-read-confined-v1"
+		}
+		if request.Agent == "claude" {
+			return "claude-permission-prompts"
+		}
+	}
+
 	if request.ExecutionPolicy != nil {
 		transport := "compat"
 		if native {
@@ -352,7 +361,7 @@ func durableRequestManifest(request SessionRequest, runtimeName string) (json.Ra
 
 func sensitiveEnvironmentName(name string) bool {
 	upper := strings.ToUpper(strings.TrimSpace(name))
-	for _, exact := range []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDENTIALS", "PRIVATE_KEY", "API_KEY", CodexAuthJSONEnv} {
+	for _, exact := range []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDENTIALS", "PRIVATE_KEY", "API_KEY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", CodexAuthJSONEnv} {
 		if upper == exact {
 			return true
 		}
