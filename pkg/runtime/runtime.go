@@ -125,6 +125,9 @@ type EgressFailureInspector interface {
 
 // SpawnConfig holds the parameters for spawning an agent process.
 type SpawnConfig struct {
+	// DataDir is the private AgentD root for durable provider materialization.
+	DataDir string
+
 	// SessionID identifies the owning session and is used for container naming/labels.
 	SessionID string
 

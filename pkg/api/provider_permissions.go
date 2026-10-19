@@ -1,6 +1,14 @@
 package api
 
-import "github.com/danieliser/agentruntime/pkg/durable"
+import (
+	"fmt"
+	"github.com/danieliser/agentruntime/pkg/runtime"
+	"path/filepath"
+	"slices"
+
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/durable"
+)
 
 func validateProviderPermissions(request *SessionRequest, runtimeName string) error {
 	if request.ProviderPermissions == nil {
@@ -28,8 +36,8 @@ func validateProviderPermissions(request *SessionRequest, runtimeName string) er
 		}
 		return nil
 	}
-	if runtimeName != "docker" {
-		return reject("restricted coding requires Docker runtime")
+	if runtimeName != "docker" && runtimeName != "local" {
+		return reject("restricted coding requires Docker or local runtime")
 	}
 	if request.WorkDir == "" {
 		return reject("restricted coding requires an explicit project work_dir")
@@ -37,7 +45,7 @@ func validateProviderPermissions(request *SessionRequest, runtimeName string) er
 	if len(request.Mounts) > 0 || len(request.Volumes) > 0 {
 		return reject("restricted coding allows only the work_dir host mount")
 	}
-	if request.Container != nil && ((request.Container.Network != "" && request.Container.Network != "bridge") || len(request.Container.SecurityOpt) > 0) {
+	if runtimeName == "docker" && request.Container != nil && ((request.Container.Network != "" && request.Container.Network != "bridge") || len(request.Container.SecurityOpt) > 0) {
 		return reject("restricted coding cannot override container network or security controls")
 	}
 	if request.Context != "" && request.Context != "clean" {
@@ -52,6 +60,26 @@ func validateProviderPermissions(request *SessionRequest, runtimeName string) er
 	if request.Codex != nil && (len(request.Codex.ConfigTOML) > 0 || request.Codex.ApprovalMode != "") {
 		return reject("restricted coding does not accept Codex config or approval overrides")
 	}
+	if runtimeName == "local" {
+		if !slices.Contains(runtime.QualifiedRestrictedLocalAgents(), request.Agent) {
+			return reject("provider/version/platform has no qualified read-confined local sandbox")
+		}
+		if !filepath.IsAbs(request.WorkDir) {
+			return reject("restricted local coding requires an absolute project work_dir")
+		}
+		if request.Claude != nil {
+			return reject("restricted local Codex does not accept configuration for another provider")
+		}
+		if len(request.MCPServers) > 0 {
+			return reject("restricted local coding does not grant external MCP processes or servers")
+		}
+		for name := range request.Env {
+			if !apischema.RestrictedLocalEnvAllowed(name) {
+				return reject(fmt.Sprintf("environment variable %q is not supported for restricted local coding", name))
+			}
+		}
+	}
+	request.Runtime = runtimeName
 	// Provider configuration is explicit. Discovery must not import owner config,
 	// credentials, MCP servers, permissions or sibling mounts from the host.
 	request.Context = "clean"

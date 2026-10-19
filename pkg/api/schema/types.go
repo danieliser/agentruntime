@@ -464,7 +464,7 @@ type UpdateChatConfigRequest struct {
 
 // ProviderPermissions selects provider CLI controls for ordinary coding workers.
 // Unlike ExecutionPolicy, this is not the managed public-research OS boundary.
-// Restricted coding is supported only inside a Docker workspace bind mount.
+// Restricted coding uses provider-native controls on Docker and local runtimes.
 type ProviderPermissions struct {
 	Mode           string `json:"mode" yaml:"mode"`
 	ApprovalPolicy string `json:"approval_policy" yaml:"approval_policy"`

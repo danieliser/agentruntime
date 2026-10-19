@@ -4,6 +4,23 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Restricted local Codex workers use a qualified read-confined permission profile
+  with network disabled, private credential cleanup and durable approvals.
+  No-model self-tests run in the background after listening and on executable
+  changes. Startup/admissions do not wait; capabilities report pending,
+  qualified or unqualified with the measured version/time. Shared temporary
+  paths are denied and ancestor instructions remain readable. Unqualified
+  providers/platforms (including Claude local) are refused.
+- Shared permission changes also affect Docker: pending approvals expire after
+  five minutes and send a decline; Codex permission-request declines use an
+  explicit JSON-RPC error instead of an empty grant; MCP elicitation requests
+  surface through approvals. Command and file-change approvals add a `warning`
+  field describing execution outside the sandbox, on the host locally or in
+  the container on Docker.
+- `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (case-insensitive) now require
+  `secret_grants` on Docker too and are omitted from plaintext manifests.
+  Restricted local mounts/volumes are rejected.
+
 - Claude steering during tool execution no longer ends the replacement turn when the canceled tool reports `aborted_tools`; matching successful steer evidence is required, and permission denials remain failures.
 
 - Restricted Codex Docker workers use a pinned default-deny seccomp profile

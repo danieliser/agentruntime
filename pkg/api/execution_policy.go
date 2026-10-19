@@ -230,7 +230,14 @@ func manifestPolicyHash(manifest json.RawMessage) string {
 func nativePolicy(request SessionRequest) nativeprotocol.InputPolicy {
 	if request.ExecutionPolicy == nil {
 		if request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
-			return nativeprotocol.InputPolicy{Enforced: true, Filesystem: "workspace_write", NetworkAccess: true, ApprovalPolicy: request.ProviderPermissions.ApprovalPolicy, AllowLocalEnvironment: true}
+			if request.Runtime == "local" {
+				return nativeprotocol.InputPolicy{Enforced: true, Filesystem: "workspace_write", WorkDir: request.WorkDir, ApprovalPolicy: request.ProviderPermissions.ApprovalPolicy, AllowLocalEnvironment: true, PermissionProfile: apischema.RestrictedLocalCodexProfile}
+			}
+			workDir := "/workspace"
+			if request.Runtime == "local" {
+				workDir = request.WorkDir
+			}
+			return nativeprotocol.InputPolicy{WorkDir: workDir, Enforced: true, Filesystem: "workspace_write", NetworkAccess: true, ApprovalPolicy: request.ProviderPermissions.ApprovalPolicy, AllowLocalEnvironment: true}
 		}
 		return nativeprotocol.InputPolicy{}
 	}

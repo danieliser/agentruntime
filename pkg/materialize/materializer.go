@@ -254,7 +254,7 @@ func materializeClaude(tmpDir, dataDir, sessionID string, req *apischema.Session
 			Mode:      "ro",
 		})
 	}
-	if req.ExecutionPolicy != nil {
+	if req.ExecutionPolicy != nil || restrictedLocal(req) {
 		if err := hardenMaterializedTree(claudeDir); err != nil {
 			return "", err
 		}
@@ -366,7 +366,7 @@ func materializeCodex(tmpDir, dataDir, sessionID string, req *apischema.SessionR
 		Container: "/home/agent/.codex",
 		Mode:      "rw",
 	})
-	if restricted {
+	if restricted || restrictedLocal(req) {
 		if err := hardenMaterializedTree(codexDir); err != nil {
 			return "", err
 		}

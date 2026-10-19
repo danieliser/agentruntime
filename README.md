@@ -100,11 +100,110 @@ Maintained sessions are available for both Claude and Codex. Portable resume is
 opt-in and requires Docker; it is separate from keeping the transport warm.
 
 For tool approval requests, add `--permissions restricted --approval-policy
-on-request`. Restricted coding requires Docker and defaults to `on-request`;
+on-request`. Restricted coding defaults to `on-request`; Docker supports both
+providers, and qualified Codex versions also support local execution.
 `never` denies requests requiring approval. `--permissions unrestricted` requires
 `never`. Omitting both preserves the daemon's provider defaults. These are
 provider permission controls, not the managed research execution-policy boundary.
 Both providers expose pending approvals in restricted mode.
+
+### Provider permissions
+
+Local restricted coding is available for Codex on macOS only after a no-model
+self-test passes. After opening its listener, AgentD measures confinement and
+app-server bootstrap in a supervised background worker. Startup, capability
+requests and admissions never wait for measurement. Capability
+`provider_permissions.restricted_local_qualification.state` is `pending`,
+`qualified` or `unqualified`; pending is unqualified and restricted local
+admissions are refused immediately with `execution_policy_unsupported`.
+Executable path, identity or file-metadata changes schedule requalification and
+return pending immediately. Unchanged admissions use the cache without running
+`codex --version`. Probe failures/timeouts, Claude local and other platforms
+remain unsupported. Check both `provider_permissions.restricted_runtimes` and
+`provider_permissions.restricted_local_agents`. Measured agent/version, UTC
+`checked_at`, `qualified` and `state` appear under
+`provider_permissions.restricted_local_qualification`. Existing mode values
+remain under `provider_permissions.modes`.
+
+```sh
+./agentctl run --provider codex --model '<model>' --cwd "$PWD" \
+  --runtime local --permissions restricted --approval-policy on-request \
+  'Inspect this project and ask before escalating permissions'
+```
+
+Restricted local requires an explicit absolute project directory, outside
+AgentD storage and broad home/system roots. Mounts, volumes, lifecycle hooks,
+teams, MCP servers and caller provider-config overrides are rejected.
+Repositories rooted at `$HOME` have a fail-closed limit: `$HOME` itself cannot
+be the work_dir. For a child workspace in such a repository, home-level
+instructions are never granted and provider bootstrap can fail before a turn.
+Use a dedicated repository root below `$HOME` instead.
+
+Ambient provider settings, hooks, MCP configuration, shell startup settings and daemon
+secrets are not inherited. Child processes receive a private HOME, XDG paths,
+TMPDIR/TMP/TEMP and CODEX_HOME. Only PATH and locale settings are inherited; explicit
+API/OAuth credential, locale and proxy grants are validated. Proxy variables
+are sensitive and require `secret_grants`, so URL credentials cannot enter
+plaintext request manifests.
+
+Codex runs `app-server --listen stdio:// --strict-config` with
+`-c default_permissions="agentd-local-v1"` and the selected approval policy.
+The generated named profile grants project read/write access, the session's
+private shell home, minimal system paths, Homebrew and the provider executable.
+Only the exact ancestor `AGENTS.md`/`AGENTS.override.md` files up to the Git root
+are additionally readable; traversal stops at the owner home. Shared `/tmp`,
+`/private/tmp`, `/var/tmp` and `/private/var/tmp` are explicitly denied. The private
+TMP variables point inside the session shell home. Its provider auth/config
+directory is explicitly denied to sandboxed commands;
+AgentD storage, other sessions, SSH files and unrelated host paths have no read
+grant. Network access is disabled, including HTTPS and loopback access. Hosted
+web search and alternate host-interaction features are disabled, and shell
+environment policy excludes credential grants and proxy secrets.
+
+Native thread start/resume and every turn select
+`permissions: "agentd-local-v1"`; bootstrap refuses a provider that does not
+confirm that active profile. Legacy `sandbox`/`sandboxPolicy` overrides are
+omitted because they can discard read restrictions. Project/ancestor config
+layers are marked untrusted, hooks/plugins/MCP apps/multi-agent features are
+disabled, login shells are disabled, and approvals go to the user reviewer.
+`on-request` exposes escalations through `control.approval.request`; `never`
+denies actions requiring approval. Permission-profile expansion requests are
+refused; supported command/file requests can receive an explicit decision.
+Command and file-change approval requests carry a warning: an approved
+escalation runs outside the sandbox on the host for local sessions, or outside
+the sandbox in the container for Docker. Expired requests receive a denial
+instead of waiting indefinitely.
+
+Copied auth and launch configuration are removed with the isolated launch home
+when the process exits, including failed launch and cancellation. Conversation
+files and the provider state database stay separate for subsequent generations;
+credentials are materialized afresh. Restricted local generations record
+`sandbox_profile: "codex-read-confined-v1"`.
+
+Claude's current CLI advertises `manual` permission mode and `--restricted` file
+tool confinement, but that flag removes command-running tools by default.
+Enabling Bash and relying on CLAUDE_CONFIG_DIR alone has not established a
+qualified read/network/Keychain boundary here, so Claude local is refused.
+Docker restricted Claude keeps its existing `default` mode (`dontAsk` for
+`never`) and the existing stdio approval transport.
+
+No model calls are needed to rerun the gated confinement tests:
+
+```sh
+AGENTD_RESTRICTED_LOCAL_PROBE=1 go test -v ./pkg/runtime \
+  -run '^TestRestrictedLocalCodexSandboxConfinement$' -count=1
+```
+
+The probes use synthetic files and `codex sandbox`, covering project access,
+ancestor instructions, credential/outside reads, symlink escape, private/shared
+temporary paths, direct `apply_patch` writes, and HTTP/HTTPS loopback by name/IP.
+A dotted repository subdirectory must also complete initialize/thread-start and
+confirm its active profile. No turn or model prompt is sent.
+Events and conversation state are durable; live local process reconstruction
+after an AgentD restart remains unsupported. Local restrictions do not provide
+Docker resource isolation. See the official [Codex permission profiles](https://developers.openai.com/codex/permissions/)
+and [Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
+
 
 Commands are `run`, `status`, `ls`, `since`, `grep`, `wait`, `prompt`, `steer`,
 `interrupt`, `cancel`, `terminate`, `resume`, `approvals`, `approve`, `deny`,

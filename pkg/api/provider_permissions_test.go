@@ -37,7 +37,7 @@ func TestProviderPermissionsRejectWidening(t *testing.T) {
 		name, runtime string
 		mutate        func(*SessionRequest)
 	}{
-		{"local restricted", "local", func(r *SessionRequest) {}},
+		{"unsupported runtime", "local-pipe", func(r *SessionRequest) {}},
 		{"unknown mode", "docker", func(r *SessionRequest) { r.ProviderPermissions.Mode = "auto" }},
 		{"unknown approval", "docker", func(r *SessionRequest) { r.ProviderPermissions.ApprovalPolicy = "allow" }},
 		{"container host network", "docker", func(r *SessionRequest) { r.Container = &ContainerConfig{Network: "host"} }},

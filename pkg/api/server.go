@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -260,10 +261,20 @@ func NewServer(sessions *session.Manager, rt runtime.Runtime, agents *agent.Regi
 
 // Start begins listening on the given address. Blocks until the server is stopped.
 func (s *Server) Start(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.serve(listener)
+}
+
+// serve owns the listener and qualification-worker lifetime. The listener is
+// already open before any optional provider measurement can start.
+func (s *Server) serve(listener net.Listener) error {
 	s.startRuntimeReadiness()
 	s.startStoppedContainerCleanup()
 	s.srv = &http.Server{
-		Addr:              addr,
+		Addr:              listener.Addr().String(),
 		Handler:           s.router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -276,8 +287,12 @@ func (s *Server) Start(addr string) error {
 	for name := range s.runtimes {
 		names = append(names, name)
 	}
-	log.Printf("agentd listening on %s (runtimes: %v, default: %s)", addr, names, s.runtime.Name())
-	return s.srv.ListenAndServe()
+	log.Printf("agentd listening on %s (runtimes: %v, default: %s)", listener.Addr(), names, s.runtime.Name())
+	if _, present := s.runtimes["local"]; present {
+		runtime.InitializeRestrictedLocalQualification(s.dataDir)
+		defer runtime.StopRestrictedLocalQualification()
+	}
+	return s.srv.Serve(listener)
 }
 
 // Shutdown closes admission, allows active work to drain until ctx expires,

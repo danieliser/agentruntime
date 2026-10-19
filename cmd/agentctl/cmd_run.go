@@ -59,8 +59,8 @@ func cmdRun(ctx *Context, args []string) error {
 				policy = "on-request"
 			}
 		}
-		if (*permissions != "restricted" && *permissions != "unrestricted") || (policy != "never" && policy != "on-request") || (*permissions == "restricted" && runtime != "docker") || (*permissions == "unrestricted" && policy != "never") {
-			return fmt.Errorf("%w: restricted permissions require Docker and on-request|never; unrestricted requires never", ErrUsage)
+		if (*permissions != "restricted" && *permissions != "unrestricted") || (policy != "never" && policy != "on-request") || (*permissions == "unrestricted" && policy != "never") {
+			return fmt.Errorf("%w: restricted permissions require on-request|never; unrestricted requires never", ErrUsage)
 		}
 		req.ProviderPermissions = &api.ProviderPermissions{Mode: *permissions, ApprovalPolicy: policy}
 	} else if *approval != "" {

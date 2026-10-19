@@ -100,12 +100,16 @@ func (s *Server) checkRuntimeRequestAdmission(ctx context.Context, request Sessi
 		return nil
 	}
 	err := checker.CheckRequestAdmission(ctx, runtime.SpawnConfig{
+		DataDir:   s.dataDir,
 		AgentName: request.Agent,
 		WorkDir:   request.WorkDir,
 		Request:   &request,
 	})
 	if err == nil {
 		return nil
+	}
+	if durable.IsCode(err, durable.CodeExecutionPolicyUnsupported) {
+		return err
 	}
 	var requestErr *runtime.RequestAdmissionError
 	if errors.As(err, &requestErr) {

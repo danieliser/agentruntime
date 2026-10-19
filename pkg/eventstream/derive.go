@@ -9,7 +9,7 @@ import (
 func derive(record nativeprotocol.Record) (string, json.RawMessage, durable.Stream, string, error) {
 	switch record.Stream {
 	case nativeprotocol.StreamProviderStdout:
-		adapter, err := nativeprotocol.NewAdapter(record.Provider)
+		adapter, err := nativeprotocol.NewAdapter(record.Provider, record.RuntimeName)
 		if err != nil {
 			return "", nil, "", "", durable.NewError(durable.CodeInvalidArgument, "derive_native_record", "unsupported provider", err)
 		}

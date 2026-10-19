@@ -93,6 +93,10 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	if containerLease.Maintain || containerLease.PortableResume {
 		req.PersistSession = true
 	}
+	if err := validateProviderPermissions(&req, rt.Name()); err != nil {
+		writeDurableError(c, err)
+		return
+	}
 	resolvedPolicy, err := resolveExecutionPolicy(&req, rt.Name())
 	if err != nil {
 		writeDurableError(c, err)
@@ -299,6 +303,7 @@ func (s *Server) createSession(c *gin.Context, req SessionRequest) {
 	}
 	ctx := context.Background()
 	spawnConfig := runtime.SpawnConfig{
+		DataDir:             s.dataDir,
 		SessionID:           sess.ID,
 		Generation:          generationNumber,
 		IdempotencyKey:      admitted.IdempotencyKey,
@@ -470,6 +475,9 @@ func (s *Server) SpawnSession(ctx context.Context, req SessionRequest) (*session
 	if s.durableStore != nil && s.eventBroker != nil && nativeV1Agent(req.Agent) {
 		sess, _, err := s.spawnDurableSession(ctx, req)
 		return sess, err
+	}
+	if req.ProviderPermissions != nil && req.ProviderPermissions.Mode == "restricted" {
+		return nil, durable.NewError(durable.CodeExecutionPolicyUnsupported, "spawn_session", "restricted provider permissions require durable native session services", nil)
 	}
 	rt := s.RuntimeFor(req.Runtime)
 	if rt == nil {

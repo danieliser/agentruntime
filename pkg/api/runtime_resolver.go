@@ -5,6 +5,8 @@ import (
 	"strconv"
 
 	"github.com/danieliser/agentruntime/pkg/agent"
+	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
+	"github.com/danieliser/agentruntime/pkg/durable"
 )
 
 // resolvedNativeExecution is the single ACT-1001 provider launch resolution.
@@ -25,6 +27,11 @@ func resolveNativeExecution(
 	if implementation == nil {
 		return resolvedNativeExecution{}, fmt.Errorf("%s: agent implementation is required", op)
 	}
+	if request.Runtime == "local" && request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
+		if _, supported := implementation.(*agent.CodexAgent); !supported {
+			return resolvedNativeExecution{}, durable.NewError(durable.CodeExecutionPolicyUnsupported, op, "agent driver cannot enforce the read-confined local profile", nil)
+		}
+	}
 	config := agent.AgentConfig{
 		Model: request.Model, WorkDir: workDir, Env: request.Env,
 		Interactive: request.Interactive, NativeStream: true,
@@ -36,6 +43,7 @@ func resolveNativeExecution(
 		config.AllowedTools = append([]string(nil), request.Claude.AllowedTools...)
 	}
 	if request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
+		config.IsolateConfig = request.Runtime == "local"
 		config.PermissionMode = "default"
 		if request.ProviderPermissions.ApprovalPolicy == "never" {
 			config.PermissionMode = "dontAsk"
@@ -69,7 +77,20 @@ func resolveNativeExecution(
 			if request.ProviderPermissions.Mode == "restricted" {
 				sandbox = "workspace-write"
 			}
-			command = append(command, "-c", "approval_policy="+strconv.Quote(request.ProviderPermissions.ApprovalPolicy), "-c", "sandbox_mode="+strconv.Quote(sandbox))
+			command = append(command, "-c", "approval_policy="+strconv.Quote(request.ProviderPermissions.ApprovalPolicy))
+			if request.Runtime == "local" && request.ProviderPermissions.Mode == "restricted" {
+				command = append(command, "-c", "default_permissions="+strconv.Quote(apischema.RestrictedLocalCodexProfile))
+			} else {
+				command = append(command, "-c", "sandbox_mode="+strconv.Quote(sandbox))
+			}
+		}
+
+		if request.Runtime == "local" && request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
+			isolation, err := restrictedLocalCodexArgs(workDir)
+			if err != nil {
+				return resolvedNativeExecution{}, err
+			}
+			command = append(command, isolation...)
 		}
 		if request.ExecutionPolicy != nil {
 			filesystemMode := "read-only"
