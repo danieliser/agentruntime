@@ -15,6 +15,7 @@ type Context struct {
 	Command   string
 	Direct    bool
 	Reference *SessionReference
+	Cursors   *CursorStore // control marks; nil disables them
 }
 type Handler func(*Context, []string) error
 
@@ -50,7 +51,7 @@ func run(args []string, out, log io.Writer, environ map[string]string) int {
 		return ExitCode(err)
 	}
 	inv.Config.Token = token
-	ctx := &Context{Config: inv.Config, API: NewAPIClient(inv.Config), Persist: NewPersistClient(inv.Config, environ), Out: out, Log: log, Command: inv.Command, Direct: direct}
+	ctx := &Context{Config: inv.Config, API: NewAPIClient(inv.Config), Persist: NewPersistClient(inv.Config, environ), Out: out, Log: log, Command: inv.Command, Direct: direct, Cursors: controlStoreFrom(environ)}
 	if len(inv.Args) > 0 && inv.Command != "plan" {
 		if id, ok := sessionArgument(inv.Command); ok && id < len(inv.Args) {
 			ref, parseErr := ParseSessionReference(inv.Args[id])

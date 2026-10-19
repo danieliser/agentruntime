@@ -56,6 +56,13 @@ func cmdWait(ctx *Context, args []string) error {
 			return err
 		}
 	}
+	reason, err := waitStart(ctxWait, ctx, id, store, reasons)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		return WaitReasonError(reason)
+	}
 	return waitStream(ctxWait, ctx.Config, id, store, reasons, *timeout, ctx.Out, *stall)
 }
 

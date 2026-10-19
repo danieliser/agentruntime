@@ -16,9 +16,11 @@ func control(ctx *Context, args []string, which string) error {
 		}
 	}
 	key := uuid.NewString()
+	undo := markControl(ctx, args[0])
 	if which == "interrupt" {
 		if routed, err := routePersistControl(ctx, args[0], which, ""); routed {
 			if err != nil {
+				undo()
 				return err
 			}
 			return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "accepted": true}, "accepted")
@@ -34,6 +36,7 @@ func control(ctx *Context, args []string, which string) error {
 		e = ctx.API.client.Terminate(context.Background(), args[0], key)
 	}
 	if e != nil {
+		undo()
 		return ctx.API.safeError(e)
 	}
 	return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "accepted": true}, "accepted")

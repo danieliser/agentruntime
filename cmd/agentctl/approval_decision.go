@@ -11,8 +11,10 @@ func decide(ctx *Context, args []string, decision string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("%w: %s ID REQUEST_ID", ErrUsage, decision)
 	}
+	undo := markControl(ctx, args[0])
 	if routed, err := routePersistControl(ctx, args[0], decision, args[0]+" "+args[1]); routed {
 		if err != nil {
+			undo()
 			return err
 		}
 		return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "request_id": args[1], "accepted": true}, "accepted")
@@ -27,6 +29,7 @@ func decide(ctx *Context, args []string, decision string) error {
 	body := map[string]any{"request_id": requestID, "decision": map[bool]string{true: "accept", false: "decline"}[decision == "approve"], "idempotency_key": idemKey("approval", args[0], string(requestID)+decision)}
 	var result any
 	if e := apiRaw(ctx, http.MethodPost, "/api/v1/sessions/"+url.PathEscape(args[0])+"/approvals", body, &result); e != nil {
+		undo()
 		return e
 	}
 	return WriteOutput(ctx.Out, ctx.Config, result, "accepted")

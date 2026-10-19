@@ -126,7 +126,7 @@ func TestWaitOutputFailureDoesNotConsumeNotification(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected writer error")
 	}
-	seq, err := store.Load("review", "s1")
+	seq, err := store.Load("review", waitKey("s1"))
 	if err != nil || seq != 0 {
 		t.Fatalf("notification consumed: %d %v", seq, err)
 	}

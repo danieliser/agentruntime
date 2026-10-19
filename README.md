@@ -166,7 +166,24 @@ before a terminal receipt exists. This API records administrative termination as
 Cursors are independent per caller/session. Set caller identity with `--as NAME`
 or `AGENTD_CALLER` (default `agentctl`). `AGENTCTL_CURSOR_DIR` overrides
 `~/.agentd/agentctl/cursors`; `--cursor-dir DIR` on `since`/`wait` overrides both.
-Use a separate caller for notifications so waiting does not consume unread text.
+`wait` keeps its own cursor, so waiting never hides text from `since` (one
+caller can do both). Where a wait starts:
+
+- After a control from the same caller (`prompt`, `steer`, `interrupt`,
+  `cancel`, `terminate`, `approve`, `deny`, `resume`), it starts at the
+  session's last event before that control, so it reacts only to what follows.
+  `run` lets its caller's first wait read the new session from the start.
+- Otherwise it continues from the caller's last wait.
+- A caller new to the session starts at the current end, so old events never
+  match.
+- In every case, an approval already waiting is reported at once, and so is a
+  finished session, unless the caller's latest control may be waking it.
+
+A wait for `done` on a session that is already finished returns at once every
+time, so do not use it as a polling delay. A control that AgentD or PERSIST
+rejects restores the previous mark. Control marks are best effort and are written to `AGENTCTL_CURSOR_DIR` or the
+default directory, not to a `--cursor-dir` given to `wait`. Waits started
+before this behavior (older agentctl) begin again at the session's current end.
 Environment options are listed in `config.example.env`; the CLI reads process
 environment directly, without automatically loading that file.
 

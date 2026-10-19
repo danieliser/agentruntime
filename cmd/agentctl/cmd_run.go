@@ -70,5 +70,6 @@ func cmdRun(ctx *Context, args []string) error {
 	if err != nil {
 		return ctx.API.safeError(err)
 	}
+	markCreated(ctx, s.SessionID)
 	return WriteOutput(ctx.Out, ctx.Config, map[string]string{"session_id": s.SessionID}, s.SessionID)
 }

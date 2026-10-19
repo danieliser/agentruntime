@@ -20,7 +20,7 @@ func waitStream(ctx context.Context, cfg Config, session string, store CursorSto
 	}
 	api := NewAPIClient(cfg)
 	nextCheck := time.Time{}
-	cursor, err := store.Load(cfg.Caller, session)
+	cursor, err := store.Load(cfg.Caller, waitKey(session))
 	if err != nil {
 		return err
 	}
@@ -99,18 +99,13 @@ func waitStream(ctx context.Context, cfg Config, session string, store CursorSto
 				reason := matchingReason(event)
 				matched := contains(reasons, reason)
 				if matched {
-					notice := struct {
-						Sequence int64  `json:"sequence"`
-						Type     string `json:"type"`
-						Reason   string `json:"reason"`
-						Summary  string `json:"summary,omitempty"`
-					}{event.Sequence, event.Type, reason, strings.TrimPrefix(summarySuffix(event), ": ")}
+					notice := waitNotice{event.Sequence, event.Type, reason, strings.TrimPrefix(summarySuffix(event), ": ")}
 					if e := WriteOutput(out, cfg, notice, event.Type+summarySuffix(event)); e != nil {
 						_ = conn.Close()
 						return e
 					}
 				}
-				if e := store.Save(cfg.Caller, session, event.Sequence); e != nil {
+				if e := store.Save(cfg.Caller, waitKey(session), event.Sequence); e != nil {
 					_ = conn.Close()
 					return e
 				}
