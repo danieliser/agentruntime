@@ -174,7 +174,7 @@ func main() {
 	var recoveredSessions []*session.Session
 	var recoveredRuntimes []string
 	for _, r := range allRuntimes {
-		recovered, err := r.Recover(context.Background())
+		recovered, err := recoverRuntimeWithBackoff(r, durableStore)
 		if err != nil {
 			log.Printf("warning: %s runtime recovery failed: %v", r.Name(), err)
 			continue
@@ -250,7 +250,10 @@ func main() {
 	})
 	srv.RestoreRecoveredSessions(recoveredSessions, recoveredRuntimes...)
 	if err := durableStore.CheckIntegrity(context.Background()); err != nil {
-		log.Fatalf("durable store integrity after recovery failed: %v", err)
+		if !durable.IsCode(err, durable.CodeWakeRecoveryRequired) || strandedWakeOnRecoveredRuntime(durableStore, recoveredRuntimes) {
+			log.Fatalf("durable store integrity after recovery failed: %v", err)
+		}
+		log.Printf("warning: a wake on a runtime that could not be recovered is still pending; it settles on the next start with that runtime available (recovered: %v)", recoveredRuntimes)
 	}
 	// Wire the spawner after server creation to break the circular dependency
 	// between api.Server (needs chatManager) and chatManager (needs spawner).
