@@ -85,9 +85,9 @@ class ObservabilityCleanContextTest(unittest.TestCase):
             self.assertEqual(args[args.index('--context') + 1], 'clean')
 
 class ObservabilityTerminationTest(unittest.TestCase):
-    def test_standalone_fixture_cleanup_does_not_require_persist(self) -> None:
+    def test_standalone_fixture_cleanup_uses_force(self) -> None:
         from agentctl_observability_live_test import ObservabilityTest
         test = object.__new__(ObservabilityTest)
         test.ctl = Mock()
         test.terminate('standalone-fixture')
-        test.ctl.assert_called_once_with('--direct', 'terminate', 'standalone-fixture', codes=(0,))
+        test.ctl.assert_called_once_with('--force', 'terminate', 'standalone-fixture', codes=(0,))

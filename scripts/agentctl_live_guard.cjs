@@ -48,7 +48,7 @@ const connect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function(...args) {
   let a = args[0]; if (Array.isArray(a)) a = a[0];
   const port = Number(typeof a === 'object' && a !== null ? a.port : a);
-  if ([8803,38093].includes(port)) fail('forbidden port ' + port);
+  if (port === 38093) fail('forbidden port ' + port);
   return connect.apply(this,args);
 };
 require('node:module').syncBuiltinESMExports();

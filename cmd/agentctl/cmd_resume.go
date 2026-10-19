@@ -10,7 +10,7 @@ func cmdResume(ctx *Context, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("%w: resume ID prompt", ErrUsage)
 	}
-	if err := requireDirectForTaskLifecycle(ctx, args[0]); err != nil {
+	if err := guardControl(ctx, args[0]); err != nil {
 		return err
 	}
 	undo := markControl(ctx, args[0])

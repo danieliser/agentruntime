@@ -13,16 +13,6 @@ func cmdStatus(ctx *Context, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("%w: status ID", ErrUsage)
 	}
-	if ref, err := ParseSessionReference(args[0]); err == nil && ref.Kind == "plan" {
-		return cmdPlan(ctx, []string{"show", ref.ID})
-	}
-	if ref, err := ParseSessionReference(args[0]); err == nil && ref.Kind == "plan_node" {
-		id, err := ctx.Persist.resolve(ref)
-		if err != nil {
-			return err
-		}
-		args[0] = id
-	}
 	s, e := ctx.API.GetSession(context.Background(), args[0])
 	if e != nil {
 		return e
@@ -34,7 +24,7 @@ func cmdStatus(ctx *Context, args []string) error {
 		if e != nil {
 			var statusErr *apiStatusError
 			conflict := errors.As(e, &statusErr) && statusErr.Status == http.StatusConflict
-			if !conflict && !persistUnavailable(e) {
+			if !conflict {
 				return e
 			}
 			approvalsAvailable = false

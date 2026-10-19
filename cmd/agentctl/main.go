@@ -8,14 +8,12 @@ import (
 )
 
 type Context struct {
-	Config    Config
-	API       *APIClient
-	Persist   *PersistClient
-	Out, Log  io.Writer
-	Command   string
-	Direct    bool
-	Reference *SessionReference
-	Cursors   *CursorStore // control marks; nil disables them
+	Config   Config
+	API      *APIClient
+	Out, Log io.Writer
+	Command  string
+	Force    bool
+	Cursors  *CursorStore // control marks; nil disables them
 }
 type Handler func(*Context, []string) error
 
@@ -34,7 +32,7 @@ func skeletonHandler(ctx *Context, _ []string) error {
 }
 
 func run(args []string, out, log io.Writer, environ map[string]string) int {
-	args, direct := extractDirectFlag(args)
+	args, force := extractForceFlag(args)
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
 		fmt.Fprintln(out, helpText())
 		return ExitSuccess
@@ -51,42 +49,12 @@ func run(args []string, out, log io.Writer, environ map[string]string) int {
 		return ExitCode(err)
 	}
 	inv.Config.Token = token
-	ctx := &Context{Config: inv.Config, API: NewAPIClient(inv.Config), Persist: NewPersistClient(inv.Config, environ), Out: out, Log: log, Command: inv.Command, Direct: direct, Cursors: controlStoreFrom(environ)}
-	if len(inv.Args) > 0 && inv.Command != "plan" {
-		if id, ok := sessionArgument(inv.Command); ok && id < len(inv.Args) {
-			ref, parseErr := ParseSessionReference(inv.Args[id])
-			if parseErr != nil {
-				fmt.Fprintln(log, parseErr)
-				return ExitCode(parseErr)
-			}
-			ctx.Reference = &ref
-			planSurface := ref.Kind == "plan" || ref.Kind == "plan_node"
-			planCommand := planSurface && (inv.Command == "status" || inv.Command == "since" || inv.Command == "grep" || inv.Command == "wait")
-			shouldResolve := ref.Kind != "session" && !planCommand
-			if shouldResolve {
-				resolved, resolveErr := ctx.Persist.resolve(ref)
-				if resolveErr != nil {
-					fmt.Fprintln(log, redactedMessage(resolveErr, token))
-					return ExitCode(resolveErr)
-				}
-				inv.Args[id] = resolved
-			}
-		}
-	}
-	ctx.Command = inv.Command
+	ctx := &Context{Config: inv.Config, API: NewAPIClient(inv.Config), Out: out, Log: log, Command: inv.Command, Force: force, Cursors: controlStoreFrom(environ)}
 	if err = commandRegistry[inv.Command](ctx, inv.Args); err != nil {
 		fmt.Fprintln(log, redactedMessage(err, token))
 		return ExitCode(err)
 	}
 	return ExitSuccess
-}
-
-func sessionArgument(command string) (int, bool) {
-	switch command {
-	case "wait", "status", "since", "grep", "steer", "prompt", "interrupt", "cancel", "terminate", "resume", "approvals", "approve", "deny", "result":
-		return 0, true
-	}
-	return 0, false
 }
 
 func main() {
@@ -102,9 +70,9 @@ func main() {
 
 // Flags may precede the command or its first positional argument. After a
 // positional argument or --, every token belongs to the command's payload.
-func extractDirectFlag(args []string) ([]string, bool) {
+func extractForceFlag(args []string) ([]string, bool) {
 	result := make([]string, 0, len(args))
-	direct, command, literal := false, false, false
+	force, command, literal := false, false, false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if literal {
@@ -116,13 +84,13 @@ func extractDirectFlag(args []string) ([]string, bool) {
 			result = append(result, arg)
 			continue
 		}
-		if arg == "--direct" {
-			direct = true
+		if arg == "--force" {
+			force = true
 			continue
 		}
 		result = append(result, arg)
 		// Consume global flag values without treating them as positional text.
-		if arg == "--url" || arg == "--persist-url" || arg == "--as" {
+		if arg == "--url" || arg == "--as" {
 			if i+1 < len(args) {
 				i++
 				result = append(result, args[i])
@@ -137,5 +105,16 @@ func extractDirectFlag(args []string) ([]string, bool) {
 			}
 		}
 	}
-	return result, direct
+	return result, force
+}
+
+func helpText() string {
+	return `agentctl controls and reads AgentD sessions by session ID.
+Commands: run, status, ls, since, grep, wait, result, approvals,
+          prompt, steer, interrupt, cancel, terminate, resume, approve, deny, mark.
+Global flags: --url URL, --as CALLER, --json, --raw.
+Controls for managed sessions require their orchestrator's wrapper or --force
+before the session ID. mark ID --as CALLER [--restore SEQUENCE|none]
+[--cursor-dir DIR] [--json] records or restores a control mark. mark requires
+an explicit --as; wrappers must use the same --cursor-dir for mark and wait.`
 }

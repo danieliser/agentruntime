@@ -10,22 +10,11 @@ func control(ctx *Context, args []string, which string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("%w: %s ID", ErrUsage, which)
 	}
-	if which != "interrupt" {
-		if err := requireDirectForTaskLifecycle(ctx, args[0]); err != nil {
-			return err
-		}
+	if err := guardControl(ctx, args[0]); err != nil {
+		return err
 	}
 	key := uuid.NewString()
 	undo := markControl(ctx, args[0])
-	if which == "interrupt" {
-		if routed, err := routePersistControl(ctx, args[0], which, ""); routed {
-			if err != nil {
-				undo()
-				return err
-			}
-			return WriteOutput(ctx.Out, ctx.Config, map[string]any{"session_id": args[0], "accepted": true}, "accepted")
-		}
-	}
 	var e error
 	switch which {
 	case "interrupt":

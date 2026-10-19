@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"strings"
 )
 
 func cmdSince(ctx *Context, args []string) error {
@@ -15,16 +14,9 @@ func cmdSince(ctx *Context, args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("%w: since requires ID", ErrUsage)
 	}
-	ref, refErr := ParseSessionReference(fs.Arg(0))
-	if refErr != nil {
-		return refErr
-	}
-	store, err := cursorStoreFrom(processEnv(), *dir)
+	store, err := commandCursorStore(ctx, *dir)
 	if err != nil {
 		return err
-	}
-	if ref.Kind == "plan" || ref.Kind == "plan_node" {
-		return sincePlan(ctx, ref, store)
 	}
 	cursor, err := store.Load(ctx.Config.Caller, fs.Arg(0))
 	if err != nil {
@@ -70,70 +62,4 @@ func cmdSince(ctx *Context, args []string) error {
 		return err
 	}
 	return store.Save(ctx.Config.Caller, fs.Arg(0), events[len(events)-1].Sequence)
-}
-
-func sincePlan(ctx *Context, ref SessionReference, store CursorStore) error {
-	g, e := ctx.Persist.planGraph(ref.ID)
-	if e != nil {
-		return e
-	}
-	var b strings.Builder
-	type tagged struct {
-		Node  string      `json:"node"`
-		Event streamEvent `json:"event"`
-	}
-	var taggedEvents []tagged
-	advanced := map[string]int64{}
-	for _, n := range g.Nodes {
-		if ref.Kind == "plan_node" && n.ID != ref.Node && slug(n.Title) != ref.Node {
-			continue
-		}
-		for _, session := range n.sessionIDs() {
-			cursor, e := store.Load(ctx.Config.Caller, session)
-			if e != nil {
-				return e
-			}
-			for {
-				page, e := ctx.API.Events(context.Background(), session, cursor, 1000)
-				if e != nil {
-					return e
-				}
-				var out []streamEvent
-				for _, ev := range page.Events {
-					out = append(out, streamEvent{ev.Sequence, ev.Type, ev.Stream, ev.Payload, base64.StdEncoding.EncodeToString(ev.Raw)})
-				}
-				if len(out) > 0 {
-					for _, event := range out {
-						if ctx.Config.Raw || !hiddenSubagentDelta(event.Type) {
-							taggedEvents = append(taggedEvents, tagged{Node: n.ID, Event: event})
-						}
-					}
-					for _, line := range strings.Split(strings.TrimRight(summarizeEvents(out, ctx.Config.Raw), "\n"), "\n") {
-						if line != "" {
-							fmt.Fprintf(&b, "[%s] %s\n", n.ID, line)
-						}
-					}
-					cursor = out[len(out)-1].Sequence
-				}
-				if !page.HasMore || len(page.Events) == 0 {
-					break
-				}
-			}
-			advanced[session] = cursor
-		}
-	}
-	if ctx.Config.JSON {
-		e = WriteOutput(ctx.Out, ctx.Config, taggedEvents, "")
-	} else {
-		_, e = fmt.Fprint(ctx.Out, b.String())
-	}
-	if e != nil {
-		return e
-	}
-	for session, cursor := range advanced {
-		if e = store.Save(ctx.Config.Caller, session, cursor); e != nil {
-			return e
-		}
-	}
-	return nil
 }

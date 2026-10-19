@@ -5,20 +5,17 @@ import "errors"
 // Exit codes: 0 success; 2 usage; 3 auth; 4 not found; 5 API failure;
 // 6 timeout; 10 wait turn_end; 11 wait approval; 12 wait error; 13 wait done.
 const (
-	ExitSuccess         = 0
-	ExitUsage           = 2
-	ExitAuth            = 3
-	ExitNotFound        = 4
-	ExitAPI             = 5
-	ExitTimeout         = 6
-	ExitWaitTurnEnd     = 10
-	ExitWaitApproval    = 11
-	ExitWaitError       = 12
-	ExitWaitDone        = 13
-	ExitWaitNodeStarted = 14
-	ExitWaitNodeDone    = 15
-	ExitWaitFailed      = 16
-	ExitWaitStalled     = 17
+	ExitSuccess      = 0
+	ExitUsage        = 2
+	ExitAuth         = 3
+	ExitNotFound     = 4
+	ExitAPI          = 5
+	ExitTimeout      = 6
+	ExitWaitTurnEnd  = 10
+	ExitWaitApproval = 11
+	ExitWaitError    = 12
+	ExitWaitDone     = 13
+	ExitWaitStalled  = 17
 )
 
 var (
@@ -60,12 +57,6 @@ func ExitCode(err error) int {
 			return ExitWaitError
 		case "done":
 			return ExitWaitDone
-		case "node_started":
-			return ExitWaitNodeStarted
-		case "node_done":
-			return ExitWaitNodeDone
-		case "failed":
-			return ExitWaitFailed
 		case "stalled":
 			return ExitWaitStalled
 		}

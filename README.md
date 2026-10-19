@@ -108,7 +108,7 @@ Both providers expose pending approvals in restricted mode.
 
 Commands are `run`, `status`, `ls`, `since`, `grep`, `wait`, `prompt`, `steer`,
 `interrupt`, `cancel`, `terminate`, `resume`, `approvals`, `approve`, `deny`,
-and `result`. Use `approve ID REQUEST_ID` or `deny ID REQUEST_ID` with an ID from
+`result`, and `mark`. Use `approve ID REQUEST_ID` or `deny ID REQUEST_ID` with an ID from
 `approvals ID --json`; preserve JSON quoting for string IDs. `prompt` starts a
 follow-up turn; `steer` changes an active turn. Lifecycle/approval commands return
 when accepted; use `wait` and output to confirm the effect. Each prompt and
@@ -120,36 +120,30 @@ Docker Claude/Codex sessions without `--keep-warm`. `status --json` exposes
 sessions reject new work. `resume ID PROMPT` remains explicit recovery of a lost,
 nonterminal generation.
 
-Dispatch and plan approval stay in the PERSIST CLI. Set `PERSIST_URL` (default
-`http://127.0.0.1:8803`) and optionally `PERSIST_TOKEN_FILE` (default
-`~/.local/share/persist-v3/initial_token.txt`) for PERSIST-aware lookup and
-control. IDs can be raw session IDs, `task:T`, `plan:P`, or `plan:P/node` (node
-ID or title slug). `agentctl plan show P` displays plan node state. For one
-background notification per plan, approve a plan and then arm the durable plan
-event waiter; after it reports an approval, act on the named node and re-arm:
+### Orchestrator wrappers
 
-```sh
-persist plan auto "<plan prompt>" --cwd "$PWD" && persist plan approve <proposal_id>
-agentctl wait plan:<plan_id> --until approval,failed,done --timeout 30m &
-```
+agentctl accepts AgentD session IDs. Orchestrators such as PERSIST ship their own
+wrapper, e.g. `persistctl`.
 
-Use `agentctl since plan:<plan_id>` or `agentctl grep plan:<plan_id> PATTERN` to
-read across its current node sessions, with each output tagged by node. Controls
-for PERSIST-owned sessions route through PERSIST. Pass `--direct` to explicitly
-send a control to AgentD. Place it before the session ID, for example
-`agentctl --direct prompt SESSION "text"`; after a positional argument or `--`,
-`--direct` is literal input. Task and plan resolution prefer `current_session_id`
-and fall back to `session_id` for older PERSIST responses.
+A session tagged `managed_by: <name>` refuses direct controls with exit code 2
+and points to `<name>ctl`. Reads always work. To take over explicitly, pass
+`--force` before the session ID: `agentctl --force prompt ID "continue"`.
+After the ID or `--`, `--force` remains literal prompt text.
 
-agentctl works without PERSIST. It decides ownership from AgentD's session
-record first: PERSIST tags its sessions `managed_by: persist`, and those always
-route through PERSIST; if PERSIST is down the command fails and suggests
-`--direct`. For untagged sessions agentctl asks PERSIST when it is running.
-When PERSIST is stopped (connection refused) or has no token file, untagged
-sessions are controlled directly, except older ones with a `task_id`, which are
-refused unless another app's `owner` tag (such as `trading-floor`) marks them.
-A PERSIST that answers with an error, times out or fails TLS fails closed.
-Only `task:` and `plan:` references and `plan show` need PERSIST running.
+Before sending a control through another tool, wrappers must explicitly pass
+`--as CALLER` (the default and `AGENTD_CALLER` do not satisfy this requirement):
+`agentctl mark ID --as CALLER --json` saves the session's current event
+sequence as that caller's control mark and returns
+`{"session_id":"ID","caller":"CALLER","sequence":42,"previous":null}`.
+Then `wait ID --as CALLER` reacts to later events. If the routed control is
+rejected, run `agentctl mark ID --as CALLER --restore PREVIOUS --json`, using
+`none` for a null previous mark. Restore returns the same shape; `sequence` is
+null when the mark is removed. Integer restores must not exceed the current
+session head, which is checked through AgentD; `none` can remove a mark offline.
+`mark` accepts `--cursor-dir DIR` with the same precedence as `wait`. Wrappers
+must pass the same `--cursor-dir` to both commands, or neither.
+Explicit marks report storage/API errors; automatic control marks remain best
+effort.
 
 Output is compact human text by default; `--json` selects JSON. `since ID`
 returns assistant text and tool summaries after its saved sequence, then advances
@@ -180,7 +174,7 @@ caller can do both). Where a wait starts:
   finished session, unless the caller's latest control may be waking it.
 
 A wait for `done` on a session that is already finished returns at once every
-time, so do not use it as a polling delay. A control that AgentD or PERSIST
+time, so do not use it as a polling delay. A control that AgentD
 rejects restores the previous mark. Control marks are best effort and are written to `AGENTCTL_CURSOR_DIR` or the
 default directory, not to a `--cursor-dir` given to `wait`. Waits started
 before this behavior (older agentctl) begin again at the session's current end.
@@ -213,9 +207,6 @@ comma-separated; a matching condition deliberately has a nonzero exit code:
 | `11` | Wait observed `approval` |
 | `12` | Wait observed `error` (including an interrupted `turn.failed`) |
 | `13` | Wait observed `done` |
-| `14` | Plan wait observed `node_started` |
-| `15` | Plan wait observed `node_done` |
-| `16` | Plan wait observed `failed` |
 | `17` | Wait observed a `stalled` running turn |
 
 `status` and session GET expose `last_event_at` (UTC, nullable before provider
@@ -252,9 +243,8 @@ through `grep --type` or `since --raw`, and are hidden from default `since`
 output, including JSON. Human child summaries are labeled `[sub:<path>]`.
 
 For isolated observability acceptance, run
-`python3 scripts/agentctl_persist_bootstrap.py claude --observability` and repeat
-with `codex`. This mode starts only AgentD, reusing the Node/SQLite ABI preflight,
-private data/config homes, forbidden-root/port guards, connection monitoring,
+`python3 scripts/agentctl_observability_bootstrap.py claude` and repeat
+with `codex`. This mode starts only AgentD, using private data/config homes, forbidden-root/port guards, connection monitoring,
 Docker scoping and teardown. It uses the installed local provider CLIs with
 private configuration and no host MCP catalog. Each provider spawns one child;
 the harness verifies durable labels/type filtering and a count of `0 → 1 → 0`.
@@ -267,12 +257,12 @@ Run `scripts/agentctl-live-test.sh claude` and `scripts/agentctl-live-test.sh co
 for live acceptance. Each builds the current worktree, starts a separate daemon
 on 18091/18092, and writes private evidence under ignored `.agentctl-live-test/`.
 The test-only Docker proxy labels containers and scopes daemon recovery/pruning
-to that run; it maps development image references to existing
-`2.3.3-persist.10` images from base `f817cb3`. It changes no global Docker tags.
+to that run. Set `AGENTCTL_LIVE_IMAGE_TAG` to select a locally available image
+tag instead of the pinned default `2.3.3`; this changes no global Docker tags.
 The isolated credential sync reads the existing provider login and caches only
 under the private test data directory. The harness neither uses nor reconfigures
 the installed launchd daemon or `~/.agentd`, and stops its daemons/containers.
-Requirements: Docker, Python 3, Go, those base images, and working provider logins.
+Requirements: Docker, Python 3, Go, local AgentD images, and working provider logins.
 Optional overrides: `AGENTCTL_LIVE_TEST_PORT` and `AGENTCTL_LIVE_TEST_MODEL`.
 
 Steering acceptance requires replacement output and completion after the steer
@@ -587,32 +577,3 @@ data. Non-loopback binding is explicit and does not weaken authentication.
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-### Isolated PERSIST acceptance
-
-Run `scripts/agentctl-persist-live-test.sh claude` and then the same command
-with `codex`. Each run builds its own binaries and creates private data/config
-roots, credentials, cursors, Docker networks and proxy. `--flows a-local,a-docker,b,c,d`
-selects the original scenarios. Final pre-install coverage adds
-`--final-proof --flows a-restart,a-failed-wake,e` (owned daemon restart, Docker
-spawn failure/cancel, and caller-key prompt/steer retries). Run
-`--final-proof --flows g` separately to exercise default local discovery in a
-private HOME with clean context disabled. All other acceptance tasks explicitly
-request clean context. Run providers sequentially because free Docker subnet
-selection occurs before network creation. `--preflight` checks Node
-and SQLite without starting services. Evidence and cleanup receipts are under
-`.agentctl-live-test/persist-PROVIDER/run.*`.
-
-The runner honors the PERSIST checkout's `.node-version`/`.nvmrc`, fails before
-startup on a native SQLite ABI mismatch, sets `PERSIST_HTTP__PORT`, explicitly
-enables `agentruntime.clean_context` for local and Docker requests, and uses
-`/health` for unauthenticated readiness. It binds the CLIs through isolated URLs
-and private token files. Node processes reject attempts to use ports 8803/38093
-or the prohibited production roots. No installed services are restarted.
-
-Raw task-owned session controls require PERSIST authorization; a hidden task
-cannot fall back to a direct write. Raw session IDs also undergo PERSIST ownership
-lookup when their AgentD manifest has no task ID. Standalone sessions use direct
-control after a negative ownership lookup; lookup/authentication failures block
-writes. Use `--direct` before the session ID to deliberately take over through
-AgentD, including when PERSIST is unavailable.

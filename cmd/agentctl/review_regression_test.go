@@ -61,6 +61,10 @@ func TestWaitJSONAndUnauthorized(t *testing.T) {
 func TestSameInputCanBeSubmittedOnDifferentTurns(t *testing.T) {
 	var keys []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"data":{"session_id":"s1","state":"running"}}`))
+			return
+		}
 		var body struct {
 			Key string `json:"idempotency_key"`
 		}

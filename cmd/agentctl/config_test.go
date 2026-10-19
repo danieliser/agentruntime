@@ -31,27 +31,12 @@ func TestParseArgsDefaultsAndRegistry(t *testing.T) {
 	}
 }
 
-func TestParsePersistOptionsAndSessionReference(t *testing.T) {
-	got, err := ParseArgs([]string{"--persist-url", "http://persist.test:9", "status", "plan:p-1/node-a"}, map[string]string{"PERSIST_URL": "http://env.test"})
-	if err != nil {
-		t.Fatal(err)
+func TestHelpDescribesAgentDSessions(t *testing.T) {
+	if !strings.Contains(helpText(), "AgentD") || !strings.Contains(helpText(), "mark") {
+		t.Fatal(helpText())
 	}
-	if got.Config.PersistURL != "http://persist.test:9" {
-		t.Fatalf("persist URL = %q", got.Config.PersistURL)
-	}
-	ref, err := ParseSessionReference("plan:p-1/node-a")
-	if err != nil || ref.Kind != "plan_node" || ref.ID != "p-1" || ref.Node != "node-a" {
-		t.Fatalf("reference = %#v, %v", ref, err)
-	}
-	ref, err = ParseSessionReference("task:t-1")
-	if err != nil || ref.Kind != "task" || ref.ID != "t-1" {
-		t.Fatalf("reference = %#v, %v", ref, err)
-	}
-}
-
-func TestHelpMentionsPersistDispatch(t *testing.T) {
-	if !strings.Contains(helpText(), "persist plan auto") {
-		t.Fatal("help does not point to persist CLI dispatch")
+	if _, err := ParseArgs([]string{"plan", "show", "p"}, nil); err == nil {
+		t.Fatal("orchestrator command accepted")
 	}
 }
 

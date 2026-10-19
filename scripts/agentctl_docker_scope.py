@@ -8,7 +8,8 @@ import subprocess
 
 
 def scoped_args(args: list[str], scope: str) -> list[str]:
-    pinned = {name + ":latest": name + ":2.3.3-persist.10" for name in (
+    tag = os.environ.get("AGENTCTL_LIVE_IMAGE_TAG", "2.3.3")
+    pinned = {name + ":latest": name + ":" + tag for name in (
         "agentruntime-agent", "agentruntime-agent-claude", "agentruntime-agent-codex", "agentruntime-proxy")}
     args = [pinned.get(arg, arg) for arg in args]
     names = {name: name + '-' + scope for name in ('agentruntime-proxy', 'agentruntime-agents', 'agentruntime-policy-v1')}

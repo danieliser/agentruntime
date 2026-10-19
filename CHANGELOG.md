@@ -4,6 +4,14 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+- Make agentctl a standalone AgentD client: remove orchestrator-specific
+  references, configuration, routing, and plan supervision. Sessions tagged
+  `managed_by: <name>` require their wrapper or `--force` for direct controls;
+  reads stay available and policy refusals return usage exit 2. Add `mark` with
+  required explicit `--as`, shared `--cursor-dir`, JSON output, and head-validated
+  `--restore` so wrappers can preserve caller-aware waits around out-of-band
+  controls.
+
 - Claude steering during tool execution no longer ends the replacement turn when the canceled tool reports `aborted_tools`; matching successful steer evidence is required, and permission denials remain failures.
 
 - Restricted Codex Docker workers use a pinned default-deny seccomp profile

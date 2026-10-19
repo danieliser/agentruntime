@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AgentD-only provider proof, launched by the guarded PERSIST bootstrap."""
+"""AgentD-only provider proof, launched by the guarded AgentD bootstrap."""
 import argparse
 import json
 import os
@@ -35,7 +35,7 @@ class ObservabilityTest(LiveTest):
         return sid
 
     def terminate(self, sid: str, codes: tuple[int, ...] | None = (0,)):
-        return self.ctl('--direct', 'terminate', sid, codes=codes)
+        return self.ctl('--force', 'terminate', sid, codes=codes)
 
     def proof(self) -> None:
         version = execute([self.provider, '--version'], env=self.env)

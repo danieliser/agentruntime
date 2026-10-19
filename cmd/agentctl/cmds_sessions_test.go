@@ -81,6 +81,10 @@ func TestStatusAndGrepReadDurableHistory(t *testing.T) {
 
 func TestApprovalDecisionUsesExistingEndpoint(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/s1" {
+			_, _ = w.Write([]byte(`{"data":{"session_id":"s1","state":"running"}}`))
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/sessions/s1/approvals" {
 			t.Fatalf("request %s %s", r.Method, r.URL.Path)
 		}

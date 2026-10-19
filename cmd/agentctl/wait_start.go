@@ -97,7 +97,7 @@ func waitStart(ctx context.Context, c *Context, session string, store CursorStor
 	case state.Terminal() && !controlPending && state != durable.StateCompleted && contains(reasons, "error"):
 		reason = "error"
 	case !state.Terminal() && contains(reasons, "approval"):
-		if list, e := directApprovals(c, session); e == nil && len(list.Approvals) > 0 {
+		if list, e := approvals(c, session); e == nil && len(list.Approvals) > 0 {
 			reason = "approval"
 		}
 	}

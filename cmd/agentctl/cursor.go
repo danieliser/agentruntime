@@ -119,3 +119,12 @@ func cursorStoreFrom(env map[string]string, override string) (CursorStore, error
 	}
 	return CursorStore{Dir: dir}, nil
 }
+
+// commandCursorStore gives reads and explicit marks the same directory as
+// automatic control marks, unless the command supplies --cursor-dir.
+func commandCursorStore(ctx *Context, override string) (CursorStore, error) {
+	if override == "" && ctx.Cursors != nil {
+		return *ctx.Cursors, nil
+	}
+	return cursorStoreFrom(processEnv(), override)
+}

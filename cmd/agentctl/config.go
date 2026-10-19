@@ -11,16 +11,14 @@ import (
 )
 
 const defaultURL = "http://127.0.0.1:38093"
-const defaultPersistURL = "http://127.0.0.1:8803"
 
 type Config struct {
-	URL          string
-	Caller       string
-	JSON         bool
-	Raw          bool
-	Token        string `json:"-"`
-	PersistURL   string `json:"-"`
-	PersistToken string `json:"-"`
+	URL            string
+	Caller         string
+	CallerExplicit bool `json:"-"`
+	JSON           bool
+	Raw            bool
+	Token          string `json:"-"`
 }
 
 type Invocation struct {
@@ -29,16 +27,15 @@ type Invocation struct {
 	Args    []string
 }
 
-var commandNames = []string{"run", "status", "since", "grep", "steer", "prompt", "interrupt", "cancel", "terminate", "resume", "approvals", "approve", "deny", "wait", "result", "ls", "plan"}
+var commandNames = []string{"run", "status", "since", "grep", "steer", "prompt", "interrupt", "cancel", "terminate", "resume", "approvals", "approve", "deny", "wait", "result", "ls", "mark"}
 
 // ParseArgs accepts global flags on either side of a subcommand. Values are
 // captured in Config and never retained in the argument vector.
 func ParseArgs(args []string, environ map[string]string) (Invocation, error) {
-	cfg := Config{URL: envOr(environ["AGENTD_URL"], defaultURL), PersistURL: envOr(environ["PERSIST_URL"], defaultPersistURL), Caller: envOr(environ["AGENTD_CALLER"], "agentctl")}
+	cfg := Config{URL: envOr(environ["AGENTD_URL"], defaultURL), Caller: envOr(environ["AGENTD_CALLER"], "agentctl")}
 	fs := flag.NewFlagSet("agentctl", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.URL, "url", cfg.URL, "AgentD base URL")
-	fs.StringVar(&cfg.PersistURL, "persist-url", cfg.PersistURL, "PERSIST base URL")
 	fs.StringVar(&cfg.Caller, "as", cfg.Caller, "caller name")
 	fs.BoolVar(&cfg.JSON, "json", false, "JSON output")
 	fs.BoolVar(&cfg.Raw, "raw", false, "raw event output")
@@ -57,7 +54,7 @@ func ParseArgs(args []string, environ map[string]string) (Invocation, error) {
 		name := strings.TrimLeft(a, "-")
 		key, _, hasValue := strings.Cut(name, "=")
 		switch key {
-		case "url", "persist-url", "as":
+		case "url", "as":
 			if !hasValue {
 				i++
 				if i >= len(args) {
@@ -80,6 +77,11 @@ func ParseArgs(args []string, environ map[string]string) (Invocation, error) {
 	if err := fs.Parse(parsed); err != nil {
 		return Invocation{}, fmt.Errorf("%w: invalid flags", ErrUsage)
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "as" {
+			cfg.CallerExplicit = true
+		}
+	})
 	pos := fs.Args()
 	if len(pos) == 0 {
 		return Invocation{}, fmt.Errorf("%w: missing command", ErrUsage)
@@ -116,26 +118,6 @@ func LoadToken(environ map[string]string) (string, error) {
 	token := strings.TrimSpace(string(b))
 	if token == "" {
 		return "", errors.New("AgentD bearer token file is empty")
-	}
-	return token, nil
-}
-
-func LoadPersistToken(environ map[string]string) (string, error) {
-	path := environ["PERSIST_TOKEN_FILE"]
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", errors.New("cannot determine home directory for PERSIST token")
-		}
-		path = filepath.Join(home, ".local", "share", "persist-v3", "initial_token.txt")
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("cannot read PERSIST bearer token file: %w", err)
-	}
-	token := strings.TrimSpace(string(b))
-	if token == "" {
-		return "", errors.New("PERSIST bearer token file is empty")
 	}
 	return token, nil
 }
