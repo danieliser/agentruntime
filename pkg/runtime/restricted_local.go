@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -19,8 +18,8 @@ func restrictedLocalRequest(cfg SpawnConfig) bool {
 }
 
 func prepareRestrictedLocal(cfg SpawnConfig) (command, env []string, cleanup func() error, err error) {
-	if !slices.Contains(QualifiedRestrictedLocalAgents(), cfg.Request.Agent) {
-		return nil, nil, nil, durable.NewError(durable.CodeExecutionPolicyUnsupported, "restricted_local", "provider has no qualified read-confined local sandbox", nil)
+	if err := CheckRestrictedLocalProviderPermissions(cfg.Request.Agent, cfg.Request.ProviderPermissions.Tools); err != nil {
+		return nil, nil, nil, err
 	}
 	return materializeRestrictedLocal(cfg)
 }
@@ -55,14 +54,30 @@ func materializeRestrictedLocal(cfg SpawnConfig) (command, env []string, cleanup
 	if err != nil {
 		return reject("cannot resolve durable provider storage")
 	}
-	stateDir := filepath.Join(dataDir, "codex-sessions", cfg.SessionID)
+	stateDir := filepath.Join(dataDir, req.Agent+"-sessions", cfg.SessionID)
+	for _, path := range []string{filepath.Dir(stateDir), stateDir} {
+		info, statErr := os.Lstat(path)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, nil, nil, statErr
+		}
+		if statErr == nil && !info.IsDir() {
+			return reject("restricted local provider/session storage must be real directories")
+		}
+	}
 	home := filepath.Join(stateDir, "local-home")
 	cleanup = func() error {
-		authErr := os.Remove(filepath.Join(stateDir, "auth.json"))
-		if os.IsNotExist(authErr) {
-			authErr = nil
+		var cleanupErr error
+		for _, name := range []string{"auth.json", "credentials.json", ".credentials.json"} {
+			if err := os.Remove(filepath.Join(stateDir, name)); err != nil && !os.IsNotExist(err) {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
 		}
-		return errors.Join(os.RemoveAll(home), authErr)
+		return errors.Join(os.RemoveAll(home), cleanupErr)
+	}
+	// A cancelled supervisor may leave a prior launch home, including symlinks.
+	// Remove only that disposable home before materializing fresh credentials.
+	if err = os.RemoveAll(home); err != nil {
+		return nil, nil, cleanup, err
 	}
 	result, err := materialize.Materialize(req, cfg.SessionID, dataDir)
 	if err != nil {
@@ -78,7 +93,7 @@ func materializeRestrictedLocal(cfg SpawnConfig) (command, env []string, cleanup
 			env = nil
 		}
 	}()
-	providerHome := filepath.Join(home, ".codex")
+	providerHome := filepath.Join(home, "."+req.Agent)
 	if err = os.MkdirAll(providerHome, 0700); err != nil {
 		return
 	}
@@ -88,7 +103,7 @@ func materializeRestrictedLocal(cfg SpawnConfig) (command, env []string, cleanup
 		return
 	}
 	for _, entry := range entries {
-		if entry.Name() == "local-home" || entry.Name() == "sessions" || strings.HasPrefix(entry.Name(), "state_") {
+		if entry.Name() == "local-home" || entry.Name() == "sessions" || (req.Agent == "claude" && entry.Name() == "projects") || strings.HasPrefix(entry.Name(), "state_") {
 			continue
 		}
 		if err = os.Rename(filepath.Join(result.SessionDir, entry.Name()), filepath.Join(providerHome, entry.Name())); err != nil {
@@ -98,15 +113,35 @@ func materializeRestrictedLocal(cfg SpawnConfig) (command, env []string, cleanup
 	if err = os.Symlink(filepath.Join(result.SessionDir, "sessions"), filepath.Join(providerHome, "sessions")); err != nil {
 		return
 	}
-	config, configErr := materialize.RestrictedLocalCodexConfig(req, home, providerHome, result.SessionDir)
+	if req.Agent == "claude" {
+		if err = os.Symlink(filepath.Join(result.SessionDir, "projects"), filepath.Join(providerHome, "projects")); err != nil {
+			return
+		}
+	}
+	configName := "config.toml"
+	var config []byte
+	var configErr error
+	if req.Agent == "claude" {
+		configName = "restricted-settings.json"
+		config, configErr = materialize.RestrictedLocalClaudeSettings(req, home, providerHome)
+	} else {
+		config, configErr = materialize.RestrictedLocalCodexConfig(req, home, providerHome, result.SessionDir)
+	}
 	if configErr != nil {
 		err = configErr
 		return
 	}
-	if err = os.WriteFile(filepath.Join(providerHome, "config.toml"), config, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(providerHome, configName), config, 0600); err != nil {
 		return
 	}
-	values := map[string]string{"HOME": home, "CODEX_HOME": providerHome, "PATH": os.Getenv("PATH"), "SHELL": "/bin/sh"}
+	values := map[string]string{"HOME": home, "PATH": os.Getenv("PATH"), "SHELL": "/bin/sh"}
+	if req.Agent == "claude" {
+		values["CLAUDE_CONFIG_DIR"] = providerHome
+		values["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+		values["DISABLE_AUTOUPDATER"] = "1"
+	} else {
+		values["CODEX_HOME"] = providerHome
+	}
 	for key, value := range req.Env {
 		values[key] = value
 	}
@@ -140,5 +175,8 @@ func materializeRestrictedLocal(cfg SpawnConfig) (command, env []string, cleanup
 		env = append(env, key+"="+values[key])
 	}
 	command = append([]string(nil), cfg.Cmd...)
+	if req.Agent == "claude" {
+		command = append(command, "--settings", filepath.Join(providerHome, configName))
+	}
 	return
 }

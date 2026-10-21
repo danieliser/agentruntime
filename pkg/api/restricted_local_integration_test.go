@@ -184,6 +184,9 @@ func TestRestrictedLocalApprovalRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err := os.WriteFile(filepath.Join(fakeDir, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
 			runtime.InitializeRestrictedLocalQualification(t.TempDir())
 			awaitLocalQualification(t)
 			t.Setenv("HOME", filepath.Join(root, "ambient-home"))

@@ -23,14 +23,30 @@ import (
 
 func TestRestrictedLocalPendingQualificationDoesNotBlockServerOrAdmission(t *testing.T) {
 	root := t.TempDir()
+	for _, provider := range []string{"claude", "codex"} {
+		state := filepath.Join(root, provider+"-sessions", "orphan")
+		if err := os.MkdirAll(filepath.Join(state, "local-home", "."+provider), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(state, "local-home", "."+provider, "credentials.json"), []byte("synthetic"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(state, "conversation"), []byte("keep"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	marker := filepath.Join(root, "probe-started")
+	diagnostics := filepath.Join(root, "probe-diagnostics")
 	binary := filepath.Join(root, "codex")
 	// Only a sandbox probe stalls; all provider behavior is simulated.
-	script := "#!/bin/sh\nif [ \"$1\" = sandbox ]; then /usr/bin/touch '" + marker + "'; /bin/sleep 30; exit 1; fi\n" + testutil.CodexQualificationScript("exit 1")
+	script := "#!/bin/sh\nexec 2>>'" + diagnostics + "'\nprintf '%s\\n' \"$1\" >&2\nif [ \"$1\" = sandbox ]; then /usr/bin/touch '" + marker + "'; /bin/sleep 30; exit 1; fi\n" + testutil.CodexQualificationScript("exit 1")
 	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(root, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	s := NewServer(session.NewManager(), runtime.NewLocalRuntime(), agent.DefaultRegistry(), ServerConfig{DataDir: root, LogDir: filepath.Join(root, "logs")})
 	ready := make(chan struct{}, 1)
 	s.router.GET("/test-ready", func(c *gin.Context) { ready <- struct{}{}; c.Status(http.StatusOK) })
@@ -61,6 +77,15 @@ func TestRestrictedLocalPendingQualificationDoesNotBlockServerOrAdmission(t *tes
 	}
 	response.Body.Close()
 	<-ready // Publish server initialization before shutdown inspects it.
+	for _, provider := range []string{"claude", "codex"} {
+		state := filepath.Join(root, provider+"-sessions", "orphan")
+		if _, err := os.Lstat(filepath.Join(state, "local-home")); !os.IsNotExist(err) {
+			t.Error("orphaned launch home retained", provider, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(state, "conversation")); err != nil || string(data) != "keep" {
+			t.Error("durable state changed", provider, err)
+		}
+	}
 	if goruntime.GOOS != "darwin" {
 		// Unsupported platforms never launch a local qualification worker.
 		return
@@ -71,7 +96,9 @@ func TestRestrictedLocalPendingQualificationDoesNotBlockServerOrAdmission(t *tes
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("background measurement never started")
+			// Best-effort synthetic diagnostics; the primary failure is reported below.
+			data, _ := os.ReadFile(diagnostics)
+			t.Fatalf("background measurement never started; qualification=%+v; synthetic diagnostics=%s", runtime.RestrictedLocalQualificationStatus(), data)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -83,9 +110,10 @@ func TestRestrictedLocalPendingQualificationDoesNotBlockServerOrAdmission(t *tes
 	var envelope struct {
 		Data struct {
 			Permissions struct {
-				Qualification runtime.RestrictedLocalQualification `json:"restricted_local_qualification"`
-				Agents        []string                             `json:"restricted_local_agents"`
-				Runtimes      []string                             `json:"restricted_runtimes"`
+				Qualification   runtime.RestrictedLocalQualification `json:"restricted_local_qualification"`
+				Agents          []string                             `json:"restricted_local_agents"`
+				FileToolsAgents []string                             `json:"restricted_local_file_tools_agents"`
+				Runtimes        []string                             `json:"restricted_runtimes"`
 			} `json:"provider_permissions"`
 		} `json:"data"`
 	}
@@ -93,7 +121,7 @@ func TestRestrictedLocalPendingQualificationDoesNotBlockServerOrAdmission(t *tes
 		t.Fatal(err)
 	}
 	permissions := envelope.Data.Permissions
-	if permissions.Qualification.State != "pending" || permissions.Qualification.Qualified || len(permissions.Agents) != 0 || strings.Contains(strings.Join(permissions.Runtimes, ","), "local") {
+	if permissions.Qualification.State != "pending" || permissions.Qualification.Qualified || len(permissions.Agents) != 0 || len(permissions.FileToolsAgents) != 0 || strings.Contains(strings.Join(permissions.Runtimes, ","), "local") {
 		t.Fatal("pending qualification advertised local authority", permissions)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

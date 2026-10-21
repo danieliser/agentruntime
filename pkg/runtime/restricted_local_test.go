@@ -20,6 +20,9 @@ func TestRestrictedLocalDoesNotInheritAmbientEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(fake, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	InitializeRestrictedLocalQualification(t.TempDir())
 	awaitGlobalQualification(t)
 	for _, provider := range []string{"codex"} {
@@ -85,6 +88,9 @@ func TestRestrictedLocalCleanupOnFailedLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(fake, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	InitializeRestrictedLocalQualification(t.TempDir())
 	awaitGlobalQualification(t)
 	t.Setenv("HOME", t.TempDir())
@@ -140,6 +146,9 @@ func TestRestrictedLocalRemovesCopiedAuthOnProcessExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fake+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(fake, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	InitializeRestrictedLocalQualification(t.TempDir())
 	awaitGlobalQualification(t)
 	t.Setenv("HOME", t.TempDir())

@@ -153,7 +153,7 @@ func requestSandboxProfile(runtimeName string, native bool, request SessionReque
 			return "codex-read-confined-v1"
 		}
 		if request.Agent == "claude" {
-			return "claude-permission-prompts"
+			return "claude-file-tools-only-v1"
 		}
 	}
 

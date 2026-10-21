@@ -60,7 +60,10 @@ func RestrictedLocalCodexConfig(req *apischema.SessionRequest, home, providerHom
 
 // Stop at the nearest Git root (including a linked-worktree .git file). Never
 // grant an ancestor directory, owner-home instructions, or a symlink target.
-func restrictedLocalInstructionFiles(work string) []string {
+func restrictedLocalInstructionFiles(work string, names ...string) []string {
+	if len(names) == 0 {
+		names = []string{"AGENTS.md", "AGENTS.override.md"}
+	}
 	resolved, err := filepath.EvalSymlinks(work)
 	if err != nil {
 		return nil
@@ -81,7 +84,7 @@ func restrictedLocalInstructionFiles(work string) []string {
 	}
 	files := []string{}
 	for dir := filepath.Dir(resolved); ; dir = filepath.Dir(dir) {
-		for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
+		for _, name := range names {
 			path := filepath.Join(dir, name)
 			if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
 				files = append(files, path)

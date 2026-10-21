@@ -101,7 +101,7 @@ opt-in and requires Docker; it is separate from keeping the transport warm.
 
 For tool approval requests, add `--permissions restricted --approval-policy
 on-request`. Restricted coding defaults to `on-request`; Docker supports both
-providers, and qualified Codex versions also support local execution.
+providers, and qualified Codex and Claude versions also support local execution.
 `never` denies requests requiring approval. `--permissions unrestricted` requires
 `never`. Omitting both preserves the daemon's provider defaults. These are
 provider permission controls, not the managed research execution-policy boundary.
@@ -109,20 +109,28 @@ Both providers expose pending approvals in restricted mode.
 
 ### Provider permissions
 
-Local restricted coding is available for Codex on macOS only after a no-model
-self-test passes. After opening its listener, AgentD measures confinement and
-app-server bootstrap in a supervised background worker. Startup, capability
+Local restricted coding with a confined shell is available for Codex on macOS;
+Claude has a separate opt-in file-tools-only mode. Each installed binary must
+pass its no-model self-test. After opening its listener,
+AgentD measures each provider in a supervised background worker. Startup, capability
 requests and admissions never wait for measurement. Capability
 `provider_permissions.restricted_local_qualification.state` is `pending`,
 `qualified` or `unqualified`; pending is unqualified and restricted local
 admissions are refused immediately with `execution_policy_unsupported`.
 Executable path, identity or file-metadata changes schedule requalification and
 return pending immediately. Unchanged admissions use the cache without running
-`codex --version`. Probe failures/timeouts, Claude local and other platforms
-remain unsupported. Check both `provider_permissions.restricted_runtimes` and
-`provider_permissions.restricted_local_agents`. Measured agent/version, UTC
+a provider version command. Probe failures/timeouts and other platforms
+remain unsupported. `provider_permissions.restricted_local_agents` lists only
+agents qualified with a confined shell (currently Codex).
+`provider_permissions.restricted_local_file_tools_agents` separately lists
+qualified file-tools-only agents (currently Claude). Routing ordinary restricted
+coding work must use the shell-qualified list. `restricted_runtimes` includes
+`local` when either list is non-empty. Measured agent/version, UTC
 `checked_at`, `qualified` and `state` appear under
-`provider_permissions.restricted_local_qualification`. Existing mode values
+`provider_permissions.restricted_local_qualification.agents.codex` and
+`.agents.claude`, including `mode: "bash"` or `"file-tools-only"`. The original
+top-level Codex fields remain for backwards compatibility; they do not describe
+Claude qualification. Existing mode values
 remain under `provider_permissions.modes`.
 
 ```sh
@@ -141,7 +149,7 @@ Use a dedicated repository root below `$HOME` instead.
 
 Ambient provider settings, hooks, MCP configuration, shell startup settings and daemon
 secrets are not inherited. Child processes receive a private HOME, XDG paths,
-TMPDIR/TMP/TEMP and CODEX_HOME. Only PATH and locale settings are inherited; explicit
+TMPDIR/TMP/TEMP and CODEX_HOME or CLAUDE_CONFIG_DIR. Only PATH and locale settings are inherited; explicit
 API/OAuth credential, locale and proxy grants are validated. Proxy variables
 are sensitive and require `secret_grants`, so URL credentials cannot enter
 plaintext request manifests.
@@ -180,21 +188,95 @@ files and the provider state database stay separate for subsequent generations;
 credentials are materialized afresh. Restricted local generations record
 `sandbox_profile: "codex-read-confined-v1"`.
 
-Claude's current CLI advertises `manual` permission mode and `--restricted` file
-tool confinement, but that flag removes command-running tools by default.
-Enabling Bash and relying on CLAUDE_CONFIG_DIR alone has not established a
-qualified read/network/Keychain boundary here, so Claude local is refused.
-Docker restricted Claude keeps its existing `default` mode (`dontAsk` for
-`never`) and the existing stdio approval transport.
+Claude currently qualifies in **file-tools-only** mode and cannot execute tests
+or other shell commands. It is excluded from `restricted_local_agents` so existing
+coding-worker routing does not silently lose shell access. A restricted local
+Claude request must explicitly opt in with this request field:
+
+```json
+{
+  "provider_permissions": {
+    "mode": "restricted",
+    "approval_policy": "on-request",
+    "tools": "file_only"
+  }
+}
+```
+
+Without `tools: "file_only"`, local Claude admission returns
+`execution_policy_unsupported` with an error naming the required opt-in. The
+provider must also be qualified in one of the local capability lists. The
+opt-in is stored in the session request, and the generation's `sandbox_profile`
+records the effective mode. `tools` must be omitted for Docker, unrestricted
+execution and Codex; unknown values are refused.
+
+Its launch uses
+`--restricted --print --tools Read,Glob,Grep,Edit,Write --strict-mcp-config`,
+empty MCP config, `--setting-sources ""`, `--safe-mode`, and disabled slash
+commands. Bash, PowerShell, code-running tools, web tools, agents and MCP tools
+are unavailable. File tools use Claude's restricted working-directory boundary;
+no `--add-dir` widens it. Safe mode also disables automatic instruction loading.
+This is a provider file-tool boundary, not an OS sandbox around Claude itself.
+
+AgentD writes a private JSON file and passes its path via `--settings`. It sets
+`disableAllHooks`, `permissions.blockReadsOutsideWorkingDirectories`, an empty
+permission allow list and ask rules for every Edit, Write and Bash call. The
+sandbox block sets `enabled: true`, `failIfUnavailable: true`,
+`autoAllowBashIfSandboxed: false`, `excludedCommands: []` and
+`allowUnsandboxedCommands: false`. Filesystem settings deny reads from `/`,
+re-open the project, private home, toolchain paths and exact regular ancestor
+AGENTS.md/CLAUDE.md files, and explicitly deny shared temp and provider config.
+Write grants cover only the project and private home, with git/config protections.
+Network settings have no allowed domains or sockets, deny all domains, and
+disable local binding. Bash stays unavailable: these settings are read back,
+but their production shell enforcement cannot currently be measured without a
+model. A separately constructed Seatbelt profile cannot qualify Bash.
+
+`on-request` uses `--permission-mode default --permission-prompts host` and the
+existing `--permission-prompt-tool stdio` approval round trip. Every file write
+requires an AgentD decision; `never` uses `dontAsk` and `--permission-prompts none`.
+There is no unsandboxed command fallback. Qualification initializes stream JSON,
+reads effective settings and permission rules, verifies write asks and denied
+command/web/agent tools, tests bypass refusal, and closes stdin without a user
+message. Both approval modes must pass. Settings errors, unexpected grants,
+managed settings that change the generated restrictions, timeouts and protocol
+errors fail closed. This does **not** execute file-read/write, symlink/hardlink,
+shared-temp or network probes through Claude tools; those remain unmeasured.
+Restricted local generations record `sandbox_profile: "claude-file-tools-only-v1"`.
+
+Caller Skills and Trace configuration are refused for restricted local Claude.
+Before a local launch, AgentD removes any interrupted launch home; startup also
+removes orphaned `local-home` directories for Claude and Codex while retaining
+durable conversation state. Startup cleanup does not follow provider/session
+directory symlinks, and launch preparation refuses such storage roots.
+
+To inspect the exact base argv and generated settings without starting Claude:
+
+```sh
+scripts/claude-restricted-launch-args --work-dir /absolute/project \
+  --home /absolute/private-launch-home --approval-policy on-request
+```
+
+The helper prints JSON containing `argv`, `work_dir`, `settings_path` and
+`settings`; it does not create files or authenticate. For a manual launch, save
+`settings` to `settings_path`, set the private HOME/CLAUDE_CONFIG_DIR and private
+XDG/temp environment described above, then run `argv` in `work_dir` with the
+stdio approval host attached. `Read`/`Edit` are the effective provider-directory
+path denies, including writes; the additional explicit `Write(path)` entry is
+accepted but ignored by current Claude. Glob/Grep use Read rules instead of
+unsupported separate path-deny entries.
+
+Docker restricted Claude retains its existing flags, settings and stdio approval
+transport. Unrestricted local execution also retains its existing behavior.
 
 No model calls are needed to rerun the gated confinement tests:
 
 ```sh
 AGENTD_RESTRICTED_LOCAL_PROBE=1 go test -v ./pkg/runtime \
-  -run '^TestRestrictedLocalCodexSandboxConfinement$' -count=1
+  -run '^TestRestrictedLocal(CodexSandboxConfinement|ClaudeNoModelQualification)$' -count=1
 ```
 
-The probes use synthetic files and `codex sandbox`, covering project access,
+The Codex probes use synthetic files and `codex sandbox`, covering project access,
 ancestor instructions, credential/outside reads, symlink escape, private/shared
 temporary paths, direct `apply_patch` writes, and HTTP/HTTPS loopback by name/IP.
 A dotted repository subdirectory must also complete initialize/thread-start and

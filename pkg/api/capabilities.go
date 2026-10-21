@@ -111,10 +111,11 @@ type skillCapabilities struct {
 }
 
 type providerPermissionCapabilities struct {
-	RestrictedLocalQualification runtime.RestrictedLocalQualification `json:"restricted_local_qualification"`
-	Modes                        []string                             `json:"modes"`
-	RestrictedRuntimes           []string                             `json:"restricted_runtimes"`
-	RestrictedLocalAgents        []string                             `json:"restricted_local_agents"`
+	RestrictedLocalQualification   runtime.RestrictedLocalQualifications `json:"restricted_local_qualification"`
+	Modes                          []string                              `json:"modes"`
+	RestrictedRuntimes             []string                              `json:"restricted_runtimes"`
+	RestrictedLocalAgents          []string                              `json:"restricted_local_agents"`
+	RestrictedLocalFileToolsAgents []string                              `json:"restricted_local_file_tools_agents"`
 }
 
 type v1Capabilities struct {
@@ -158,18 +159,39 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 	}
 	restrictedRuntimes := []string{"docker"}
 	restrictedLocalAgents := []string{}
-	qualification := runtime.RestrictedLocalQualification{Agent: "codex", State: "unqualified"}
+	restrictedLocalFileToolsAgents := []string{}
+	qualification := runtime.RestrictedLocalQualifications{
+		RestrictedLocalQualification: runtime.RestrictedLocalQualification{Agent: "codex", State: "unqualified"},
+		Agents:                       map[string]runtime.RestrictedLocalQualification{},
+	}
 	if _, available := s.runtimes["local"]; available {
-		qualification = runtime.RestrictedLocalQualificationStatus()
-		if qualification.Qualified {
-			if _, supported := s.agents.Get("codex").(*agent.CodexAgent); supported {
-				restrictedLocalAgents = append(restrictedLocalAgents, "codex")
+		qualification = runtime.RestrictedLocalQualificationsStatus()
+		for _, name := range []string{"codex", "claude"} {
+			if !qualification.Agents[name].Qualified {
+				continue
+			}
+			canonical := false
+			switch s.agents.Get(name).(type) {
+			case *agent.CodexAgent:
+				canonical = name == "codex"
+			case *agent.ClaudeAgent:
+				canonical = name == "claude"
+			}
+			if !canonical {
+				continue
+			}
+			switch qualification.Agents[name].Mode {
+			case "bash":
+				restrictedLocalAgents = append(restrictedLocalAgents, name)
+			case "file-tools-only":
+				restrictedLocalFileToolsAgents = append(restrictedLocalFileToolsAgents, name)
 			}
 		}
-		if len(restrictedLocalAgents) > 0 {
+		if len(restrictedLocalAgents) > 0 || len(restrictedLocalFileToolsAgents) > 0 {
 			restrictedRuntimes = append(restrictedRuntimes, "local")
 		}
 	}
+
 	sort.Strings(runtimes)
 	providers := make([]string, 0, 2)
 	for _, name := range []string{"claude", "codex"} {
@@ -208,6 +230,7 @@ func (s *Server) handleV1Capabilities(c *gin.Context) {
 		ProviderPermissions: providerPermissionCapabilities{
 			RestrictedLocalQualification: qualification,
 			Modes:                        []string{"restricted_docker", "unrestricted"}, RestrictedRuntimes: restrictedRuntimes, RestrictedLocalAgents: restrictedLocalAgents,
+			RestrictedLocalFileToolsAgents: restrictedLocalFileToolsAgents,
 		},
 		EventSchemaVersions: []string{eventstream.SchemaVersion}, ExecutionPolicyVersions: []string{LegacyExecutionPolicyVersion, ExecutionPolicyVersion}, NativeProviders: providers,
 		LifecycleControls: []string{"start", "list", "inspect", "replay", "attach", "prompt", "steer", "approval", "interrupt", "cancel", "terminate", "resume", "receipt", "maintain", "resume_state_export", "resume_state_import"},

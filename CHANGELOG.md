@@ -4,6 +4,29 @@ All notable changes to agentruntime are documented in this file.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-21
+
+- Add qualified restricted local Claude on macOS in file-tools-only mode. Launch
+  with `--restricted`, strict MCP isolation, private provider/home/temp paths and
+  generated settings requiring approvals for file writes. Bash and web/agent
+  tools remain disabled because no-model shell confinement is unproven. Async
+  qualification verifies both approval modes through effective settings/rule
+  readback, bypass refusal and no-turn bootstrap; failures remain unsupported.
+  Capabilities add per-agent qualification/mode under
+  `restricted_local_qualification.agents`, preserving the existing Codex fields.
+  Keep `restricted_local_agents` limited to providers qualified with a confined
+  shell; advertise file-only Claude under `restricted_local_file_tools_agents`.
+  Local Claude requires explicit `provider_permissions.tools: "file_only"`;
+  omitted or invalid opt-ins are refused. Either qualified list enables the
+  local restricted runtime capability. A one-off model-backed canary on macOS
+  (Claude Code 2.1.305, approval policy never) confirmed file tools refuse a
+  symlink to an outside file, relative and absolute outside paths, the copied
+  credential file, writes to /tmp and globbing above the work dir.
+  Reject caller skills/trace for local Claude, refresh interrupted launch homes,
+  and remove orphaned local homes at startup without removing conversations.
+  Add a read-only helper for inspecting Claude launch arguments and settings.
+  Docker restricted and unrestricted local provider behavior is unchanged.
+
 ## [2.4.0] - 2026-10-19
 
 - Make agentctl a standalone AgentD client: remove orchestrator-specific

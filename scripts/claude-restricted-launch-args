@@ -1,0 +1,6 @@
+#!/bin/sh
+# Print the production file-only launch recipe; never run the provider.
+set -eu
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_dir"
+exec go run ./cmd/claude-restricted-launch-args "$@"

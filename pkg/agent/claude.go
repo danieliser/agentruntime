@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/danieliser/agentruntime/pkg/materialize"
 )
 
 // ClaudeAgent builds commands for Claude Code CLI.
@@ -19,7 +21,9 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	}
 
 	cmd := []string{"claude"}
-	if cfg.EnforcePolicy {
+	if cfg.IsolateConfig {
+		cmd = append(cmd, materialize.RestrictedLocalClaudeArgs(cfg.PermissionMode)...)
+	} else if cfg.EnforcePolicy {
 		permissionMode := cfg.PermissionMode
 		if permissionMode == "" {
 			permissionMode = "dontAsk"
@@ -37,17 +41,17 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	}
 
 	if cfg.IsolateConfig {
-		cmd = append(cmd, "--setting-sources", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--safe-mode", "--disable-slash-commands")
-	}
-	if cfg.NativeStream {
+		// The restricted transport flags come from the same builder as qualification.
+	} else if cfg.NativeStream {
 		cmd = append(cmd,
 			"--output-format", "stream-json",
 			"--input-format", "stream-json",
 			// Ask rules still require consent in bypassPermissions mode. Route
 			// them to the existing native control_request approval transport.
 			"--permission-prompt-tool", "stdio",
-			"--verbose", "--include-partial-messages", "--forward-subagent-text", "--ide",
+			"--verbose", "--include-partial-messages", "--forward-subagent-text",
 		)
+		cmd = append(cmd, "--ide")
 	} else if !cfg.Interactive {
 		cmd = append(cmd, "-p", prompt)
 		cmd = append(cmd, "--output-format", "stream-json", "--verbose")
@@ -81,17 +85,7 @@ func (a *ClaudeAgent) BuildCmd(prompt string, cfg AgentConfig) ([]string, error)
 	if cfg.Effort != "" {
 		cmd = append(cmd, "--effort", cfg.Effort)
 	}
-	if cfg.IsolateConfig {
-		settings := map[string]any{"disableAllHooks": true}
-		if cfg.Fast {
-			settings["fastMode"] = true
-		}
-		encoded, err := json.Marshal(settings)
-		if err != nil {
-			return nil, fmt.Errorf("encode isolated settings: %w", err)
-		}
-		cmd = append(cmd, "--settings", string(encoded))
-	} else if cfg.Fast {
+	if !cfg.IsolateConfig && cfg.Fast {
 		// Fast mode has no CLI flag — it's a settings key (Opus 5 / 4.8 only).
 		cmd = append(cmd, "--settings", `{"fastMode":true}`)
 	}

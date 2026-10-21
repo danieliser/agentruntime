@@ -24,21 +24,6 @@ func (claudeAdapter) Encode(input Input) ([][]byte, error) {
 			return nil, newError(CodeInvalidArgument, op, "steer text is required", nil)
 		}
 		messages = append(messages, claudeInterrupt(), claudePrompt(input.Text))
-	case InputApproval:
-		if len(input.RequestID) == 0 || !json.Valid(input.RequestID) {
-			return nil, newError(CodeInvalidArgument, op, "approval request ID must be valid JSON", nil)
-		}
-		var requestID any
-		if err := json.Unmarshal(input.RequestID, &requestID); err != nil {
-			return nil, newError(CodeEncode, op, "decode approval request ID", err)
-		}
-		behavior := "deny"
-		if input.ApprovalAllow {
-			behavior = "allow"
-		}
-		messages = append(messages, map[string]any{"type": "control_response", "response": map[string]any{
-			"request_id": requestID, "behavior": behavior,
-		}})
 	default:
 		return nil, newError(CodeInvalidArgument, op, "unsupported input kind", nil)
 	}

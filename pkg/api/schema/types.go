@@ -468,4 +468,6 @@ type UpdateChatConfigRequest struct {
 type ProviderPermissions struct {
 	Mode           string `json:"mode" yaml:"mode"`
 	ApprovalPolicy string `json:"approval_policy" yaml:"approval_policy"`
+	// Tools opts into file-only restricted local Claude; omitted preserves coding with a shell.
+	Tools string `json:"tools,omitempty" yaml:"tools,omitempty"`
 }

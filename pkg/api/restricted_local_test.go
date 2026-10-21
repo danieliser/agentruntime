@@ -130,10 +130,11 @@ func TestRestrictedLocalCapabilityRuntimeList(t *testing.T) {
 	var body struct {
 		Data struct {
 			ProviderPermissions struct {
-				Modes                 []string                             `json:"modes"`
-				RestrictedRuntimes    []string                             `json:"restricted_runtimes"`
-				RestrictedLocalAgents []string                             `json:"restricted_local_agents"`
-				Qualification         runtime.RestrictedLocalQualification `json:"restricted_local_qualification"`
+				Modes                          []string                             `json:"modes"`
+				RestrictedRuntimes             []string                             `json:"restricted_runtimes"`
+				RestrictedLocalAgents          []string                             `json:"restricted_local_agents"`
+				RestrictedLocalFileToolsAgents []string                             `json:"restricted_local_file_tools_agents"`
+				Qualification                  runtime.RestrictedLocalQualification `json:"restricted_local_qualification"`
 			} `json:"provider_permissions"`
 		} `json:"data"`
 	}
@@ -154,6 +155,9 @@ func TestRestrictedLocalCapabilityRuntimeList(t *testing.T) {
 	}
 	if !slices.Equal(body.Data.ProviderPermissions.RestrictedLocalAgents, wantAgents) {
 		t.Fatal("incorrect qualified agents")
+	}
+	if agents := body.Data.ProviderPermissions.RestrictedLocalFileToolsAgents; agents == nil || len(agents) != 0 {
+		t.Fatal("unqualified file-only worker advertised", agents)
 	}
 	if !slices.Equal(body.Data.ProviderPermissions.RestrictedRuntimes, wantRuntimes) {
 		t.Fatalf("runtimes=%v", body.Data.ProviderPermissions.RestrictedRuntimes)
@@ -186,6 +190,9 @@ func qualifiedCodexFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	runtime.InitializeRestrictedLocalQualification(t.TempDir())
 	awaitLocalQualification(t)
 }
@@ -198,15 +205,16 @@ func TestRestrictedLocalCapabilityOmitsUnqualifiedBinary(t *testing.T) {
 	var response struct {
 		Data struct {
 			Permissions struct {
-				Agents   []string `json:"restricted_local_agents"`
-				Runtimes []string `json:"restricted_runtimes"`
+				Agents          []string `json:"restricted_local_agents"`
+				FileToolsAgents []string `json:"restricted_local_file_tools_agents"`
+				Runtimes        []string `json:"restricted_runtimes"`
 			} `json:"provider_permissions"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Data.Permissions.Agents) != 0 || slices.Contains(response.Data.Permissions.Runtimes, "local") {
+	if response.Data.Permissions.FileToolsAgents == nil || len(response.Data.Permissions.FileToolsAgents) != 0 || len(response.Data.Permissions.Agents) != 0 || slices.Contains(response.Data.Permissions.Runtimes, "local") {
 		t.Fatal("unqualified local advertised")
 	}
 }
@@ -217,6 +225,9 @@ func TestRestrictedLocalVersionOutputAloneCannotQualify(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	runtime.InitializeRestrictedLocalQualification(t.TempDir())
 	awaitLocalQualification(t)
 	if len(runtime.QualifiedRestrictedLocalAgents()) != 0 {

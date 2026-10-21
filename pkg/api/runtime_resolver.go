@@ -28,7 +28,9 @@ func resolveNativeExecution(
 		return resolvedNativeExecution{}, fmt.Errorf("%s: agent implementation is required", op)
 	}
 	if request.Runtime == "local" && request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
-		if _, supported := implementation.(*agent.CodexAgent); !supported {
+		switch implementation.(type) {
+		case *agent.CodexAgent, *agent.ClaudeAgent:
+		default:
 			return resolvedNativeExecution{}, durable.NewError(durable.CodeExecutionPolicyUnsupported, op, "agent driver cannot enforce the read-confined local profile", nil)
 		}
 	}

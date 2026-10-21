@@ -231,7 +231,11 @@ func nativePolicy(request SessionRequest) nativeprotocol.InputPolicy {
 	if request.ExecutionPolicy == nil {
 		if request.ProviderPermissions != nil && request.ProviderPermissions.Mode == "restricted" {
 			if request.Runtime == "local" {
-				return nativeprotocol.InputPolicy{Enforced: true, Filesystem: "workspace_write", WorkDir: request.WorkDir, ApprovalPolicy: request.ProviderPermissions.ApprovalPolicy, AllowLocalEnvironment: true, PermissionProfile: apischema.RestrictedLocalCodexProfile}
+				profile := ""
+				if request.Agent == "codex" {
+					profile = apischema.RestrictedLocalCodexProfile
+				}
+				return nativeprotocol.InputPolicy{Enforced: true, Filesystem: "workspace_write", WorkDir: request.WorkDir, ApprovalPolicy: request.ProviderPermissions.ApprovalPolicy, AllowLocalEnvironment: true, PermissionProfile: profile}
 			}
 			workDir := "/workspace"
 			if request.Runtime == "local" {

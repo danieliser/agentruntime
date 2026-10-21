@@ -415,10 +415,13 @@ func claudeMountSource(tmpDir, dataDir, sessionID string, req *apischema.Session
 	if !restricted && credentialsPath == "" && dataDir != "" {
 		syncCache := filepath.Join(dataDir, "credentials", "claude-credentials.json")
 		if _, err := os.Stat(syncCache); err == nil {
+			// Restricted local Claude still needs provider authentication. Copy only
+			// this credential file into its private launch home, never daemon config
+			// or other session data; cleanup removes the disposable copies on exit.
 			credentialsPath = syncCache
 		}
 		// Also check the host's default Claude credentials location.
-		if credentialsPath == "" {
+		if credentialsPath == "" && !restrictedLocal(req) {
 			if home, err := os.UserHomeDir(); err == nil {
 				for _, name := range []string{".credentials.json", "credentials.json"} {
 					hostCreds := filepath.Join(home, ".claude", name)

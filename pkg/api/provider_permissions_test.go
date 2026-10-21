@@ -40,6 +40,13 @@ func TestProviderPermissionsRejectWidening(t *testing.T) {
 		{"unsupported runtime", "local-pipe", func(r *SessionRequest) {}},
 		{"unknown mode", "docker", func(r *SessionRequest) { r.ProviderPermissions.Mode = "auto" }},
 		{"unknown approval", "docker", func(r *SessionRequest) { r.ProviderPermissions.ApprovalPolicy = "allow" }},
+		{"file-only Docker unsupported", "docker", func(r *SessionRequest) { r.ProviderPermissions.Tools = "file_only" }},
+		{"file-only unrestricted unsupported", "local", func(r *SessionRequest) {
+			r.ProviderPermissions.Mode = "unrestricted"
+			r.ProviderPermissions.ApprovalPolicy = "never"
+			r.ProviderPermissions.Tools = "file_only"
+		}},
+		{"file-only Codex unsupported", "local", func(r *SessionRequest) { r.Agent = "codex"; r.ProviderPermissions.Tools = "file_only" }},
 		{"container host network", "docker", func(r *SessionRequest) { r.Container = &ContainerConfig{Network: "host"} }},
 		{"container security overrides", "docker", func(r *SessionRequest) { r.Container = &ContainerConfig{SecurityOpt: []string{"seccomp=unconfined"}} }},
 		{"extra host mounts", "docker", func(r *SessionRequest) { r.Volumes = []string{"/Users:/host"} }},

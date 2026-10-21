@@ -271,6 +271,9 @@ func (s *Server) Start(addr string) error {
 // serve owns the listener and qualification-worker lifetime. The listener is
 // already open before any optional provider measurement can start.
 func (s *Server) serve(listener net.Listener) error {
+	if err := runtime.CleanupRestrictedLocalHomes(s.dataDir); err != nil {
+		return errors.Join(err, listener.Close())
+	}
 	s.startRuntimeReadiness()
 	s.startStoppedContainerCleanup()
 	s.srv = &http.Server{

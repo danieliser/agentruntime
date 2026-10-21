@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/danieliser/agentruntime/pkg/runtime"
 	"path/filepath"
-	"slices"
+	"reflect"
 
 	apischema "github.com/danieliser/agentruntime/pkg/api/schema"
 	"github.com/danieliser/agentruntime/pkg/durable"
@@ -29,6 +29,9 @@ func validateProviderPermissions(request *SessionRequest, runtimeName string) er
 	}
 	if request.ExecutionPolicy != nil {
 		return reject("provider_permissions cannot be combined with execution_policy")
+	}
+	if p.Tools != "" && (p.Tools != "file_only" || runtimeName != "local" || p.Mode != "restricted" || request.Agent != "claude") {
+		return reject("provider_permissions.tools=file_only is supported only for restricted local Claude")
 	}
 	if p.Mode == "unrestricted" {
 		if p.ApprovalPolicy != "never" {
@@ -61,14 +64,20 @@ func validateProviderPermissions(request *SessionRequest, runtimeName string) er
 		return reject("restricted coding does not accept Codex config or approval overrides")
 	}
 	if runtimeName == "local" {
-		if !slices.Contains(runtime.QualifiedRestrictedLocalAgents(), request.Agent) {
-			return reject("provider/version/platform has no qualified read-confined local sandbox")
+		if request.Agent == "claude" && (request.Skills != nil || request.Trace != nil) {
+			return reject("restricted local Claude does not accept caller skills or trace configuration")
+		}
+		if err := runtime.CheckRestrictedLocalProviderPermissions(request.Agent, p.Tools); err != nil {
+			if request.Agent == "codex" && p.Tools == "" {
+				return reject("provider/version/platform has no qualified read-confined local sandbox")
+			}
+			return err
 		}
 		if !filepath.IsAbs(request.WorkDir) {
 			return reject("restricted local coding requires an absolute project work_dir")
 		}
-		if request.Claude != nil {
-			return reject("restricted local Codex does not accept configuration for another provider")
+		if (request.Agent != "claude" && request.Claude != nil) || (request.Agent == "claude" && (request.Codex != nil || (request.Claude != nil && !reflect.DeepEqual(*request.Claude, ClaudeConfig{})))) {
+			return reject("restricted local coding does not accept caller provider configuration")
 		}
 		if len(request.MCPServers) > 0 {
 			return reject("restricted local coding does not grant external MCP processes or servers")
